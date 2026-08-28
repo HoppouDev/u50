@@ -258,6 +258,12 @@ impl Formatter for Cs50Formatter {
     /// Returns an error when the language's formatter is missing or exits
     /// unsuccessfully.
     fn format(&self, source: &str, language: Language) -> anyhow::Result<String> {
+        // The original style50 library calls leave empty and whitespace-only
+        // files untouched (e.g. `autopep8.format_code("") == ""`), so no
+        // external formatter is invoked and the file is reported clean.
+        if source.trim().is_empty() {
+            return Ok(source.to_owned());
+        }
         match language {
             Language::C | Language::Cpp | Language::Java => {
                 let assume = format!("--assume-filename={}", language.file_name());
@@ -714,6 +720,28 @@ mod tests {
         let doc = json_document(&report);
         assert_eq!(doc["clean"], serde_json::Value::Bool(true));
         assert!(doc["files"][0]["patch"].is_null());
+        std::fs::remove_file(&path).expect("cleanup");
+    }
+
+    #[test]
+    fn formatter_short_circuits_on_empty_and_whitespace_only_source() {
+        for language in [Language::JavaScript, Language::Css] {
+            assert_eq!(Cs50Formatter.format("", language).expect("ok"), "");
+            assert_eq!(Cs50Formatter.format("\n  ", language).expect("ok"), "\n  ");
+        }
+    }
+
+    #[test]
+    fn run_with_empty_js_file_is_clean() {
+        let path = temp_file("empty.js", "");
+        let req = Request {
+            files: vec![path.clone()],
+            output: Output::Unified,
+            color: false,
+        };
+        let report = run_with(&req, &Cs50Formatter).expect("run succeeds");
+        assert!(report.clean());
+        assert!(report.results[0].rendered.is_none());
         std::fs::remove_file(&path).expect("cleanup");
     }
 
