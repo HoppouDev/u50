@@ -42,8 +42,12 @@ pub struct FileResult {
 /// The aggregated style-check outcome for a request.
 #[derive(Debug, Clone, Default)]
 pub struct Report {
-    /// One entry per requested file.
+    /// One entry per successfully processed file.
     pub results: Vec<FileResult>,
+    /// One entry per file that could not be processed (unreadable file,
+    /// unsupported extension, formatter failure): the path and the error
+    /// message. Processing continues past per-file errors.
+    pub errors: Vec<(PathBuf, String)>,
 }
 
 impl Report {
@@ -51,5 +55,11 @@ impl Report {
     #[must_use]
     pub fn clean(&self) -> bool {
         self.results.iter().all(|r| r.clean)
+    }
+
+    /// Whether any requested file could not be processed.
+    #[must_use]
+    pub fn has_errors(&self) -> bool {
+        !self.errors.is_empty()
     }
 }

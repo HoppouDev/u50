@@ -6,10 +6,10 @@ use similar::{ChangeTag, DiffTag, TextDiff};
 
 use crate::request::Report;
 
-const RED: &str = "\u{1b}[31m";
-const GREEN: &str = "\u{1b}[32m";
-const BOLD: &str = "\u{1b}[1m";
-const RESET: &str = "\u{1b}[0m";
+pub(crate) const RED: &str = "\u{1b}[31m";
+pub(crate) const GREEN: &str = "\u{1b}[32m";
+pub(crate) const BOLD: &str = "\u{1b}[1m";
+pub(crate) const RESET: &str = "\u{1b}[0m";
 
 /// Context radius passed to `TextDiff::grouped_ops` to keep every change in
 /// a single group. Must satisfy `n * 2 <= usize::MAX` (see
@@ -49,6 +49,12 @@ pub(crate) fn render_character(source: &str, formatted: &str, color: bool) -> St
                     out.push_str(value.trim_end_matches(['\r', '\n']));
                     if *emphasized && colored {
                         out.push_str(RESET);
+                        // A bare RESET would cancel the enclosing line's
+                        // color for the rest of the line, so re-establish
+                        // it (Equal lines are never colored).
+                        if let Some(line) = code {
+                            out.push_str(line);
+                        }
                     }
                 }
                 if colored {

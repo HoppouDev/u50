@@ -165,18 +165,20 @@ fn main() -> ExitCode {
             })
             .map(|()| ExitCode::SUCCESS)
         }
-        Command::Style(args) => u50_style::run(&u50_style::Request {
-            files: args.files,
-            output: map_style_output(args.output),
-            color: resolve_ansi(cli.globals.color, no_color),
-        })
-        .map(|report| {
-            if report.clean() {
+        Command::Style(args) => {
+            let report = u50_style::run(&u50_style::Request {
+                files: args.files,
+                output: map_style_output(args.output),
+                color: resolve_ansi(cli.globals.color, no_color),
+            });
+            Ok(if report.has_errors() {
+                ExitCode::from(3)
+            } else if report.clean() {
                 ExitCode::SUCCESS
             } else {
                 ExitCode::from(1)
-            }
-        }),
+            })
+        }
         Command::Submit(args) => u50_submit::run(&u50_submit::Request {
             slug: args.slug,
             yes: args.yes,
@@ -190,8 +192,9 @@ fn main() -> ExitCode {
         Ok(code) => code,
         Err(e) => {
             eprintln!("error: {e:#}");
-            // Style violations exit 1 (mapped from the Report above); check
-            // failures are still TODO; 3 remains the infrastructure-error code.
+            // Style violations exit 1 and per-file style errors exit 3 (both
+            // mapped from the Report above); check failures are still TODO;
+            // 3 remains the infrastructure-error code.
             ExitCode::from(3)
         }
     }

@@ -8,7 +8,9 @@ Rust rewrite of [style50](https://github.com/cs50/style50): checks code style an
 
 Engine implemented, supporting the languages of the RELEASED style50 (2.10.4): `run(&Request) -> Result<Report>` uses `Cs50Formatter::from_env()` (impl of the `Formatter` trait, injectable via `run_with` for tests without the formatters installed), renders per-file diffs (`character` with inline char emphasis / `split` / `unified` / `json`) and prints them; the CLI maps `Report::clean()` to exit 0/1. Every language can be redirected to a custom formatter via `U50_STYLE_<LANG>` environment variables (see 'Formatter overrides', below).
 
-API: `Language` (`detect_language` by extension for all supported languages; `Language::required_tool() -> Option<&'static str>` names the backing binary; `Language::env_var_key()` gives the override variable suffix), `Formatter` trait, `Cs50Formatter` (`Default` = built-in tools with no overrides; `with_overrides(HashMap<Language, Vec<String>>)`; `from_env()`), `Request { files, output, color }`, `FileResult { path, clean, rendered }`, `Report { results }` with `clean()`. Pure renderers (`render_character`/`render_split`/`render_unified`/`json_document`) take `(source, formatted, ...)` and are unit-testable without the tools.
+API: `Language` (`detect_language` by extension for all supported languages; `Language::required_tool() -> Option<&'static str>` names the backing binary; `Language::env_var_key()` gives the override variable suffix), `Formatter` trait, `Cs50Formatter` (`Default` = built-in tools with no overrides; `with_overrides(HashMap<Language, Vec<String>>)`; `from_env()`), `Request { files, output, color }`, `FileResult { path, clean, rendered }`, `Report { results, errors }` with `clean()` and `has_errors()`. Pure renderers (`render_character`/`render_split`/`render_unified`/`json_document`) take `(source, formatted, ...)` and are unit-testable without the tools.
+
+Per-file errors never abort the run: an unreadable file, unsupported extension, or formatter failure for one file records `(path, message)` in `Report.errors` and processing continues with the remaining files, so earlier results are preserved. `run()` prints rendered output for every processed file to stdout (stdout stays pure diff/JSON), then writes each error to stderr as `error: <path>: <message>`. Formatter-level failures (e.g. missing clang-format) are therefore per-file skips, not whole-run bails.
 
 ## Language support
 
@@ -100,8 +102,8 @@ clang-format >= 14 is required; when a formatter binary is missing the engine er
 ### Exit codes
 
 - 0 — all files clean.
-- 1 — style violations found (CLI maps `!Report::clean()` to 1).
-- 3 — infrastructure error (formatter missing/failing, built-in or override).
+- 1 — style violations found in the processed files (CLI maps `!Report::clean()` to 1).
+- 3 — any per-file error: unreadable file, unsupported extension, or formatter missing/failing (built-in or override). Files before the error are still checked and rendered (stdout); error lines go to stderr. Takes precedence: any error → 3 even if violations were also found.
 
 ### Not yet implemented (present in the original; future work)
 

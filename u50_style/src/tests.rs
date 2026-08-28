@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use super::*;
 use crate::formatter::{overrides_from_env, run_tool};
-use crate::render::json_document;
+use crate::render::{BOLD, GREEN, RED, RESET, json_document, render_character, render_split};
 
 /// Formatter that leaves the source untouched (models a clean file).
 struct Identity;
@@ -28,6 +28,15 @@ impl Formatter for Reindent {
             out.push('\n');
         }
         Ok(out)
+    }
+}
+
+/// Formatter that always fails (models a broken external tool).
+struct Failing;
+
+impl Formatter for Failing {
+    fn format(&self, _source: &str, _language: Language) -> anyhow::Result<String> {
+        anyhow::bail!("boom: formatter exploded")
     }
 }
 
@@ -147,8 +156,9 @@ fn clean_file_is_reported_clean() {
         output: Output::Unified,
         color: false,
     };
-    let report = run_with(&req, &Identity).expect("run succeeds");
+    let report = run_with(&req, &Identity);
     assert!(report.clean());
+    assert!(!report.has_errors());
     assert_eq!(report.results.len(), 1);
     assert!(report.results[0].clean);
     assert!(report.results[0].rendered.is_none());
@@ -163,7 +173,7 @@ fn dirty_file_unified_has_plus_and_minus_lines() {
         output: Output::Unified,
         color: false,
     };
-    let report = run_with(&req, &Reindent).expect("run succeeds");
+    let report = run_with(&req, &Reindent);
     assert!(!report.clean());
     let rendered = report.results[0].rendered.clone().expect("rendered");
     assert!(rendered.lines().any(|l| l.starts_with('-')));
@@ -180,7 +190,7 @@ fn character_output_has_plus_and_minus_lines() {
         output: Output::Character,
         color: false,
     };
-    let report = run_with(&req, &Reindent).expect("run succeeds");
+    let report = run_with(&req, &Reindent);
     let rendered = report.results[0].rendered.clone().expect("rendered");
     assert!(rendered.lines().any(|l| l.starts_with('-')));
     assert!(rendered.lines().any(|l| l.starts_with('+')));
@@ -195,7 +205,7 @@ fn split_output_has_column_separator() {
         output: Output::Split,
         color: false,
     };
-    let report = run_with(&req, &Reindent).expect("run succeeds");
+    let report = run_with(&req, &Reindent);
     let rendered = report.results[0].rendered.clone().expect("rendered");
     assert!(rendered.contains(" | "));
     std::fs::remove_file(&path).expect("cleanup");
@@ -209,7 +219,7 @@ fn json_document_parses_with_expected_fields() {
         output: Output::Json,
         color: false,
     };
-    let report = run_with(&req, &Reindent).expect("run succeeds");
+    let report = run_with(&req, &Reindent);
     let doc = json_document(&report);
     assert_eq!(doc["clean"], serde_json::Value::Bool(false));
     assert_eq!(doc["files"][0]["path"], path.display().to_string());
@@ -228,11 +238,35 @@ fn json_document_clean_file_has_null_patch() {
         output: Output::Json,
         color: false,
     };
-    let report = run_with(&req, &Identity).expect("run succeeds");
+    let report = run_with(&req, &Identity);
     let doc = json_document(&report);
     assert_eq!(doc["clean"], serde_json::Value::Bool(true));
     assert!(doc["files"][0]["patch"].is_null());
     std::fs::remove_file(&path).expect("cleanup");
+}
+
+#[test]
+fn json_document_multi_file_mixed_clean_and_dirty() {
+    let dirty = FileResult {
+        path: PathBuf::from("dirty.c"),
+        clean: false,
+        rendered: Some(
+            "--- dirty.c\n+++ dirty.c\n@@ -1 +1 @@\n-return 0;\n+    return 0;\n".to_owned(),
+        ),
+    };
+    let clean = FileResult {
+        path: PathBuf::from("clean.c"),
+        clean: true,
+        rendered: None,
+    };
+    let report = Report {
+        results: vec![dirty, clean],
+        errors: Vec::new(),
+    };
+    let doc = json_document(&report);
+    assert_eq!(doc["clean"], serde_json::Value::Bool(false));
+    assert!(doc["files"][0]["patch"].is_string());
+    assert!(doc["files"][1]["patch"].is_null());
 }
 
 #[test]
@@ -259,7 +293,7 @@ fn run_with_empty_js_file_is_clean() {
         output: Output::Unified,
         color: false,
     };
-    let report = run_with(&req, &Cs50Formatter::default()).expect("run succeeds");
+    let report = run_with(&req, &Cs50Formatter::default());
     assert!(report.clean());
     assert!(report.results[0].rendered.is_none());
     std::fs::remove_file(&path).expect("cleanup");
@@ -272,8 +306,9 @@ fn empty_request_is_clean() {
         output: Output::Unified,
         color: false,
     };
-    let report = run_with(&req, &Identity).expect("run succeeds");
+    let report = run_with(&req, &Identity);
     assert!(report.clean());
+    assert!(!report.has_errors());
     assert!(report.results.is_empty());
     assert_eq!(json_document(&report)["files"], serde_json::json!([]));
 }
@@ -286,9 +321,13 @@ fn unsupported_extension_errors_with_path() {
         output: Output::Unified,
         color: false,
     };
-    let err = run_with(&req, &Identity).expect_err("errors");
-    assert!(err.to_string().contains("unsupported file type"));
-    assert!(err.to_string().contains(&path.display().to_string()));
+    let report = run_with(&req, &Identity);
+    assert!(report.has_errors());
+    assert!(report.results.is_empty());
+    assert_eq!(report.errors.len(), 1);
+    assert_eq!(&report.errors[0].0, &path);
+    assert!(report.errors[0].1.contains("unsupported file type"));
+    assert!(report.errors[0].1.contains(&path.display().to_string()));
     std::fs::remove_file(&path).expect("cleanup");
 }
 
@@ -301,7 +340,131 @@ fn missing_file_errors_with_path() {
         output: Output::Unified,
         color: false,
     };
-    let err = run_with(&req, &Identity).expect_err("errors");
-    assert!(err.to_string().contains("could not read"));
-    assert!(err.to_string().contains(&path.display().to_string()));
+    let report = run_with(&req, &Identity);
+    assert!(report.has_errors());
+    assert!(report.results.is_empty());
+    assert_eq!(report.errors.len(), 1);
+    assert_eq!(&report.errors[0].0, &path);
+    assert!(report.errors[0].1.contains("could not read"));
+    assert!(report.errors[0].1.contains(&path.display().to_string()));
+}
+
+#[test]
+fn formatter_failure_is_recorded_per_file() {
+    let path = temp_file("failing.c", "int main(void)\n{\n    return 0;\n}\n");
+    let req = Request {
+        files: vec![path.clone()],
+        output: Output::Unified,
+        color: false,
+    };
+    let report = run_with(&req, &Failing);
+    assert!(report.has_errors());
+    assert!(report.results.is_empty());
+    assert_eq!(report.errors.len(), 1);
+    assert_eq!(&report.errors[0].0, &path);
+    assert!(report.errors[0].1.contains("boom"));
+    std::fs::remove_file(&path).expect("cleanup");
+}
+
+#[test]
+fn error_in_later_file_preserves_earlier_results() {
+    let dirty = temp_file("stream.c", "int main(void)\n{\nreturn 0;\n}\n");
+    let missing =
+        std::env::temp_dir().join(format!("u50_style_test_{}_gone.c", std::process::id()));
+    let req = Request {
+        files: vec![dirty.clone(), missing.clone()],
+        output: Output::Unified,
+        color: false,
+    };
+    let report = run_with(&req, &Reindent);
+    assert!(report.has_errors());
+    assert_eq!(report.results.len(), 1);
+    assert!(!report.results[0].clean);
+    let rendered = report.results[0].rendered.clone().expect("rendered");
+    assert!(rendered.lines().any(|l| l.starts_with('+')));
+    assert_eq!(report.errors.len(), 1);
+    assert_eq!(&report.errors[0].0, &missing);
+    assert!(report.errors[0].1.contains("could not read"));
+    std::fs::remove_file(&dirty).expect("cleanup");
+}
+
+#[test]
+fn character_render_colored_uses_red_and_green_and_restores_line_color() {
+    let source = "int main(void)\n{\nreturn 0;\n}\n";
+    let formatted = "int main(void)\n{\n    return 0;\n}\n";
+    let out = render_character(source, formatted, true);
+    assert!(out.contains(RED), "red line color missing: {out:?}");
+    assert!(out.contains(GREEN), "green line color missing: {out:?}");
+    // An emphasized span must not cancel the enclosing line color: after
+    // the span's RESET (which follows the emphasized text) the line color
+    // code reappears before the rest of the line.
+    assert!(out.contains(BOLD), "no emphasized span: {out:?}");
+    assert!(
+        out.contains(&format!("{RESET}{GREEN}")),
+        "line color not restored after an emphasized span: {out:?}"
+    );
+    // The non-colored rendering of the same diff must not contain ANSI.
+    let plain = render_character(source, formatted, false);
+    assert!(!plain.contains('\u{1b}'), "unexpected ANSI: {plain:?}");
+}
+
+#[test]
+fn split_render_colored_wraps_cells_in_red_and_green() {
+    let out = render_split("return 0;\n", "    return 0;\n", true);
+    let line = out.lines().next().expect("one row");
+    assert!(line.starts_with(RED), "left cell not red-wrapped: {line:?}");
+    assert!(
+        line.contains(&format!("{RESET} | {GREEN}")),
+        "right cell not green-wrapped: {line:?}"
+    );
+    assert!(line.ends_with(RESET), "row not reset-terminated: {line:?}");
+    let plain = render_split("return 0;\n", "    return 0;\n", false);
+    assert!(!plain.contains('\u{1b}'), "unexpected ANSI: {plain:?}");
+}
+
+#[test]
+fn split_render_truncates_columns_at_50_chars() {
+    // Differing 60-char lines so the diff has an actual change to render.
+    let long_x = "x".repeat(60);
+    let long_y = "y".repeat(60);
+    let out = render_split(&format!("{long_x}\n"), &format!("{long_y}\n"), false);
+    let line = out.lines().next().expect("one row");
+    assert_eq!(line.chars().count(), 50 + 3 + 50);
+    assert_eq!(line.matches('x').count(), 50, "not truncated: {line:?}");
+    assert_eq!(line.matches('y').count(), 50, "not truncated: {line:?}");
+}
+
+#[test]
+fn split_render_pairs_deletions_with_insertions_and_pads_blanks() {
+    // Two deletions, one insertion: the unpaired deletion gets a blank
+    // right cell.
+    let out = render_split("a\nb\n", "c\n", false);
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines.len(), 2);
+    let row0 = lines[0];
+    let row1 = lines[1];
+    assert!(row0.starts_with('a'), "row 0: {row0:?}");
+    assert!(row0.contains(" | c"), "row 0: {row0:?}");
+    assert!(row1.starts_with('b'), "row 1: {row1:?}");
+    let sep = row1.find(" | ").expect("separator");
+    assert!(
+        row1[sep + 3..].chars().all(|ch| ch == ' '),
+        "right cell not blank-padded: {row1:?}"
+    );
+
+    // One deletion, two insertions: the unpaired insertion gets a blank
+    // left cell.
+    let out = render_split("c\n", "a\nb\n", false);
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines.len(), 2);
+    let row0 = lines[0];
+    let row1 = lines[1];
+    assert!(row0.starts_with('c'), "row 0: {row0:?}");
+    assert!(row0.contains(" | a"), "row 0: {row0:?}");
+    let sep = row1.find(" | ").expect("separator");
+    assert!(
+        row1[..sep].chars().all(|ch| ch == ' '),
+        "left cell not blank-padded: {row1:?}"
+    );
+    assert!(row1[sep + 3..].starts_with('b'), "row 1: {row1:?}");
 }
