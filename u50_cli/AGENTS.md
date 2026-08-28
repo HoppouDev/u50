@@ -74,4 +74,4 @@ enum Command {
 | 0 | success (all checks passed / style clean / submitted) |
 | 1 | checks failed or style violations found |
 | 2 | usage error |
-| 3 | infrastructure error (network, auth, git failure) |
+| 3 | any per-file error (unreadable file, unsupported type, formatter failure) |
