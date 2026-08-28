@@ -1,5 +1,6 @@
 #![warn(clippy::pedantic)]
 
+use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -26,7 +27,7 @@ const BOLD: &str = "\u{1b}[1m";
 const RESET: &str = "\u{1b}[0m";
 
 /// A language whose style can be checked.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Language {
     /// C (`.c`, `.h`).
     C,
@@ -62,16 +63,33 @@ impl Language {
 
     /// The external formatter binary this language's style check depends
     /// on — the same tools (or their CLI counterparts) the original
-    /// style50 invokes per `languages.py`.
+    /// style50 invokes per `languages.py`. `None` for SQL, which is
+    /// formatted by the embedded sqlformat-rs library (no external tool).
     #[must_use]
-    pub fn required_tool(self) -> &'static str {
+    pub fn required_tool(self) -> Option<&'static str> {
         match self {
-            Self::C | Self::Cpp | Self::Java => "clang-format",
-            Self::Python => "autopep8",
-            Self::JavaScript => "js-beautify",
-            Self::Html => "djhtml",
-            Self::Css => "css-beautify",
-            Self::Sql => "sqlformat",
+            Self::C | Self::Cpp | Self::Java => Some("clang-format"),
+            Self::Python => Some("autopep8"),
+            Self::JavaScript => Some("js-beautify"),
+            Self::Html => Some("djhtml"),
+            Self::Css => Some("css-beautify"),
+            Self::Sql => None,
+        }
+    }
+
+    /// Environment-variable key (after the `U50_STYLE_` prefix) that can
+    /// override this language's formatter command line.
+    #[must_use]
+    pub fn env_var_key(self) -> &'static str {
+        match self {
+            Self::C => "C",
+            Self::Cpp => "CPP",
+            Self::Java => "JAVA",
+            Self::Python => "PYTHON",
+            Self::JavaScript => "JAVASCRIPT",
+            Self::Html => "HTML",
+            Self::Css => "CSS",
+            Self::Sql => "SQL",
         }
     }
 }
@@ -145,9 +163,6 @@ fn missing_tool_message(tool: &str) -> String {
         "css-beautify" => {
             "`css-beautify` is required to check CSS style (pip install cssbeautifier)".to_owned()
         }
-        "sqlformat" => {
-            "`sqlformat` is required to check SQL style (pip install sqlparse)".to_owned()
-        }
         other => format!("`{other}` is required"),
     }
 }
@@ -159,14 +174,24 @@ fn missing_tool_message(tool: &str) -> String {
 /// # Errors
 /// Returns an error when the binary is missing (with the per-tool install
 /// hint from [`missing_tool_message`]) or exits unsuccessfully.
-fn run_tool(tool: &str, args: &[&str], source: &str) -> anyhow::Result<String> {
+/// Spawns `tool` with `args`, feeds `source` on stdin (written from a
+/// separate thread so a child that fills its stdout pipe cannot deadlock
+/// against us still writing its stdin), and waits for it to exit. Spawn
+/// errors are mapped by `on_spawn` so callers can phrase the failure for
+/// their context (built-in install hint vs. override env var).
+fn run_process(
+    tool: &str,
+    args: &[&str],
+    source: &str,
+    on_spawn: impl Fn(std::io::Error) -> anyhow::Error,
+) -> anyhow::Result<std::process::Output> {
     let mut child = Command::new(tool)
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| anyhow::anyhow!("{}: {e}", missing_tool_message(tool)))?;
+        .map_err(on_spawn)?;
     let mut stdin = child
         .stdin
         .take()
@@ -177,6 +202,34 @@ fn run_tool(tool: &str, args: &[&str], source: &str) -> anyhow::Result<String> {
     });
     let output = child.wait_with_output()?;
     let _ = writer.join();
+    Ok(output)
+}
+
+/// Runs a user-provided formatter override (`U50_STYLE_<LANG>`) STRICTLY:
+/// exit 0 is the only success — no djhtml leniency, which applies only to
+/// the built-in djhtml path, never to overrides.
+fn run_override(var: &str, command: &[String], source: &str) -> anyhow::Result<String> {
+    let (binary, args) = command
+        .split_first()
+        .ok_or_else(|| anyhow::anyhow!("empty override command in {var}"))?;
+    let joined = command.join(" ");
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let output = run_process(binary, &arg_refs, source, |e| {
+        anyhow::anyhow!("could not run `{binary}` (set via {var}): {e}")
+    })?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "formatter `{joined}` failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+fn run_tool(tool: &str, args: &[&str], source: &str) -> anyhow::Result<String> {
+    let output = run_process(tool, args, source, |e| {
+        anyhow::anyhow!("{}: {e}", missing_tool_message(tool))
+    })?;
     if !output.status.success() {
         anyhow::bail!(
             "`{tool}` failed: {}",
@@ -195,23 +248,9 @@ fn run_tool(tool: &str, args: &[&str], source: &str) -> anyhow::Result<String> {
 /// Returns an error when the binary is missing (with the per-tool install
 /// hint from [`missing_tool_message`]) or fails the convention above.
 fn run_tool_lenient(tool: &str, args: &[&str], source: &str) -> anyhow::Result<String> {
-    let mut child = Command::new(tool)
-        .args(args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| anyhow::anyhow!("{}: {e}", missing_tool_message(tool)))?;
-    let mut stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| anyhow::anyhow!("could not attach stdin to `{tool}`"))?;
-    let source = source.to_owned();
-    let writer = std::thread::spawn(move || {
-        let _ = stdin.write_all(source.as_bytes());
-    });
-    let output = child.wait_with_output()?;
-    let _ = writer.join();
+    let output = run_process(tool, args, source, |e| {
+        anyhow::anyhow!("{}: {e}", missing_tool_message(tool))
+    })?;
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let ok = match output.status.code() {
         Some(0) => true,
@@ -245,13 +284,72 @@ fn run_tool_lenient(tool: &str, args: &[&str], source: &str) -> anyhow::Result<S
 ///   with empty stdout, is an error)
 /// - CSS: `css-beautify --indent-size 4 --end-with-newline -` (the `-`
 ///   stdin marker must come last, as with js-beautify)
-/// - SQL: `sqlformat --reindent --keywords upper --indent_width 4 -` (the
-///   CLI takes a single FILE positional, `-` = stdin, and writes to
-///   stdout; unlike the `sqlparse` library it does not end output with a
-///   newline, so a trailing newline is appended when missing — matching
-///   the original's SQL class)
-#[derive(Debug, Clone, Copy, Default)]
-pub struct Cs50Formatter;
+/// - SQL: formatted in-process by the embedded [`sqlformat`] crate (4-
+///   space indent, uppercase keywords, one blank line between queries) —
+///   **sqlformat-rs is a port of sqlformat.org, NOT the Python `sqlparse`
+///   library the original uses**, so output may differ slightly for
+///   complex queries; `U50_STYLE_SQL="sqlformat --reindent --keywords
+///   upper --indent_width 4 -"` restores Python-sqlparse parity. A
+///   trailing newline is appended when missing, as before.
+///
+/// Any language can additionally be redirected to a custom command line
+/// via the `U50_STYLE_<LANG>` environment variable (see
+/// [`overrides_from_env`]); the source is piped to the custom tool via
+/// stdin and its exit code is treated strictly (exit 0 = success, no
+/// djhtml leniency).
+#[derive(Debug, Clone, Default)]
+pub struct Cs50Formatter {
+    /// Per-language override command lines (`U50_STYLE_<LANG>`), private —
+    /// populated via [`Cs50Formatter::with_overrides`] or
+    /// [`Cs50Formatter::from_env`].
+    overrides: HashMap<Language, Vec<String>>,
+}
+
+/// Pure parser for the `U50_STYLE_<LANG>` override contract: for each
+/// known language key, a non-empty (after trimming) variable value is
+/// split on whitespace into an argv (no quoting support); empty and
+/// unknown variables are ignored. `vars` is a lookup closure so tests can
+/// pass a fake map instead of the process environment.
+fn overrides_from_env(vars: impl Fn(&str) -> Option<String>) -> HashMap<Language, Vec<String>> {
+    let languages = [
+        Language::C,
+        Language::Cpp,
+        Language::Java,
+        Language::Python,
+        Language::JavaScript,
+        Language::Html,
+        Language::Css,
+        Language::Sql,
+    ];
+    let mut overrides = HashMap::new();
+    for language in languages {
+        let Some(value) = vars(&format!("U50_STYLE_{}", language.env_var_key())) else {
+            continue;
+        };
+        let argv: Vec<String> = value.split_whitespace().map(str::to_owned).collect();
+        if argv.is_empty() {
+            continue;
+        }
+        overrides.insert(language, argv);
+    }
+    overrides
+}
+
+impl Cs50Formatter {
+    /// Builds a formatter with per-language override command lines; each
+    /// command's source is piped via stdin.
+    #[must_use]
+    pub fn with_overrides(overrides: HashMap<Language, Vec<String>>) -> Self {
+        Self { overrides }
+    }
+
+    /// Builds a formatter honoring the `U50_STYLE_<LANG>` environment
+    /// variables.
+    #[must_use]
+    pub fn from_env() -> Self {
+        Self::with_overrides(overrides_from_env(|var| std::env::var(var).ok()))
+    }
+}
 
 impl Formatter for Cs50Formatter {
     /// # Errors
@@ -260,9 +358,17 @@ impl Formatter for Cs50Formatter {
     fn format(&self, source: &str, language: Language) -> anyhow::Result<String> {
         // The original style50 library calls leave empty and whitespace-only
         // files untouched (e.g. `autopep8.format_code("") == ""`), so no
-        // external formatter is invoked and the file is reported clean.
+        // formatter — built-in or override — is invoked and the file is
+        // reported clean.
         if source.trim().is_empty() {
             return Ok(source.to_owned());
+        }
+        if let Some(argv) = self.overrides.get(&language) {
+            return run_override(
+                &format!("U50_STYLE_{}", language.env_var_key()),
+                argv,
+                source,
+            );
         }
         match language {
             Language::C | Language::Cpp | Language::Java => {
@@ -297,18 +403,21 @@ impl Formatter for Cs50Formatter {
                 source,
             ),
             Language::Sql => {
-                let mut formatted = run_tool(
-                    "sqlformat",
-                    &[
-                        "--reindent",
-                        "--keywords",
-                        "upper",
-                        "--indent_width",
-                        "4",
-                        "-",
-                    ],
+                // sqlformat-rs is a port of sqlformat.org (NOT the Python
+                // sqlparse library the original style50 uses), so output may
+                // differ slightly for complex queries;
+                // U50_STYLE_SQL="sqlformat --reindent --keywords upper
+                // --indent_width 4 -" restores Python-sqlparse parity.
+                let mut formatted = sqlformat::format(
                     source,
-                )?;
+                    &sqlformat::QueryParams::None,
+                    &sqlformat::FormatOptions {
+                        indent: sqlformat::Indent::Spaces(4),
+                        uppercase: Some(true),
+                        lines_between_queries: 1,
+                        ..Default::default()
+                    },
+                );
                 if !formatted.ends_with('\n') {
                     formatted.push('\n');
                 }
@@ -354,7 +463,7 @@ impl Report {
 /// formatter failures.
 pub fn run(req: &Request) -> anyhow::Result<Report> {
     tracing::debug!(?req, "u50_style::run");
-    let report = run_with(req, &Cs50Formatter)?;
+    let report = run_with(req, &Cs50Formatter::from_env())?;
     if req.output == Output::Json {
         println!("{}", json_document(&report));
     } else {
@@ -606,18 +715,95 @@ mod tests {
     #[test]
     fn required_tool_maps_every_language() {
         let cases = [
-            (Language::C, "clang-format"),
-            (Language::Cpp, "clang-format"),
-            (Language::Java, "clang-format"),
-            (Language::Python, "autopep8"),
-            (Language::JavaScript, "js-beautify"),
-            (Language::Html, "djhtml"),
-            (Language::Css, "css-beautify"),
-            (Language::Sql, "sqlformat"),
+            (Language::C, Some("clang-format")),
+            (Language::Cpp, Some("clang-format")),
+            (Language::Java, Some("clang-format")),
+            (Language::Python, Some("autopep8")),
+            (Language::JavaScript, Some("js-beautify")),
+            (Language::Html, Some("djhtml")),
+            (Language::Css, Some("css-beautify")),
+            (Language::Sql, None),
         ];
         for (language, tool) in cases {
             assert_eq!(language.required_tool(), tool, "for {language:?}");
         }
+    }
+
+    #[test]
+    fn overrides_from_env_parses_lang_keys_and_splits_whitespace() {
+        let vars = |name: &str| match name {
+            "U50_STYLE_PYTHON" => Some("ruff format -".to_owned()),
+            "U50_STYLE_CSS" => Some("biome format --stdin-file-path=stdin.css".to_owned()),
+            _ => None,
+        };
+        let overrides = overrides_from_env(vars);
+        assert_eq!(overrides.len(), 2);
+        assert_eq!(
+            overrides.get(&Language::Python).expect("python override"),
+            &["ruff".to_owned(), "format".to_owned(), "-".to_owned()]
+        );
+        assert_eq!(
+            overrides.get(&Language::Css).expect("css override"),
+            &[
+                "biome".to_owned(),
+                "format".to_owned(),
+                "--stdin-file-path=stdin.css".to_owned()
+            ]
+        );
+    }
+
+    #[test]
+    fn overrides_from_env_ignores_empty_and_unknown_vars() {
+        let vars = |name: &str| match name {
+            "U50_STYLE_SQL" => Some("   ".to_owned()),
+            "U50_STYLE_HTML" => Some(String::new()),
+            "U50_STYLE_RUBY" => Some("rubocop -".to_owned()),
+            _ => None,
+        };
+        assert!(overrides_from_env(vars).is_empty());
+    }
+
+    #[test]
+    fn override_routes_to_custom_tool_via_stdin() {
+        let mut overrides = HashMap::new();
+        overrides.insert(Language::Python, vec!["cat".to_owned()]);
+        let formatter = Cs50Formatter::with_overrides(overrides);
+        assert_eq!(
+            formatter
+                .format("x = 1\n", Language::Python)
+                .expect("cat succeeds"),
+            "x = 1\n"
+        );
+    }
+
+    #[test]
+    fn override_spawn_failure_names_var_and_binary() {
+        let mut overrides = HashMap::new();
+        overrides.insert(
+            Language::Python,
+            vec!["definitely-not-a-real-u50-tool".to_owned()],
+        );
+        let formatter = Cs50Formatter::with_overrides(overrides);
+        let err = formatter
+            .format("x = 1\n", Language::Python)
+            .expect_err("errors");
+        let msg = err.to_string();
+        assert!(msg.contains("U50_STYLE_PYTHON"), "got: {msg}");
+        assert!(msg.contains("definitely-not-a-real-u50-tool"), "got: {msg}");
+    }
+
+    #[test]
+    fn embedded_sql_formats_without_external_tool() {
+        let formatted = Cs50Formatter::default()
+            .format("select a,b from t", Language::Sql)
+            .expect("embedded sql formatting works");
+        assert!(formatted.contains("SELECT"), "got: {formatted}");
+        assert!(formatted.contains("FROM"), "got: {formatted}");
+        assert!(formatted.ends_with('\n'), "got: {formatted}");
+        assert!(
+            formatted.lines().any(|l| l.starts_with("    ")),
+            "got: {formatted}"
+        );
     }
 
     #[test]
@@ -726,8 +912,16 @@ mod tests {
     #[test]
     fn formatter_short_circuits_on_empty_and_whitespace_only_source() {
         for language in [Language::JavaScript, Language::Css] {
-            assert_eq!(Cs50Formatter.format("", language).expect("ok"), "");
-            assert_eq!(Cs50Formatter.format("\n  ", language).expect("ok"), "\n  ");
+            assert_eq!(
+                Cs50Formatter::default().format("", language).expect("ok"),
+                ""
+            );
+            assert_eq!(
+                Cs50Formatter::default()
+                    .format("\n  ", language)
+                    .expect("ok"),
+                "\n  "
+            );
         }
     }
 
@@ -739,7 +933,7 @@ mod tests {
             output: Output::Unified,
             color: false,
         };
-        let report = run_with(&req, &Cs50Formatter).expect("run succeeds");
+        let report = run_with(&req, &Cs50Formatter::default()).expect("run succeeds");
         assert!(report.clean());
         assert!(report.results[0].rendered.is_none());
         std::fs::remove_file(&path).expect("cleanup");
