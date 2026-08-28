@@ -151,7 +151,8 @@ enum StyleOutput {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    init_tracing(&cli);
+    let no_color = std::env::var_os("NO_COLOR").is_some();
+    init_tracing(&cli, no_color);
     let result = match cli.command {
         Command::Check(args) => {
             let outputs = args.outputs.iter().map(|o| map_output_format(*o)).collect();
@@ -162,10 +163,19 @@ fn main() -> ExitCode {
                 outputs,
                 output_file: args.output_file,
             })
+            .map(|()| ExitCode::SUCCESS)
         }
         Command::Style(args) => u50_style::run(&u50_style::Request {
             files: args.files,
             output: map_style_output(args.output),
+            color: resolve_ansi(cli.globals.color, no_color),
+        })
+        .map(|report| {
+            if report.clean() {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::from(1)
+            }
         }),
         Command::Submit(args) => u50_submit::run(&u50_submit::Request {
             slug: args.slug,
@@ -173,14 +183,15 @@ fn main() -> ExitCode {
             ssh: args.ssh,
             dry_run: args.dry_run,
             logout: args.logout,
-        }),
+        })
+        .map(|()| ExitCode::SUCCESS),
     };
     match result {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(code) => code,
         Err(e) => {
             eprintln!("error: {e:#}");
-            // TODO: map check failures / style violations to exit code 1 once
-            // the engines are implemented; 3 remains the infrastructure-error code.
+            // Style violations exit 1 (mapped from the Report above); check
+            // failures are still TODO; 3 remains the infrastructure-error code.
             ExitCode::from(3)
         }
     }
@@ -248,14 +259,13 @@ fn resolve_ansi(color: Color, no_color_set: bool) -> bool {
     }
 }
 
-fn init_tracing(cli: &Cli) {
+fn init_tracing(cli: &Cli, no_color: bool) {
     let level = resolve_level(
         cli.globals.quiet,
         cli.globals.verbose,
         cli.globals.log_level,
     );
-    let no_color_set = std::env::var_os("NO_COLOR").is_some();
-    let ansi = resolve_ansi(cli.globals.color, no_color_set);
+    let ansi = resolve_ansi(cli.globals.color, no_color);
 
     tracing_subscriber::fmt()
         .with_max_level(level)
