@@ -39,12 +39,6 @@ pub enum Language {
     Python,
     /// JavaScript (`.js`).
     JavaScript,
-    /// HTML (`.html`).
-    Html,
-    /// CSS (`.css`).
-    Css,
-    /// SQL (`.sql`).
-    Sql,
 }
 
 impl Language {
@@ -63,17 +57,13 @@ impl Language {
 
     /// The external formatter binary this language's style check depends
     /// on — the same tools (or their CLI counterparts) the original
-    /// style50 invokes per `languages.py`. `None` for SQL, which is
-    /// formatted by the embedded sqlformat-rs library (no external tool).
+    /// style50 invokes per `languages.py`.
     #[must_use]
     pub fn required_tool(self) -> Option<&'static str> {
         match self {
             Self::C | Self::Cpp | Self::Java => Some("clang-format"),
             Self::Python => Some("autopep8"),
             Self::JavaScript => Some("js-beautify"),
-            Self::Html => Some("djhtml"),
-            Self::Css => Some("css-beautify"),
-            Self::Sql => None,
         }
     }
 
@@ -87,16 +77,13 @@ impl Language {
             Self::Java => "JAVA",
             Self::Python => "PYTHON",
             Self::JavaScript => "JAVASCRIPT",
-            Self::Html => "HTML",
-            Self::Css => "CSS",
-            Self::Sql => "SQL",
         }
     }
 }
 
 /// Detects the language of `path` from its file extension
 /// (c/h -> C, cpp/hpp/cc/cxx -> Cpp, java -> Java, py -> Python,
-/// js -> JavaScript, html -> Html, css -> Css, sql -> Sql).
+/// js -> JavaScript).
 #[must_use]
 pub fn detect_language(path: &Path) -> Option<Language> {
     let ext = path.extension()?.to_str()?;
@@ -106,9 +93,6 @@ pub fn detect_language(path: &Path) -> Option<Language> {
         "java" => Some(Language::Java),
         "py" => Some(Language::Python),
         "js" => Some(Language::JavaScript),
-        "html" => Some(Language::Html),
-        "css" => Some(Language::Css),
-        "sql" => Some(Language::Sql),
         _ => None,
     }
 }
@@ -159,10 +143,6 @@ fn missing_tool_message(tool: &str) -> String {
             "`js-beautify` is required to check JavaScript style (pip install jsbeautifier)"
                 .to_owned()
         }
-        "djhtml" => "`djhtml` is required to check HTML style (pip install djhtml)".to_owned(),
-        "css-beautify" => {
-            "`css-beautify` is required to check CSS style (pip install cssbeautifier)".to_owned()
-        }
         other => format!("`{other}` is required"),
     }
 }
@@ -205,9 +185,8 @@ fn run_process(
     Ok(output)
 }
 
-/// Runs a user-provided formatter override (`U50_STYLE_<LANG>`) STRICTLY:
-/// exit 0 is the only success — no djhtml leniency, which applies only to
-/// the built-in djhtml path, never to overrides.
+/// Runs a user-provided formatter override (`U50_STYLE_<LANG>`) strictly:
+/// exit 0 is the only success.
 fn run_override(var: &str, command: &[String], source: &str) -> anyhow::Result<String> {
     let (binary, args) = command
         .split_first()
@@ -239,64 +218,22 @@ fn run_tool(tool: &str, args: &[&str], source: &str) -> anyhow::Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-/// Like [`run_tool`], but tolerant of exit code 1: `djhtml` follows the
-/// `diff`/`black` convention and exits 1 when it reformats the input.
-/// Success = exit 0 (any stdout), or exit 1 with non-empty stdout.
-/// Anything else — including exit 1 with empty stdout — is an error.
-///
-/// # Errors
-/// Returns an error when the binary is missing (with the per-tool install
-/// hint from [`missing_tool_message`]) or fails the convention above.
-fn run_tool_lenient(tool: &str, args: &[&str], source: &str) -> anyhow::Result<String> {
-    let output = run_process(tool, args, source, |e| {
-        anyhow::anyhow!("{}: {e}", missing_tool_message(tool))
-    })?;
-    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    let ok = match output.status.code() {
-        Some(0) => true,
-        Some(1) => !stdout.is_empty(),
-        _ => false,
-    };
-    if ok {
-        Ok(stdout)
-    } else {
-        anyhow::bail!(
-            "`{tool}` failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
-}
-
 /// Formatter backed by the same per-language external formatters the
 /// original style50 uses (`style50/languages.py`): clang-format for
-/// C/C++/Java, autopep8 for Python, js-beautify for JavaScript, djhtml for
-/// HTML, css-beautify for CSS, and sqlformat for SQL. The original calls
-/// the Python libraries directly (`autopep8`, `jsbeautifier`,
-/// `cssbeautifier`, `sqlparse`; `djhtml` as a process); u50 shells out to
-/// the corresponding pip-installed CLIs, which apply the same defaults.
-/// Exact options passed (flag names verified against the installed CLIs;
-/// they mirror the original's library options):
+/// C/C++/Java, autopep8 for Python, and js-beautify for JavaScript. The
+/// original calls the Python libraries directly (`autopep8`,
+/// `jsbeautifier`); u50 shells out to the corresponding pip-installed
+/// CLIs, which apply the same defaults. Exact options passed (flag names
+/// verified against the installed CLIs; they mirror the original's
+/// library options):
 ///
 /// - Python: `autopep8 - --max-line-length=100 --ignore-local-config`
 /// - JavaScript: `js-beautify --end-with-newline --operator-position preserve-newline -w 100 --brace-style collapse,preserve-inline --keep-array-indentation -` — the short `-w 100` form is required because this CLI build declares the long `--wrap-line-length` as taking no argument, and the `-` stdin marker must come last because the CLI stops parsing options at the first positional
-/// - HTML: `djhtml -` (exit 1 on successful reformat is treated as
-///   success, per the diff/black convention; only exit > 1, or exit 1
-///   with empty stdout, is an error)
-/// - CSS: `css-beautify --indent-size 4 --end-with-newline -` (the `-`
-///   stdin marker must come last, as with js-beautify)
-/// - SQL: formatted in-process by the embedded [`sqlformat`] crate (4-
-///   space indent, uppercase keywords, one blank line between queries) —
-///   **sqlformat-rs is a port of sqlformat.org, NOT the Python `sqlparse`
-///   library the original uses**, so output may differ slightly for
-///   complex queries; `U50_STYLE_SQL="sqlformat --reindent --keywords
-///   upper --indent_width 4 -"` restores Python-sqlparse parity. A
-///   trailing newline is appended when missing, as before.
 ///
 /// Any language can additionally be redirected to a custom command line
 /// via the `U50_STYLE_<LANG>` environment variable (see
 /// [`overrides_from_env`]); the source is piped to the custom tool via
-/// stdin and its exit code is treated strictly (exit 0 = success, no
-/// djhtml leniency).
+/// stdin and its exit code is treated strictly (exit 0 = success).
 #[derive(Debug, Clone, Default)]
 pub struct Cs50Formatter {
     /// Per-language override command lines (`U50_STYLE_<LANG>`), private —
@@ -317,9 +254,6 @@ fn overrides_from_env(vars: impl Fn(&str) -> Option<String>) -> HashMap<Language
         Language::Java,
         Language::Python,
         Language::JavaScript,
-        Language::Html,
-        Language::Css,
-        Language::Sql,
     ];
     let mut overrides = HashMap::new();
     for language in languages {
@@ -396,33 +330,6 @@ impl Formatter for Cs50Formatter {
                 ],
                 source,
             ),
-            Language::Html => run_tool_lenient("djhtml", &["-"], source),
-            Language::Css => run_tool(
-                "css-beautify",
-                &["--indent-size", "4", "--end-with-newline", "-"],
-                source,
-            ),
-            Language::Sql => {
-                // sqlformat-rs is a port of sqlformat.org (NOT the Python
-                // sqlparse library the original style50 uses), so output may
-                // differ slightly for complex queries;
-                // U50_STYLE_SQL="sqlformat --reindent --keywords upper
-                // --indent_width 4 -" restores Python-sqlparse parity.
-                let mut formatted = sqlformat::format(
-                    source,
-                    &sqlformat::QueryParams::None,
-                    &sqlformat::FormatOptions {
-                        indent: sqlformat::Indent::Spaces(4),
-                        uppercase: Some(true),
-                        lines_between_queries: 1,
-                        ..Default::default()
-                    },
-                );
-                if !formatted.ends_with('\n') {
-                    formatted.push('\n');
-                }
-                Ok(formatted)
-            }
         }
     }
 }
@@ -491,7 +398,7 @@ pub fn run_with(req: &Request, formatter: &dyn Formatter) -> anyhow::Result<Repo
         let Some(language) = detect_language(path) else {
             anyhow::bail!(
                 "unsupported file type `{}`; supported extensions: \
-                 c, h, cpp, hpp, cc, cxx, java, py, js, html, css, sql",
+                 c, h, cpp, hpp, cc, cxx, java, py, js",
                 path.display()
             );
         };
@@ -702,9 +609,9 @@ mod tests {
             ("a.java", Some(Language::Java)),
             ("a.py", Some(Language::Python)),
             ("a.js", Some(Language::JavaScript)),
-            ("a.html", Some(Language::Html)),
-            ("a.css", Some(Language::Css)),
-            ("a.sql", Some(Language::Sql)),
+            ("a.html", None),
+            ("a.css", None),
+            ("a.sql", None),
             ("a", None),
         ];
         for (name, expected) in cases {
@@ -720,9 +627,6 @@ mod tests {
             (Language::Java, Some("clang-format")),
             (Language::Python, Some("autopep8")),
             (Language::JavaScript, Some("js-beautify")),
-            (Language::Html, Some("djhtml")),
-            (Language::Css, Some("css-beautify")),
-            (Language::Sql, None),
         ];
         for (language, tool) in cases {
             assert_eq!(language.required_tool(), tool, "for {language:?}");
@@ -733,7 +637,7 @@ mod tests {
     fn overrides_from_env_parses_lang_keys_and_splits_whitespace() {
         let vars = |name: &str| match name {
             "U50_STYLE_PYTHON" => Some("ruff format -".to_owned()),
-            "U50_STYLE_CSS" => Some("biome format --stdin-file-path=stdin.css".to_owned()),
+            "U50_STYLE_JAVA" => Some("google-java-format -".to_owned()),
             _ => None,
         };
         let overrides = overrides_from_env(vars);
@@ -743,20 +647,16 @@ mod tests {
             &["ruff".to_owned(), "format".to_owned(), "-".to_owned()]
         );
         assert_eq!(
-            overrides.get(&Language::Css).expect("css override"),
-            &[
-                "biome".to_owned(),
-                "format".to_owned(),
-                "--stdin-file-path=stdin.css".to_owned()
-            ]
+            overrides.get(&Language::Java).expect("java override"),
+            &["google-java-format".to_owned(), "-".to_owned()]
         );
     }
 
     #[test]
     fn overrides_from_env_ignores_empty_and_unknown_vars() {
         let vars = |name: &str| match name {
-            "U50_STYLE_SQL" => Some("   ".to_owned()),
-            "U50_STYLE_HTML" => Some(String::new()),
+            "U50_STYLE_CPP" => Some("   ".to_owned()),
+            "U50_STYLE_JAVASCRIPT" => Some(String::new()),
             "U50_STYLE_RUBY" => Some("rubocop -".to_owned()),
             _ => None,
         };
@@ -790,20 +690,6 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("U50_STYLE_PYTHON"), "got: {msg}");
         assert!(msg.contains("definitely-not-a-real-u50-tool"), "got: {msg}");
-    }
-
-    #[test]
-    fn embedded_sql_formats_without_external_tool() {
-        let formatted = Cs50Formatter::default()
-            .format("select a,b from t", Language::Sql)
-            .expect("embedded sql formatting works");
-        assert!(formatted.contains("SELECT"), "got: {formatted}");
-        assert!(formatted.contains("FROM"), "got: {formatted}");
-        assert!(formatted.ends_with('\n'), "got: {formatted}");
-        assert!(
-            formatted.lines().any(|l| l.starts_with("    ")),
-            "got: {formatted}"
-        );
     }
 
     #[test]
@@ -911,7 +797,7 @@ mod tests {
 
     #[test]
     fn formatter_short_circuits_on_empty_and_whitespace_only_source() {
-        for language in [Language::JavaScript, Language::Css] {
+        for language in [Language::JavaScript, Language::Python] {
             assert_eq!(
                 Cs50Formatter::default().format("", language).expect("ok"),
                 ""
@@ -954,7 +840,7 @@ mod tests {
 
     #[test]
     fn unsupported_extension_errors_with_path() {
-        let path = temp_file("bad.rb", "puts 1\n");
+        let path = temp_file("bad.sql", "select 1;\n");
         let req = Request {
             files: vec![path.clone()],
             output: Output::Unified,

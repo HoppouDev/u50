@@ -39,7 +39,7 @@ u50_submit/           # library crate (submit50 equivalent)
 
 - **Workspace root `Cargo.toml`**: `resolver = "3"`, all dependency versions in `[workspace.dependencies]`, release profile tuned for size (`opt-level = "z"`, `strip`, `lto`, `codegen-units = 1`). Members: `u50_check`, `u50_cli`, `u50_style`, `u50_submit`.
 - **u50_cli/**: the binary crate, `[[bin]] name = "u50"`. Implemented CLI: clap subcommands `check`/`style`/`submit` with global flags, dispatching to the library crates; its `AGENTS.md` defines the CLI design.
-- **u50_check/, u50_style/, u50_submit/**: library crates, one per original cs50 tool. `u50_style`'s engine is implemented (all 8 original languages via external formatters; unified/character/split/json output); `u50_check` and `u50_submit` remain stubs: `run()` bails with a "not implemented yet" error; request types (Request/enums) are defined and dispatched from the CLI. Each has its own `AGENTS.md` with program-specific details.
+- **u50_check/, u50_style/, u50_submit/**: library crates, one per original cs50 tool. `u50_style`'s engine is implemented (the released style50 2.10.4 language set — C/C++/Java via clang-format, Python via autopep8, JavaScript via js-beautify; unified/character/split/json output); `u50_check` and `u50_submit` remain stubs: `run()` bails with a "not implemented yet" error; request types (Request/enums) are defined and dispatched from the CLI. Each has its own `AGENTS.md` with program-specific details.
 
 ## Conventions
 

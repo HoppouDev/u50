@@ -6,13 +6,13 @@ Rust rewrite of [style50](https://github.com/cs50/style50): checks code style an
 
 ## Status
 
-Engine implemented, supporting all 8 original languages: `run(&Request) -> Result<Report>` uses `Cs50Formatter::from_env()` (impl of the `Formatter` trait, injectable via `run_with` for tests without the formatters installed), renders per-file diffs (`character` with inline char emphasis / `split` / `unified` / `json`) and prints them; the CLI maps `Report::clean()` to exit 0/1. SQL is formatted by the embedded `sqlformat` crate (see below); every language can be redirected to a custom formatter via `U50_STYLE_<LANG>` environment variables (see 'Formatter overrides', below).
+Engine implemented, supporting the languages of the RELEASED style50 (2.10.4): `run(&Request) -> Result<Report>` uses `Cs50Formatter::from_env()` (impl of the `Formatter` trait, injectable via `run_with` for tests without the formatters installed), renders per-file diffs (`character` with inline char emphasis / `split` / `unified` / `json`) and prints them; the CLI maps `Report::clean()` to exit 0/1. Every language can be redirected to a custom formatter via `U50_STYLE_<LANG>` environment variables (see 'Formatter overrides', below).
 
-API: `Language` (`detect_language` by extension for all 8 languages; `Language::required_tool() -> Option<&'static str>` names the backing binary, `None` for SQL; `Language::env_var_key()` gives the override variable suffix), `Formatter` trait, `Cs50Formatter` (`Default` = built-in tools with no overrides; `with_overrides(HashMap<Language, Vec<String>>)`; `from_env()`), `Request { files, output, color }`, `FileResult { path, clean, rendered }`, `Report { results }` with `clean()`. Pure renderers (`render_character`/`render_split`/`render_unified`/`json_document`) take `(source, formatted, ...)` and are unit-testable without the tools.
+API: `Language` (`detect_language` by extension for all supported languages; `Language::required_tool() -> Option<&'static str>` names the backing binary; `Language::env_var_key()` gives the override variable suffix), `Formatter` trait, `Cs50Formatter` (`Default` = built-in tools with no overrides; `with_overrides(HashMap<Language, Vec<String>>)`; `from_env()`), `Request { files, output, color }`, `FileResult { path, clean, rendered }`, `Report { results }` with `clean()`. Pure renderers (`render_character`/`render_split`/`render_unified`/`json_document`) take `(source, formatted, ...)` and are unit-testable without the tools.
 
 ## Language support
 
-All 8 languages of the original `style50/languages.py`:
+Exactly the languages of the **released** style50 (2.10.4, per `style50 -E` → `[c, h, cpp, hpp, py, js, java]`). The style50 main branch adds CSS, SQL, and HTML, which u50 deliberately does **not** implement (removed to match the real released surface; recorded here in case they are added back later):
 
 | Language | Extensions | Backend tool | Install hint |
 |---|---|---|---|
@@ -21,22 +21,13 @@ All 8 languages of the original `style50/languages.py`:
 | Java | java | `clang-format` (>= 14) | distro package |
 | Python | py | `autopep8` | `pip install autopep8` |
 | JavaScript | js | `js-beautify` | `pip install jsbeautifier` |
-| HTML | html | `djhtml` | `pip install djhtml` |
-| CSS | css | `css-beautify` | `pip install cssbeautifier` |
-| SQL | sql | embedded [`sqlformat` crate](https://docs.rs/sqlformat) | n/a (compiled in) |
 
 Per-tool options (mirroring the original's `languages.py` option values; flag names verified against the installed CLIs):
 
 - C/C++/Java: `clang-format --assume-filename=<foo.c|foo.cpp|foo.java> -style=<CS50 config>` (config embedded in `CS50_CLANG_FORMAT_CONFIG`, below).
 - Python: `autopep8 - --max-line-length=100 --ignore-local-config` (original: `autopep8.fix_code(..., options={'max_line_length': 100, 'ignore_local_config': True})`).
 - JavaScript: `js-beautify --end-with-newline --operator-position preserve-newline -w 100 --brace-style collapse,preserve-inline --keep-array-indentation -` (original: `jsbeautifier.beautify(...)` with the same option values; the short `-w 100` form is required because the CLI declares the long `--wrap-line-length` as taking no argument, and the `-` stdin marker must come last).
-- HTML: `djhtml -` — **`djhtml` exits 1 when it reformats** (the `diff`/`black` convention); the engine treats exit 0, or exit 1 with non-empty stdout, as success; exit > 1, or exit 1 with empty stdout, is an error.
-- CSS: `css-beautify --indent-size 4 --end-with-newline -` (original: `cssbeautifier.beautify(..., options={'indent_size': 4, 'end_with_newline': True})`; `-` stdin marker last, as with js-beautify).
-- SQL: formatted **in-process by the embedded [`sqlformat` crate](https://docs.rs/sqlformat) ("sqlformat-rs")** with 4-space indent, uppercase keywords, and one blank line between queries — options equivalent to the original's `sqlparse.format(..., reindent=True, keyword_case='upper', indent_width=4)`. A trailing newline is appended when missing, matching the original's SQL class.
-
-The original calls the Python libraries (`autopep8`, `jsbeautifier`, `cssbeautifier`, `sqlparse`) directly and only `djhtml` as a process; u50 shells out to the pip CLIs for the external languages, which apply the same defaults. A missing binary produces a per-language error, e.g. "`autopep8` is required to check Python style (pip install autopep8)".
-
-**SQL divergence warning**: sqlformat-rs is a Rust port of [sqlformat.org](https://sqlformat.org) — **NOT** the Python `sqlparse` library the original style50 uses — so formatted output can differ from the original tool for complex queries (e.g. continuation-line alignment of multi-column SELECT lists). To restore byte-parity with the Python tool, set the override `U50_STYLE_SQL="sqlformat --reindent --keywords upper --indent_width 4 -"` (requires the pip `sqlparse` package, which provides the `sqlformat` CLI).
+The original calls the Python libraries (`autopep8`, `jsbeautifier`) directly; u50 shells out to the pip CLIs, which apply the same defaults. A missing binary produces a per-language error, e.g. "`autopep8` is required to check Python style (pip install autopep8)".
 
 ## Formatter overrides
 
@@ -49,16 +40,13 @@ Any language's formatter can be replaced per invocation via an environment varia
 | `U50_STYLE_JAVA` | Java |
 | `U50_STYLE_PYTHON` | Python |
 | `U50_STYLE_JAVASCRIPT` | JavaScript |
-| `U50_STYLE_HTML` | HTML |
-| `U50_STYLE_CSS` | CSS |
-| `U50_STYLE_SQL` | SQL |
 
 Semantics:
 
 - The variable value is the command line of the replacement formatter, **split on plain whitespace** (no quoting support — arguments cannot contain spaces). The file's source is **piped to the tool via stdin**; its stdout becomes the expected formatting.
 - Empty or whitespace-only values are ignored; unknown `U50_STYLE_*` variables are ignored.
 - Empty/whitespace-only source still short-circuits to "clean" before any override lookup, mirroring the built-in behavior.
-- Exit handling for overrides is **strict**: exit 0 is the only success. The djhtml leniency (exit 1 on successful reformat, per the diff/black convention) applies only to the built-in djhtml path, never to overrides.
+- Exit handling for overrides is **strict**: exit 0 is the only success.
 - Errors name the variable and the binary: spawn failure → "could not run `<binary>` (set via U50_STYLE_<LANG>): ..."; non-zero exit → "formatter `<command line>` failed: <stderr>".
 - Overrides change what "clean" means for that language: a file is clean iff the override tool reproduces its bytes exactly.
 
@@ -66,10 +54,7 @@ Examples:
 
 ```sh
 U50_STYLE_PYTHON="ruff format -" u50 style foo.py
-U50_STYLE_CSS="biome format --stdin-file-path=stdin.css" u50 style foo.css
 U50_STYLE_JAVASCRIPT="biome format --stdin-file-path=stdin.js" u50 style foo.js
-U50_STYLE_HTML="prettier --parser html" u50 style foo.html
-U50_STYLE_SQL="sqlformat --reindent --keywords upper --indent_width 4 -" u50 style foo.sql  # Python-sqlparse parity
 ```
 
 Programmatic use (no process env reads): `Cs50Formatter::with_overrides(HashMap<Language, Vec<String>>)` builds a formatter with explicit overrides; `Cs50Formatter::from_env()` reads the variables. The env parsing itself is a pure function over a lookup closure, so tests pass fake maps and never touch the real environment.
@@ -81,8 +66,8 @@ Findings recorded from the official docs: https://cs50.readthedocs.io/style50/
 ### Usage
 
 - Usage: `style50 <file>` — checks file(s) against CS50's style guide.
-- Languages: C, C++, Java, Python, JavaScript, HTML, CSS, SQL.
-- Under the hood it shells out to per-language external formatters (see 'Language support' below; clang-format >= 14 required for C/C++/Java); SQL is formatted in-process by the embedded sqlformat-rs crate, and any language can be redirected via `U50_STYLE_<LANG>` (see 'Formatter overrides').
+- Languages: C, C++, Java, Python, JavaScript (the readthedocs page also lists HTML, CSS, SQL — main-branch only, absent from the released style50 2.10.4; u50 deliberately does not implement them, see 'Language support').
+- Under the hood it shells out to per-language external formatters (see 'Language support' below; clang-format >= 14 required for C/C++/Java); any language can be redirected via `U50_STYLE_<LANG>` (see 'Formatter overrides').
 
 ### Output
 
@@ -122,5 +107,18 @@ clang-format >= 14 is required; when a formatter binary is missing the engine er
 
 - `-i` (in-place fix), `--ignore`, `--clang-format-style` (custom style override).
 - `score` and `html` output modes (style50 v2 features).
+- comment-count hints (style50's "But consider adding more comments!" suggestion).
+
+## Verified against style50 2.10.4
+
+Findings below were empirically verified live against the installed `/usr/bin/style50` (v2.10.4).
+
+- **Formatter parity**: for C, C++, Java, Python, and JavaScript, u50's expected formatting is BYTE-IDENTICAL to style50's own (reconstructed from `style50 -o unified` diffs), and each tool accepts the other's output as clean in both directions. Python/JS output also byte-identical to the underlying CLIs (`autopep8`/`js-beautify`) run directly.
+- Installed style50 2.10.4 `style50 -E` = `[c, h, cpp, hpp, py, js, java]` — it does NOT support css/sql/html (the 8-language support is newer/main-branch). u50 now matches the released language set exactly: CSS, SQL, and HTML support was removed (the `sqlformat` dependency was dropped with it), leaving no language u50 accepts that style50 2.10.4 rejects.
+- **Exit codes**: style50 2.10.4 exits 0 even when the file has violations; u50 exits 1 (deliberate, documented in `u50_cli/AGENTS.md`).
+- style50 skips unknown file types with a warning (rc=0); u50 errors with exit 3.
+- **Presentation divergences (cosmetic)**: style50 prints a "Results generated by style50 vX" banner, "Looks good!", comment-count hints ("But consider adding more comments!" — a feature u50 lacks), and a "\n means insert a newline" legend in character mode; style50's character mode renders the original text with ins/del spans while u50 renders -/+ lines; style50's unified mode is not a patchable git diff (no `@@`/`---`/`+++`), u50's is.
+- **JSON schema differs by design**: style50 emits `{files: [{name, score, comments, diff(html), warn_chars, loc}], score, version}`; u50 emits `{clean, files: [{path, clean, patch}]}`.
+- style50 colors via `termcolor` (tty-aware); u50's `--color auto` honors `NO_COLOR` but has no tty check (colored output when piped).
 
 Workspace-wide conventions (Rust edition 2024, workspace dependencies, clippy pedantic, CI gates) live in the root [AGENTS.md](../AGENTS.md) and are not repeated here.
