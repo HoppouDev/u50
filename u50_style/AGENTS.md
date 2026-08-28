@@ -19,7 +19,7 @@ Exactly the languages of the **released** style50 (2.10.4, per `style50 -E` → 
 | Language | Extensions | Backend tool | Install hint |
 |---|---|---|---|
 | C | c, h | `clang-format` (>= 14) | distro package |
-| C++ | cpp, hpp, cc, cxx | `clang-format` (>= 14) | distro package |
+| C++ | cpp, hpp | `clang-format` (>= 14) | distro package |
 | Java | java | `clang-format` (>= 14) | distro package |
 | Python | py | `autopep8` | `pip install autopep8` |
 | JavaScript | js | `js-beautify` | `pip install jsbeautifier` |

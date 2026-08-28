@@ -7,7 +7,7 @@ use std::path::Path;
 pub enum Language {
     /// C (`.c`, `.h`).
     C,
-    /// C++ (`.cpp`, `.hpp`, `.cc`, `.cxx`).
+    /// C++ (`.cpp`, `.hpp`).
     Cpp,
     /// Java (`.java`).
     Java,
@@ -58,14 +58,14 @@ impl Language {
 }
 
 /// Detects the language of `path` from its file extension
-/// (c/h -> C, cpp/hpp/cc/cxx -> Cpp, java -> Java, py -> Python,
+/// (c/h -> C, cpp/hpp -> Cpp, java -> Java, py -> Python,
 /// js -> JavaScript).
 #[must_use]
 pub fn detect_language(path: &Path) -> Option<Language> {
     let ext = path.extension()?.to_str()?;
     match ext {
         "c" | "h" => Some(Language::C),
-        "cpp" | "hpp" | "cc" | "cxx" => Some(Language::Cpp),
+        "cpp" | "hpp" => Some(Language::Cpp),
         "java" => Some(Language::Java),
         "py" => Some(Language::Python),
         "js" => Some(Language::JavaScript),

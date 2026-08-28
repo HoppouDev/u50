@@ -47,7 +47,7 @@ pub fn run_with(req: &Request, formatter: &dyn Formatter) -> Report {
             let Some(language) = detect_language(path) else {
                 anyhow::bail!(
                     "unsupported file type `{}`; supported extensions: \
-                     c, h, cpp, hpp, cc, cxx, java, py, js",
+                     c, h, cpp, hpp, java, py, js",
                     path.display()
                 );
             };
