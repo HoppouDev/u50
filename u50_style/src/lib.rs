@@ -34,23 +34,51 @@ pub enum Language {
     Cpp,
     /// Java (`.java`).
     Java,
+    /// Python (`.py`).
+    Python,
+    /// JavaScript (`.js`).
+    JavaScript,
+    /// HTML (`.html`).
+    Html,
+    /// CSS (`.css`).
+    Css,
+    /// SQL (`.sql`).
+    Sql,
 }
 
 impl Language {
     /// Canonical file name used with `--assume-filename` so clang-format
-    /// picks the right lexer for the language.
+    /// picks the right lexer for the language (only meaningful for the
+    /// clang-format-backed languages).
     #[must_use]
     fn file_name(self) -> &'static str {
         match self {
             Self::C => "foo.c",
             Self::Cpp => "foo.cpp",
             Self::Java => "foo.java",
+            _ => unreachable!("clang-format backend only handles C, C++, and Java"),
+        }
+    }
+
+    /// The external formatter binary this language's style check depends
+    /// on — the same tools (or their CLI counterparts) the original
+    /// style50 invokes per `languages.py`.
+    #[must_use]
+    pub fn required_tool(self) -> &'static str {
+        match self {
+            Self::C | Self::Cpp | Self::Java => "clang-format",
+            Self::Python => "autopep8",
+            Self::JavaScript => "js-beautify",
+            Self::Html => "djhtml",
+            Self::Css => "css-beautify",
+            Self::Sql => "sqlformat",
         }
     }
 }
 
 /// Detects the language of `path` from its file extension
-/// (c/h -> C, cpp/hpp/cc/cxx -> Cpp, java -> Java).
+/// (c/h -> C, cpp/hpp/cc/cxx -> Cpp, java -> Java, py -> Python,
+/// js -> JavaScript, html -> Html, css -> Css, sql -> Sql).
 #[must_use]
 pub fn detect_language(path: &Path) -> Option<Language> {
     let ext = path.extension()?.to_str()?;
@@ -58,6 +86,11 @@ pub fn detect_language(path: &Path) -> Option<Language> {
         "c" | "h" => Some(Language::C),
         "cpp" | "hpp" | "cc" | "cxx" => Some(Language::Cpp),
         "java" => Some(Language::Java),
+        "py" => Some(Language::Python),
+        "js" => Some(Language::JavaScript),
+        "html" => Some(Language::Html),
+        "css" => Some(Language::Css),
+        "sql" => Some(Language::Sql),
         _ => None,
     }
 }
@@ -96,41 +129,186 @@ pub trait Formatter {
     fn format(&self, source: &str, language: Language) -> anyhow::Result<String>;
 }
 
-/// Formatter backed by the external `clang-format` binary with CS50's style
-/// configuration (the same approach the original style50 uses).
-#[derive(Debug, Clone, Copy, Default)]
-pub struct ClangFormat;
-
-impl Formatter for ClangFormat {
-    /// # Errors
-    /// Returns an error when clang-format is missing or exits unsuccessfully.
-    fn format(&self, source: &str, language: Language) -> anyhow::Result<String> {
-        let mut child = Command::new("clang-format")
-            .arg(format!("--assume-filename={}", language.file_name()))
-            .arg(format!("-style={CS50_CLANG_FORMAT_CONFIG}"))
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| {
-                anyhow::anyhow!("clang-format is required (>= 14) to check C/C++/Java style: {e}")
-            })?;
-        let mut stdin = child.stdin.take().ok_or_else(|| {
-            anyhow::anyhow!("clang-format is required (>= 14) to check C/C++/Java style")
-        })?;
-        let source = source.to_owned();
-        let writer = std::thread::spawn(move || {
-            let _ = stdin.write_all(source.as_bytes());
-        });
-        let output = child.wait_with_output()?;
-        let _ = writer.join();
-        if !output.status.success() {
-            anyhow::bail!(
-                "clang-format failed: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            );
+/// The actionable message shown when the formatter binary `tool` is
+/// missing (per language, with an install hint).
+fn missing_tool_message(tool: &str) -> String {
+    match tool {
+        "clang-format" => "clang-format is required (>= 14) to check C/C++/Java style".to_owned(),
+        "autopep8" => {
+            "`autopep8` is required to check Python style (pip install autopep8)".to_owned()
         }
-        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+        "js-beautify" => {
+            "`js-beautify` is required to check JavaScript style (pip install jsbeautifier)"
+                .to_owned()
+        }
+        "djhtml" => "`djhtml` is required to check HTML style (pip install djhtml)".to_owned(),
+        "css-beautify" => {
+            "`css-beautify` is required to check CSS style (pip install cssbeautifier)".to_owned()
+        }
+        "sqlformat" => {
+            "`sqlformat` is required to check SQL style (pip install sqlparse)".to_owned()
+        }
+        other => format!("`{other}` is required"),
+    }
+}
+
+/// Runs `tool` with `args`, feeding `source` on stdin, and returns its
+/// stdout. Writes stdin from a separate thread so a child that fills its
+/// stdout pipe cannot deadlock against us still writing its stdin.
+///
+/// # Errors
+/// Returns an error when the binary is missing (with the per-tool install
+/// hint from [`missing_tool_message`]) or exits unsuccessfully.
+fn run_tool(tool: &str, args: &[&str], source: &str) -> anyhow::Result<String> {
+    let mut child = Command::new(tool)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| anyhow::anyhow!("{}: {e}", missing_tool_message(tool)))?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("could not attach stdin to `{tool}`"))?;
+    let source = source.to_owned();
+    let writer = std::thread::spawn(move || {
+        let _ = stdin.write_all(source.as_bytes());
+    });
+    let output = child.wait_with_output()?;
+    let _ = writer.join();
+    if !output.status.success() {
+        anyhow::bail!(
+            "`{tool}` failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// Like [`run_tool`], but tolerant of exit code 1: `djhtml` follows the
+/// `diff`/`black` convention and exits 1 when it reformats the input.
+/// Success = exit 0 (any stdout), or exit 1 with non-empty stdout.
+/// Anything else — including exit 1 with empty stdout — is an error.
+///
+/// # Errors
+/// Returns an error when the binary is missing (with the per-tool install
+/// hint from [`missing_tool_message`]) or fails the convention above.
+fn run_tool_lenient(tool: &str, args: &[&str], source: &str) -> anyhow::Result<String> {
+    let mut child = Command::new(tool)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| anyhow::anyhow!("{}: {e}", missing_tool_message(tool)))?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("could not attach stdin to `{tool}`"))?;
+    let source = source.to_owned();
+    let writer = std::thread::spawn(move || {
+        let _ = stdin.write_all(source.as_bytes());
+    });
+    let output = child.wait_with_output()?;
+    let _ = writer.join();
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let ok = match output.status.code() {
+        Some(0) => true,
+        Some(1) => !stdout.is_empty(),
+        _ => false,
+    };
+    if ok {
+        Ok(stdout)
+    } else {
+        anyhow::bail!(
+            "`{tool}` failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+}
+
+/// Formatter backed by the same per-language external formatters the
+/// original style50 uses (`style50/languages.py`): clang-format for
+/// C/C++/Java, autopep8 for Python, js-beautify for JavaScript, djhtml for
+/// HTML, css-beautify for CSS, and sqlformat for SQL. The original calls
+/// the Python libraries directly (`autopep8`, `jsbeautifier`,
+/// `cssbeautifier`, `sqlparse`; `djhtml` as a process); u50 shells out to
+/// the corresponding pip-installed CLIs, which apply the same defaults.
+/// Exact options passed (flag names verified against the installed CLIs;
+/// they mirror the original's library options):
+///
+/// - Python: `autopep8 - --max-line-length=100 --ignore-local-config`
+/// - JavaScript: `js-beautify --end-with-newline --operator-position preserve-newline -w 100 --brace-style collapse,preserve-inline --keep-array-indentation -` — the short `-w 100` form is required because this CLI build declares the long `--wrap-line-length` as taking no argument, and the `-` stdin marker must come last because the CLI stops parsing options at the first positional
+/// - HTML: `djhtml -` (exit 1 on successful reformat is treated as
+///   success, per the diff/black convention; only exit > 1, or exit 1
+///   with empty stdout, is an error)
+/// - CSS: `css-beautify --indent-size 4 --end-with-newline -` (the `-`
+///   stdin marker must come last, as with js-beautify)
+/// - SQL: `sqlformat --reindent --keywords upper --indent_width 4 -` (the
+///   CLI takes a single FILE positional, `-` = stdin, and writes to
+///   stdout; unlike the `sqlparse` library it does not end output with a
+///   newline, so a trailing newline is appended when missing — matching
+///   the original's SQL class)
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Cs50Formatter;
+
+impl Formatter for Cs50Formatter {
+    /// # Errors
+    /// Returns an error when the language's formatter is missing or exits
+    /// unsuccessfully.
+    fn format(&self, source: &str, language: Language) -> anyhow::Result<String> {
+        match language {
+            Language::C | Language::Cpp | Language::Java => {
+                let assume = format!("--assume-filename={}", language.file_name());
+                let style = format!("-style={CS50_CLANG_FORMAT_CONFIG}");
+                run_tool("clang-format", &[assume.as_str(), style.as_str()], source)
+            }
+            Language::Python => run_tool(
+                "autopep8",
+                &["-", "--max-line-length=100", "--ignore-local-config"],
+                source,
+            ),
+            Language::JavaScript => run_tool(
+                "js-beautify",
+                &[
+                    "--end-with-newline",
+                    "--operator-position",
+                    "preserve-newline",
+                    "-w",
+                    "100",
+                    "--brace-style",
+                    "collapse,preserve-inline",
+                    "--keep-array-indentation",
+                    "-",
+                ],
+                source,
+            ),
+            Language::Html => run_tool_lenient("djhtml", &["-"], source),
+            Language::Css => run_tool(
+                "css-beautify",
+                &["--indent-size", "4", "--end-with-newline", "-"],
+                source,
+            ),
+            Language::Sql => {
+                let mut formatted = run_tool(
+                    "sqlformat",
+                    &[
+                        "--reindent",
+                        "--keywords",
+                        "upper",
+                        "--indent_width",
+                        "4",
+                        "-",
+                    ],
+                    source,
+                )?;
+                if !formatted.ends_with('\n') {
+                    formatted.push('\n');
+                }
+                Ok(formatted)
+            }
+        }
     }
 }
 
@@ -161,7 +339,7 @@ impl Report {
     }
 }
 
-/// Runs the style check for `req` using the clang-format-backed formatter,
+/// Runs the style check for `req` using the CS50 formatter stack
 /// printing results (the only place this crate prints) and returning the
 /// report so the caller can decide the exit code.
 ///
@@ -170,7 +348,7 @@ impl Report {
 /// formatter failures.
 pub fn run(req: &Request) -> anyhow::Result<Report> {
     tracing::debug!(?req, "u50_style::run");
-    let report = run_with(req, &ClangFormat)?;
+    let report = run_with(req, &Cs50Formatter)?;
     if req.output == Output::Json {
         println!("{}", json_document(&report));
     } else {
@@ -183,8 +361,8 @@ pub fn run(req: &Request) -> anyhow::Result<Report> {
     Ok(report)
 }
 
-/// Like [`run`], but injects the formatter so tests can run without
-/// clang-format installed. Builds no output for the caller; rendering lives
+/// Like [`run`], but injects the formatter so tests can run without the
+/// external formatter binaries installed. Builds no output for the caller; rendering lives
 /// on the [`FileResult`]s.
 ///
 /// # Errors
@@ -198,7 +376,7 @@ pub fn run_with(req: &Request, formatter: &dyn Formatter) -> anyhow::Result<Repo
         let Some(language) = detect_language(path) else {
             anyhow::bail!(
                 "unsupported file type `{}`; supported extensions: \
-                 c, h, cpp, hpp, cc, cxx, java",
+                 c, h, cpp, hpp, cc, cxx, java, py, js, html, css, sql",
                 path.display()
             );
         };
@@ -407,12 +585,40 @@ mod tests {
             ("a.cc", Some(Language::Cpp)),
             ("a.cxx", Some(Language::Cpp)),
             ("a.java", Some(Language::Java)),
-            ("a.py", None),
+            ("a.py", Some(Language::Python)),
+            ("a.js", Some(Language::JavaScript)),
+            ("a.html", Some(Language::Html)),
+            ("a.css", Some(Language::Css)),
+            ("a.sql", Some(Language::Sql)),
             ("a", None),
         ];
         for (name, expected) in cases {
             assert_eq!(detect_language(Path::new(name)), expected, "for {name}");
         }
+    }
+
+    #[test]
+    fn required_tool_maps_every_language() {
+        let cases = [
+            (Language::C, "clang-format"),
+            (Language::Cpp, "clang-format"),
+            (Language::Java, "clang-format"),
+            (Language::Python, "autopep8"),
+            (Language::JavaScript, "js-beautify"),
+            (Language::Html, "djhtml"),
+            (Language::Css, "css-beautify"),
+            (Language::Sql, "sqlformat"),
+        ];
+        for (language, tool) in cases {
+            assert_eq!(language.required_tool(), tool, "for {language:?}");
+        }
+    }
+
+    #[test]
+    fn run_tool_missing_binary_names_the_tool() {
+        let err = run_tool("definitely-not-a-real-u50-tool", &[], "x").expect_err("errors");
+        assert!(err.to_string().contains("definitely-not-a-real-u50-tool"));
+        assert!(err.to_string().contains("is required"));
     }
 
     #[test]
@@ -526,7 +732,7 @@ mod tests {
 
     #[test]
     fn unsupported_extension_errors_with_path() {
-        let path = temp_file("bad.py", "print(1)\n");
+        let path = temp_file("bad.rb", "puts 1\n");
         let req = Request {
             files: vec![path.clone()],
             output: Output::Unified,
