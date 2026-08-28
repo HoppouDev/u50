@@ -766,6 +766,9 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "u50_check",
+ "u50_style",
+ "u50_submit",
 ]
 
 [[package]]

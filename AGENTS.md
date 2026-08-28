@@ -38,7 +38,7 @@ u50_submit/           # library crate (submit50 equivalent)
 ```
 
 - **Workspace root `Cargo.toml`**: `resolver = "3"`, all dependency versions in `[workspace.dependencies]`, release profile tuned for size (`opt-level = "z"`, `strip`, `lto`, `codegen-units = 1`). Members: `u50_check`, `u50_cli`, `u50_style`, `u50_submit`.
-- **u50_cli/**: the binary crate, `[[bin]] name = "u50"`. Uses a clap `Parser`-derived `Args` struct and an async `main` returning `anyhow::Result<()>` (tokio); its `AGENTS.md` defines the CLI design. Currently a scaffold with a placeholder `Args`; new subcommands should be added via clap derive and dispatch to the corresponding library crate.
+- **u50_cli/**: the binary crate, `[[bin]] name = "u50"`. Implemented CLI: clap subcommands `check`/`style`/`submit` with global flags, dispatching to the library crates; its `AGENTS.md` defines the CLI design.
 - **u50_check/, u50_style/, u50_submit/**: library crates, one per original cs50 tool. Currently stubs (`lib.rs` containing only `#![warn(clippy::pedantic)]`). Their concrete behavior is future work. Each has its own `AGENTS.md` with program-specific details.
 
 ## Conventions

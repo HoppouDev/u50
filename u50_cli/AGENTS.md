@@ -1,5 +1,7 @@
 # u50_cli — unified binary (u50)
 
+> **Status:** the CLI layer is implemented; the three library crates (`u50_check`, `u50_style`, `u50_submit`) remain stubs returning "not implemented yet" errors (exit 3).
+
 The `u50` binary replaces the separate check50/style50/submit50 command-line tools with a single program: clap 4 derive defines the interface, and each subcommand dispatches to the corresponding library crate (`u50_check`, `u50_style`, `u50_submit`).
 
 ## CLI design (modernized — deliberate divergence from originals)
