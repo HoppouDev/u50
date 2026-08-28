@@ -47,19 +47,34 @@ pub fn run_with(req: &Request, formatter: &dyn Formatter) -> Report {
             let Some(language) = detect_language(path) else {
                 anyhow::bail!(
                     "unsupported file type `{}`; supported extensions: \
-                     c, h, cpp, hpp, java, py, js",
+                     c, h, cpp, hpp, java, py, js, html, css, sql",
                     path.display()
                 );
             };
-            let expected = formatter.format(&source, language)?;
-            let clean = source == expected;
+            // style50 3.0.0 input normalization (`_api.py`): rstrip every
+            // line, join with `\n`, and ensure a trailing `\n` before
+            // formatting and comparison. Empty/whitespace-only files
+            // normalize to "" and are a per-file error ("file is empty").
+            let mut normalized = source
+                .lines()
+                .map(str::trim_end)
+                .collect::<Vec<_>>()
+                .join("\n");
+            if normalized.trim().is_empty() {
+                anyhow::bail!("file is empty");
+            }
+            if !normalized.ends_with('\n') {
+                normalized.push('\n');
+            }
+            let expected = formatter.format(&normalized, language)?;
+            let clean = normalized == expected;
             let rendered = if clean {
                 None
             } else {
                 Some(match req.output {
-                    Output::Character => render_character(&source, &expected, req.color),
-                    Output::Split => render_split(&source, &expected, req.color),
-                    Output::Unified | Output::Json => render_unified(&source, &expected, path),
+                    Output::Character => render_character(&normalized, &expected, req.color),
+                    Output::Split => render_split(&normalized, &expected, req.color),
+                    Output::Unified | Output::Json => render_unified(&normalized, &expected, path),
                 })
             };
             Ok(FileResult {

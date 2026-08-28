@@ -95,17 +95,43 @@ pub(crate) fn run_tool(tool: &str, args: &[&str], source: &str) -> anyhow::Resul
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
+/// Runs `tool` with `args`, feeding `source` on stdin, tolerating the
+/// "exit 1 means reformatted" diff/black exit-code convention followed
+/// by older `djhtml` releases (the convention `style50/languages.py`
+/// documents for it): exit 0 is success, and exit 1 with non-empty
+/// stdout is also treated as success; anything else is an error. The
+/// installed djhtml 3.0.6 always exits 0 (the source comment is stale
+/// for it), so in practice the strict path is what runs — the leniency
+/// keeps u50 compatible with older djhtml versions too.
+fn run_tool_lenient(tool: &str, args: &[&str], source: &str) -> anyhow::Result<String> {
+    let output = run_process(tool, args, source, |e| {
+        anyhow::anyhow!("{}: {e}", missing_tool_message(tool))
+    })?;
+    let reformatted_on_exit_1 = output.status.code() == Some(1) && !output.stdout.is_empty();
+    if !output.status.success() && !reformatted_on_exit_1 {
+        anyhow::bail!(
+            "`{tool}` failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
 /// Formatter backed by the same per-language external formatters the
-/// original style50 uses (`style50/languages.py`): clang-format for
-/// C/C++/Java, autopep8 for Python, and js-beautify for JavaScript. The
+/// original style50 (3.0.0) uses (`style50/languages.py`): clang-format
+/// for C/C++/Java, autopep8 for Python, js-beautify for JavaScript,
+/// djhtml for HTML, cssbeautifier for CSS, and sqlparse for SQL. The
 /// original calls the Python libraries directly (`autopep8`,
-/// `jsbeautifier`); u50 shells out to the corresponding pip-installed
-/// CLIs, which apply the same defaults. Exact options passed (flag names
-/// verified against the installed CLIs; they mirror the original's
-/// library options):
+/// `jsbeautifier`, `cssbeautifier`, `sqlparse`); u50 shells out to the
+/// corresponding pip-installed CLIs, which apply the same defaults. Exact
+/// options passed (flag names verified against the installed CLIs; they
+/// mirror the original's library options):
 ///
 /// - Python: `autopep8 - --max-line-length=100 --ignore-local-config`
 /// - JavaScript: `js-beautify --end-with-newline --operator-position preserve-newline -w 100 --brace-style collapse,preserve-inline --keep-array-indentation -` — the short `-w 100` form is required because this CLI build declares the long `--wrap-line-length` as taking no argument, and the `-` stdin marker must come last because the CLI stops parsing options at the first positional
+/// - HTML: `djhtml -` via the lenient runner ([`run_tool_lenient`])
+/// - CSS: `css-beautify --indent-size 4 --end-with-newline -` — verified byte-identical to the `cssbeautifier.beautify` call the original makes with `indent_size = 4, end_with_newline = True`
+/// - SQL: `sqlformat -k upper -r --indent_width 4 -` with a `\n` appended when missing — verified byte-identical to the original's `sqlparse.format(code, reindent=True, keyword_case="upper", indent_width=4)` plus its trailing-newline fix-up
 ///
 /// Any language can additionally be redirected to a custom command line
 /// via the `U50_STYLE_<LANG>` environment variable (see
@@ -133,6 +159,9 @@ pub(crate) fn overrides_from_env(
         Language::Java,
         Language::Python,
         Language::JavaScript,
+        Language::Html,
+        Language::Css,
+        Language::Sql,
     ];
     let mut overrides = HashMap::new();
     for language in languages {
@@ -169,10 +198,11 @@ impl Formatter for Cs50Formatter {
     /// Returns an error when the language's formatter is missing or exits
     /// unsuccessfully.
     fn format(&self, source: &str, language: Language) -> anyhow::Result<String> {
-        // The original style50 library calls leave empty and whitespace-only
-        // files untouched (e.g. `autopep8.format_code("") == ""`), so no
-        // formatter — built-in or override — is invoked and the file is
-        // reported clean.
+        // style50 3.0.0 raises "file is empty" for empty/whitespace-only
+        // files before ever calling a formatter (engine.rs now implements
+        // that), so this short-circuit is only a safety net for direct
+        // `Formatter::format` callers; empty input no longer reaches it
+        // through the engine.
         if source.trim().is_empty() {
             return Ok(source.to_owned());
         }
@@ -209,6 +239,23 @@ impl Formatter for Cs50Formatter {
                 ],
                 source,
             ),
+            Language::Html => run_tool_lenient("djhtml", &["-"], source),
+            Language::Css => run_tool(
+                "css-beautify",
+                &["--indent-size", "4", "--end-with-newline", "-"],
+                source,
+            ),
+            Language::Sql => {
+                let mut formatted = run_tool(
+                    "sqlformat",
+                    &["-k", "upper", "-r", "--indent_width", "4", "-"],
+                    source,
+                )?;
+                if !formatted.ends_with('\n') {
+                    formatted.push('\n');
+                }
+                Ok(formatted)
+            }
         }
     }
 }

@@ -31,6 +31,25 @@ impl Formatter for Reindent {
     }
 }
 
+/// Formatter that rstrips every line and ensures a trailing newline
+/// (models a formatter whose output equals style50 3.0.0's normalized
+/// input, e.g. a tool that only strips trailing whitespace).
+struct Rstrip;
+
+impl Formatter for Rstrip {
+    fn format(&self, source: &str, _language: Language) -> anyhow::Result<String> {
+        let mut out = source
+            .lines()
+            .map(str::trim_end)
+            .collect::<Vec<_>>()
+            .join("\n");
+        if !out.ends_with('\n') {
+            out.push('\n');
+        }
+        Ok(out)
+    }
+}
+
 /// Formatter that always fails (models a broken external tool).
 struct Failing;
 
@@ -58,9 +77,9 @@ fn detect_language_maps_extensions() {
         ("a.java", Some(Language::Java)),
         ("a.py", Some(Language::Python)),
         ("a.js", Some(Language::JavaScript)),
-        ("a.html", None),
-        ("a.css", None),
-        ("a.sql", None),
+        ("a.html", Some(Language::Html)),
+        ("a.css", Some(Language::Css)),
+        ("a.sql", Some(Language::Sql)),
         ("a", None),
     ];
     for (name, expected) in cases {
@@ -76,6 +95,9 @@ fn required_tool_maps_every_language() {
         (Language::Java, Some("clang-format")),
         (Language::Python, Some("autopep8")),
         (Language::JavaScript, Some("js-beautify")),
+        (Language::Html, Some("djhtml")),
+        (Language::Css, Some("css-beautify")),
+        (Language::Sql, Some("sqlformat")),
     ];
     for (language, tool) in cases {
         assert_eq!(language.required_tool(), tool, "for {language:?}");
@@ -286,16 +308,82 @@ fn formatter_short_circuits_on_empty_and_whitespace_only_source() {
 }
 
 #[test]
-fn run_with_empty_js_file_is_clean() {
+fn empty_file_is_a_per_file_error() {
     let path = temp_file("empty.js", "");
     let req = Request {
         files: vec![path.clone()],
         output: Output::Unified,
         color: false,
     };
-    let report = run_with(&req, &Cs50Formatter::default());
-    assert!(report.clean());
+    let report = run_with(&req, &Identity);
+    assert!(report.has_errors());
+    assert!(report.results.is_empty());
+    assert_eq!(report.errors.len(), 1);
+    assert_eq!(&report.errors[0].0, &path);
+    assert_eq!(report.errors[0].1, "file is empty");
+    std::fs::remove_file(&path).expect("cleanup");
+}
+
+#[test]
+fn whitespace_only_file_is_a_per_file_error() {
+    let path = temp_file("blank.js", " \n\t\n");
+    let req = Request {
+        files: vec![path.clone()],
+        output: Output::Unified,
+        color: false,
+    };
+    let report = run_with(&req, &Identity);
+    assert!(report.has_errors());
+    assert!(report.results.is_empty());
+    assert_eq!(report.errors.len(), 1);
+    assert_eq!(report.errors[0].1, "file is empty");
+    std::fs::remove_file(&path).expect("cleanup");
+}
+
+#[test]
+fn normalization_trailing_whitespace_is_not_flagged() {
+    // style50 3.0.0 rstrips every line before formatting, so trailing
+    // whitespace never makes a file dirty (Rstrip's output equals the
+    // normalized input).
+    let path = temp_file("trailing.js", "x = 1   \ny = 2\t\n");
+    let req = Request {
+        files: vec![path.clone()],
+        output: Output::Unified,
+        color: false,
+    };
+    let report = run_with(&req, &Rstrip);
+    assert!(!report.has_errors());
+    assert_eq!(report.results.len(), 1);
+    assert!(report.results[0].clean);
     assert!(report.results[0].rendered.is_none());
+    std::fs::remove_file(&path).expect("cleanup");
+}
+
+#[test]
+fn normalization_appends_missing_trailing_newline() {
+    let path = temp_file("nonewline.js", "x = 1");
+    let req = Request {
+        files: vec![path.clone()],
+        output: Output::Unified,
+        color: false,
+    };
+    let report = run_with(&req, &Identity);
+    assert!(!report.has_errors());
+    assert!(report.results[0].clean);
+    std::fs::remove_file(&path).expect("cleanup");
+}
+
+#[test]
+fn normalization_converts_crlf_to_lf() {
+    let path = temp_file("crlf.js", "x = 1\r\ny = 2\r\n");
+    let req = Request {
+        files: vec![path.clone()],
+        output: Output::Unified,
+        color: false,
+    };
+    let report = run_with(&req, &Identity);
+    assert!(!report.has_errors());
+    assert!(report.results[0].clean);
     std::fs::remove_file(&path).expect("cleanup");
 }
 
@@ -315,7 +403,7 @@ fn empty_request_is_clean() {
 
 #[test]
 fn unsupported_extension_errors_with_path() {
-    let path = temp_file("bad.sql", "select 1;\n");
+    let path = temp_file("bad.rb", "puts 1\n");
     let req = Request {
         files: vec![path.clone()],
         output: Output::Unified,

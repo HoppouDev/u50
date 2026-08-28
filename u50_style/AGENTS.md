@@ -6,7 +6,7 @@ Rust rewrite of [style50](https://github.com/cs50/style50): checks code style an
 
 ## Status
 
-Engine implemented, supporting the languages of the RELEASED style50 (2.10.4): `run(&Request) -> Result<Report>` uses `Cs50Formatter::from_env()` (impl of the `Formatter` trait, injectable via `run_with` for tests without the formatters installed), renders per-file diffs (`character` with inline char emphasis / `split` / `unified` / `json`) and prints them; the CLI maps `Report::clean()` to exit 0/1. Every language can be redirected to a custom formatter via `U50_STYLE_<LANG>` environment variables (see 'Formatter overrides', below).
+Engine implemented, supporting all 8 languages of style50 3.0.0: `run(&Request) -> Result<Report>` uses `Cs50Formatter::from_env()` (impl of the `Formatter` trait, injectable via `run_with` for tests without the formatters installed), renders per-file diffs (`character` with inline char emphasis / `split` / `unified` / `json`) and prints them; the CLI maps `Report::clean()` to exit 0/1. Every language can be redirected to a custom formatter via `U50_STYLE_<LANG>` environment variables (see 'Formatter overrides', below).
 
 API: `Language` (`detect_language` by extension for all supported languages; `Language::required_tool() -> Option<&'static str>` names the backing binary; `Language::env_var_key()` gives the override variable suffix), `Formatter` trait, `Cs50Formatter` (`Default` = built-in tools with no overrides; `with_overrides(HashMap<Language, Vec<String>>)`; `from_env()`), `Request { files, output, color }`, `FileResult { path, clean, rendered }`, `Report { results, errors }` with `clean()` and `has_errors()`. Pure renderers (`render_character`/`render_split`/`render_unified`/`json_document`) take `(source, formatted, ...)` and are unit-testable without the tools.
 
@@ -14,40 +14,66 @@ Per-file errors never abort the run: an unreadable file, unsupported extension, 
 
 ## Language support
 
-Exactly the languages of the **released** style50 (2.10.4, per `style50 -E` → `[c, h, cpp, hpp, py, js, java]`). The style50 main branch adds CSS, SQL, and HTML, which u50 deliberately does **not** implement (removed to match the real released surface; recorded here in case they are added back later):
+All 8 languages of **style50 3.0.0** (per `style50 -E` → `[c, h, cpp, hpp, py, js, java, html, css, sql]`):
 
 | Language | Extensions | Backend tool | Install hint |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | C | c, h | `clang-format` (>= 14) | distro package |
 | C++ | cpp, hpp | `clang-format` (>= 14) | distro package |
 | Java | java | `clang-format` (>= 14) | distro package |
 | Python | py | `autopep8` | `pip install autopep8` |
 | JavaScript | js | `js-beautify` | `pip install jsbeautifier` |
+| HTML | html | `djhtml` | `pip install djhtml` |
+| CSS | css | `css-beautify` | `pip install cssbeautifier` |
+| SQL | sql | `sqlformat` | `pip install sqlparse` |
 
 Per-tool options (mirroring the original's `languages.py` option values; flag names verified against the installed CLIs):
 
 - C/C++/Java: `clang-format --assume-filename=<foo.c|foo.cpp|foo.java> -style=<CS50 config>` (config embedded in `CS50_CLANG_FORMAT_CONFIG`, below).
 - Python: `autopep8 - --max-line-length=100 --ignore-local-config` (original: `autopep8.fix_code(..., options={'max_line_length': 100, 'ignore_local_config': True})`).
 - JavaScript: `js-beautify --end-with-newline --operator-position preserve-newline -w 100 --brace-style collapse,preserve-inline --keep-array-indentation -` (original: `jsbeautifier.beautify(...)` with the same option values; the short `-w 100` form is required because the CLI declares the long `--wrap-line-length` as taking no argument, and the `-` stdin marker must come last).
-The original calls the Python libraries (`autopep8`, `jsbeautifier`) directly; u50 shells out to the pip CLIs, which apply the same defaults. A missing binary produces a per-language error, e.g. "`autopep8` is required to check Python style (pip install autopep8)".
+- HTML: `djhtml -` via the **lenient** runner: exit 0 is success, and exit 1 with non-empty stdout is also treated as success (older djhtml releases followed the diff/black "exit 1 = reformatted" convention, which is what `languages.py`'s `exit=None` accommodates). Observation: the installed djhtml **3.0.6 always exits 0**, even when it reformats — the source comment is stale for that version; the lenient runner covers both conventions.
+- CSS: `css-beautify --indent-size 4 --end-with-newline -` (original: `cssbeautifier.beautify(...)` with `indent_size = 4, end_with_newline = True`; verified byte-identical to the library call).
+- SQL: `sqlformat -k upper -r --indent_width 4 -`, with a `\n` appended when the output lacks one (matching the original's `Sql.style` fix-up). `sqlformat` is the CLI of the same `sqlparse` library the original calls; verified byte-identical to `sqlparse.format(code, reindent=True, keyword_case='upper', indent_width=4)` + trailing-newline append.
+
+The original calls the Python libraries (`autopep8`, `jsbeautifier`, `cssbeautifier`, `sqlparse`) directly; u50 shells out to the pip CLIs, which apply the same defaults. A missing binary produces a per-language error, e.g. "`autopep8` is required to check Python style (pip install autopep8)".
+
+## Input normalization (style50 3.0.0 semantics)
+
+Before formatting and comparison, u50 normalizes the file's source exactly as style50 3.0.0's `_api.py` does:
+
+1. **rstrip every line** (trailing whitespace, including `\r`, removed),
+2. **join with `\n`**,
+3. **ensure a trailing `\n`** (append one if missing).
+
+Formatting and the clean/dirty comparison both operate on the normalized text, so:
+
+- **trailing whitespace is never flagged** (a file that only differs by trailing whitespace is clean),
+- **CRLF input is normalized to LF**,
+- a missing final newline is not flagged.
+
+An empty or whitespace-only file normalizes to `""` and is reported as a **per-file error** `file is empty` (style50 3.0.0 raises the same error when `count_lines` is 0; its default `count_lines` ignores blank lines). This replaces the earlier behavior of reporting such files clean.
 
 ## Formatter overrides
 
 Any language's formatter can be replaced per invocation via an environment variable — overriding only affects that language; all others keep their built-in tools.
 
 | Variable | Language |
-|---|---|
+| --- | --- |
 | `U50_STYLE_C` | C |
 | `U50_STYLE_CPP` | C++ |
 | `U50_STYLE_JAVA` | Java |
 | `U50_STYLE_PYTHON` | Python |
 | `U50_STYLE_JAVASCRIPT` | JavaScript |
+| `U50_STYLE_HTML` | HTML |
+| `U50_STYLE_CSS` | CSS |
+| `U50_STYLE_SQL` | SQL |
 
 Semantics:
 
 - The variable value is the command line of the replacement formatter, **split on plain whitespace** (no quoting support — arguments cannot contain spaces). The file's source is **piped to the tool via stdin**; its stdout becomes the expected formatting.
 - Empty or whitespace-only values are ignored; unknown `U50_STYLE_*` variables are ignored.
-- Empty/whitespace-only source still short-circuits to "clean" before any override lookup, mirroring the built-in behavior.
+- Empty/whitespace-only source is a per-file error ("file is empty") before any formatter — built-in or override — is invoked (style50 3.0.0 semantics).
 - Exit handling for overrides is **strict**: exit 0 is the only success.
 - Errors name the variable and the binary: spawn failure → "could not run `<binary>` (set via U50_STYLE_<LANG>): ..."; non-zero exit → "formatter `<command line>` failed: <stderr>".
 - Overrides change what "clean" means for that language: a file is clean iff the override tool reproduces its bytes exactly.
@@ -63,12 +89,12 @@ Programmatic use (no process env reads): `Cs50Formatter::with_overrides(HashMap<
 
 ## Behavior notes
 
-Findings recorded from the official docs: https://cs50.readthedocs.io/style50/
+Findings recorded from the official docs: <https://cs50.readthedocs.io/style50/>
 
 ### Usage
 
 - Usage: `style50 <file>` — checks file(s) against CS50's style guide.
-- Languages: C, C++, Java, Python, JavaScript (the readthedocs page also lists HTML, CSS, SQL — main-branch only, absent from the released style50 2.10.4; u50 deliberately does not implement them, see 'Language support').
+- Languages: C, C++, Java, Python, JavaScript, HTML, CSS, SQL (style50 3.0.0; see 'Language support').
 - Under the hood it shells out to per-language external formatters (see 'Language support' below; clang-format >= 14 required for C/C++/Java); any language can be redirected via `U50_STYLE_<LANG>` (see 'Formatter overrides').
 
 ### Output
@@ -110,6 +136,16 @@ clang-format >= 14 is required; when a formatter binary is missing the engine er
 - `-i` (in-place fix), `--ignore`, `--clang-format-style` (custom style override).
 - `score` and `html` output modes (style50 v2 features).
 - comment-count hints (style50's "But consider adding more comments!" suggestion).
+
+## Verified against style50 3.0.0
+
+Findings verified live against the installed style50 **3.0.0** (`/usr/lib/python3.14/site-packages/style50/`):
+
+- `style50 -E` = `[c, h, cpp, hpp, py, js, java, html, css, sql]` — all 8 languages, which u50 now matches.
+- **Oracle**: `style50 -o format <file>` prints the styled code directly; used as ground truth to byte-compare u50's formatter output for every language — u50's output is byte-identical to style50's, and each side accepts the other's output as clean (per-language PASS table in the session log; all 8 PASS).
+- **djhtml exit code**: `languages.py` comments that djhtml returns exit 1 when it reformats (hence its `exit=None`), but the installed djhtml **3.0.6 exits 0** even when reformatting — the comment is stale for this version. u50 uses a lenient runner that accepts both conventions.
+- **CLI-vs-library byte-identity**: `css-beautify --indent-size 4 --end-with-newline -` is byte-identical to the `cssbeautifier.beautify(...)` call style50 makes; `sqlformat -k upper -r --indent_width 4 -` (plus a missing trailing-newline append) is byte-identical to `sqlparse.format(code, reindent=True, keyword_case='upper', indent_width=4)` + fix-up.
+- **Input normalization**: `_api.py` rstrips every line, joins with `\n`, and ensures a trailing `\n` before `check()`; empty/whitespace-only files raise `Error("file is empty")` (`count_lines` ignores blank lines → `ZeroDivisionError`). u50 implements the same semantics.
 
 ## Verified against style50 2.10.4
 
