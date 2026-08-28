@@ -1,4 +1,6 @@
 #![warn(clippy::pedantic)]
 
 #[tokio::main]
-async fn main() {}
+async fn main() -> anyhow::Result<()> {
+    Ok(())
+}
