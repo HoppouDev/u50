@@ -13,7 +13,6 @@ u50_style = { path = "../u50_style" }
 u50_submit = { path = "../u50_submit" }
 anyhow = { workspace = true }
 clap = { workspace = true }
-git2 = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

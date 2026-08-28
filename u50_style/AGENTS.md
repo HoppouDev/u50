@@ -6,7 +6,7 @@ Rust rewrite of [style50](https://github.com/cs50/style50): checks code style an
 
 ## Status
 
-Stub. `src/lib.rs` contains only `#![warn(clippy::pedantic)]`; concrete behavior is future work.
+Stub engine: `run()` bails with a "not implemented yet" error; request types (`Request`, `Output`) are defined and dispatched from the CLI. Concrete engine behavior is future work.
 
 ## Behavior notes
 

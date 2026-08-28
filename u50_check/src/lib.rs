@@ -2,7 +2,7 @@
 
 /// Execution mode for `u50 check`, replacing the original tool's four
 /// mutually-exclusive boolean mode flags.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     /// Fetch checks from the cs50 check server.
     Online,
@@ -14,6 +14,17 @@ pub enum Mode {
     Dev,
 }
 
+/// Output format for `u50 check` results.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Output {
+    /// Human-readable colored terminal output.
+    Ansi,
+    /// HTML report.
+    Html,
+    /// Machine-readable JSON (u50 addition for tooling).
+    Json,
+}
+
 /// Parameters for a `u50 check` invocation.
 #[derive(Debug, Clone)]
 pub struct Request {
@@ -23,8 +34,10 @@ pub struct Request {
     pub mode: Mode,
     /// Named checks to run (plus dependencies); empty means all.
     pub targets: Vec<String>,
-    /// Output formats to render (ansi/html/json).
-    pub outputs: Vec<String>,
+    /// Output formats to render.
+    pub outputs: Vec<Output>,
+    /// Write output to a file instead of stdout (`None` means stdout).
+    pub output_file: Option<std::path::PathBuf>,
 }
 
 /// Runs checks for `req` against student code.

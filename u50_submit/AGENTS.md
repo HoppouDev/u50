@@ -6,7 +6,7 @@ Rust rewrite of [submit50](https://github.com/cs50/submit50): submits work to Gi
 
 ## Status
 
-Stub. `src/lib.rs` contains only `#![warn(clippy::pedantic)]`; concrete behavior is future work.
+Stub engine: `run()` bails with a "not implemented yet" error; request type (`Request`) is defined and dispatched from the CLI. Concrete engine behavior is future work.
 
 ## Behavior notes
 

@@ -3,6 +3,7 @@
 use std::process::ExitCode;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use tracing_subscriber::filter::LevelFilter;
 
 #[derive(Parser)]
 #[command(
@@ -84,6 +85,8 @@ struct StyleArgs {
     output: StyleOutput,
 }
 
+// The bool fields mirror the CLI's `--yes`/`--ssh`/`--dry-run`/`--logout`
+// options one-to-one, so the bool count is inherent to the interface.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Args, Debug)]
 struct SubmitArgs {
@@ -151,41 +154,19 @@ fn main() -> ExitCode {
     init_tracing(&cli);
     let result = match cli.command {
         Command::Check(args) => {
-            let mode = match args.mode {
-                Mode::Online => u50_check::Mode::Online,
-                Mode::Local => u50_check::Mode::Local,
-                Mode::Offline => u50_check::Mode::Offline,
-                Mode::Dev => u50_check::Mode::Dev,
-            };
-            let outputs = args
-                .outputs
-                .iter()
-                .map(|o| match o {
-                    OutputFormat::Ansi => "ansi",
-                    OutputFormat::Html => "html",
-                    OutputFormat::Json => "json",
-                })
-                .map(str::to_owned)
-                .collect();
+            let outputs = args.outputs.iter().map(|o| map_output_format(*o)).collect();
             u50_check::run(&u50_check::Request {
                 slug: args.slug,
-                mode,
+                mode: map_mode(args.mode),
                 targets: args.targets,
                 outputs,
+                output_file: args.output_file,
             })
         }
-        Command::Style(args) => {
-            let output = match args.output {
-                StyleOutput::Character => u50_style::Output::Character,
-                StyleOutput::Split => u50_style::Output::Split,
-                StyleOutput::Unified => u50_style::Output::Unified,
-                StyleOutput::Json => u50_style::Output::Json,
-            };
-            u50_style::run(&u50_style::Request {
-                files: args.files,
-                output,
-            })
-        }
+        Command::Style(args) => u50_style::run(&u50_style::Request {
+            files: args.files,
+            output: map_style_output(args.output),
+        }),
         Command::Submit(args) => u50_submit::run(&u50_submit::Request {
             slug: args.slug,
             yes: args.yes,
@@ -205,10 +186,39 @@ fn main() -> ExitCode {
     }
 }
 
-fn init_tracing(cli: &Cli) {
-    use tracing_subscriber::filter::LevelFilter;
+/// Maps the CLI's `Mode` onto the `u50_check` library type.
+fn map_mode(mode: Mode) -> u50_check::Mode {
+    match mode {
+        Mode::Online => u50_check::Mode::Online,
+        Mode::Local => u50_check::Mode::Local,
+        Mode::Offline => u50_check::Mode::Offline,
+        Mode::Dev => u50_check::Mode::Dev,
+    }
+}
 
-    let level = if let Some(level) = cli.globals.log_level {
+/// Maps the CLI's `OutputFormat` onto the `u50_check` library type.
+fn map_output_format(format: OutputFormat) -> u50_check::Output {
+    match format {
+        OutputFormat::Ansi => u50_check::Output::Ansi,
+        OutputFormat::Html => u50_check::Output::Html,
+        OutputFormat::Json => u50_check::Output::Json,
+    }
+}
+
+/// Maps the CLI's `StyleOutput` onto the `u50_style` library type.
+fn map_style_output(output: StyleOutput) -> u50_style::Output {
+    match output {
+        StyleOutput::Character => u50_style::Output::Character,
+        StyleOutput::Split => u50_style::Output::Split,
+        StyleOutput::Unified => u50_style::Output::Unified,
+        StyleOutput::Json => u50_style::Output::Json,
+    }
+}
+
+/// Resolves the effective log level: explicit flag wins, then `-q`, then
+/// the `-v` count (0 -> WARN, 1 -> INFO, 2 -> DEBUG, 3+ -> TRACE).
+fn resolve_level(quiet: bool, verbose: u8, explicit: Option<LogLevel>) -> LevelFilter {
+    if let Some(level) = explicit {
         match level {
             LogLevel::Trace => LevelFilter::TRACE,
             LogLevel::Debug => LevelFilter::DEBUG,
@@ -216,22 +226,36 @@ fn init_tracing(cli: &Cli) {
             LogLevel::Warn => LevelFilter::WARN,
             LogLevel::Error => LevelFilter::ERROR,
         }
-    } else if cli.globals.quiet {
+    } else if quiet {
         LevelFilter::OFF
     } else {
-        match cli.globals.verbose {
+        match verbose {
             0 => LevelFilter::WARN,
             1 => LevelFilter::INFO,
             2 => LevelFilter::DEBUG,
             _ => LevelFilter::TRACE,
         }
-    };
+    }
+}
 
-    let ansi = match cli.globals.color {
+/// Resolves whether ANSI colors are enabled; in `Auto` mode, honors
+/// `NO_COLOR` (probed by the caller to keep this helper pure).
+fn resolve_ansi(color: Color, no_color_set: bool) -> bool {
+    match color {
         Color::Always => true,
         Color::Never => false,
-        Color::Auto => std::env::var_os("NO_COLOR").is_none(),
-    };
+        Color::Auto => !no_color_set,
+    }
+}
+
+fn init_tracing(cli: &Cli) {
+    let level = resolve_level(
+        cli.globals.quiet,
+        cli.globals.verbose,
+        cli.globals.log_level,
+    );
+    let no_color_set = std::env::var_os("NO_COLOR").is_some();
+    let ansi = resolve_ansi(cli.globals.color, no_color_set);
 
     tracing_subscriber::fmt()
         .with_max_level(level)
@@ -316,5 +340,122 @@ mod tests {
         assert!(!cli.globals.quiet);
         assert!(cli.globals.log_level.is_none());
         assert!(matches!(cli.globals.color, Color::Auto));
+    }
+
+    #[test]
+    fn check_output_file_parses() {
+        let cli = Cli::try_parse_from(["u50", "check", "slug", "--output-file", "/tmp/u50x.out"])
+            .expect("valid arguments");
+        let Command::Check(args) = cli.command else {
+            panic!("expected check subcommand");
+        };
+        assert_eq!(
+            args.output_file,
+            Some(std::path::PathBuf::from("/tmp/u50x.out"))
+        );
+    }
+
+    #[test]
+    fn mode_mapping_covers_every_variant() {
+        let cases = [
+            (Mode::Online, u50_check::Mode::Online),
+            (Mode::Local, u50_check::Mode::Local),
+            (Mode::Offline, u50_check::Mode::Offline),
+            (Mode::Dev, u50_check::Mode::Dev),
+        ];
+        for (cli, lib) in cases {
+            assert_eq!(map_mode(cli), lib, "mode mapping broken for {cli:?}");
+        }
+    }
+
+    #[test]
+    fn output_format_mapping_covers_every_variant() {
+        let cases = [
+            (OutputFormat::Ansi, u50_check::Output::Ansi),
+            (OutputFormat::Html, u50_check::Output::Html),
+            (OutputFormat::Json, u50_check::Output::Json),
+        ];
+        for (cli, lib) in cases {
+            assert_eq!(
+                map_output_format(cli),
+                lib,
+                "output-format mapping broken for {cli:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn style_output_mapping_covers_every_variant() {
+        let cases = [
+            (StyleOutput::Character, u50_style::Output::Character),
+            (StyleOutput::Split, u50_style::Output::Split),
+            (StyleOutput::Unified, u50_style::Output::Unified),
+            (StyleOutput::Json, u50_style::Output::Json),
+        ];
+        for (cli, lib) in cases {
+            assert_eq!(
+                map_style_output(cli),
+                lib,
+                "style-output mapping broken for {cli:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_level_explicit_beats_quiet_and_verbose() {
+        assert_eq!(
+            resolve_level(true, 3, Some(LogLevel::Error)),
+            tracing_subscriber::filter::LevelFilter::ERROR
+        );
+        assert_eq!(
+            resolve_level(false, 0, Some(LogLevel::Trace)),
+            tracing_subscriber::filter::LevelFilter::TRACE
+        );
+    }
+
+    #[test]
+    fn resolve_level_quiet_gives_off() {
+        assert_eq!(
+            resolve_level(true, 0, None),
+            tracing_subscriber::filter::LevelFilter::OFF
+        );
+        assert_eq!(
+            resolve_level(true, 2, None),
+            tracing_subscriber::filter::LevelFilter::OFF
+        );
+    }
+
+    #[test]
+    fn resolve_level_verbose_count() {
+        assert_eq!(
+            resolve_level(false, 0, None),
+            tracing_subscriber::filter::LevelFilter::WARN
+        );
+        assert_eq!(
+            resolve_level(false, 1, None),
+            tracing_subscriber::filter::LevelFilter::INFO
+        );
+        assert_eq!(
+            resolve_level(false, 2, None),
+            tracing_subscriber::filter::LevelFilter::DEBUG
+        );
+        assert_eq!(
+            resolve_level(false, 3, None),
+            tracing_subscriber::filter::LevelFilter::TRACE
+        );
+        assert_eq!(
+            resolve_level(false, 255, None),
+            tracing_subscriber::filter::LevelFilter::TRACE
+        );
+    }
+
+    #[test]
+    fn resolve_ansi_color_modes_and_no_color() {
+        assert!(resolve_ansi(Color::Always, true));
+        assert!(resolve_ansi(Color::Always, false));
+        assert!(!resolve_ansi(Color::Never, false));
+        assert!(!resolve_ansi(Color::Never, true));
+        assert!(!resolve_ansi(Color::Auto, true));
+        assert!(resolve_ansi(Color::Auto, false));
     }
 }

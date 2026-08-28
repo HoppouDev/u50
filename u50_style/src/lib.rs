@@ -1,7 +1,7 @@
 #![warn(clippy::pedantic)]
 
 /// Diff output format for `u50 style`.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Output {
     /// One-character-per-line diff style (style50 default).
     Character,
