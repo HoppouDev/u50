@@ -9,11 +9,11 @@
 [![CI](https://github.com/HoppouDev/u50/actions/workflows/rust.yml/badge.svg)](https://github.com/HoppouDev/u50/actions/workflows/rust.yml)
 [![License: GPLv3](https://img.shields.io/badge/license-GPLv3-blue.svg)](LICENSE.md)
 
-[Features](#features) • [Quick start](#quick-start) • [Usage](#usage) • [Exit codes](#exit-codes) • [Development](#development)
+[Features](#features) • [Quick start](#quick-start) • [Usage](#usage) • [Exit codes](#exit-codes) • [Development](#development) • [Roadmap](#roadmap)
 
 </div>
 
-u50 unifies Harvard CS50's three command-line tools — [check50](https://github.com/cs50/check50), [style50](https://github.com/cs50/style50), and [submit50](https://github.com/cs50/submit50) — into a single Rust binary. The `style` engine is fully implemented and verified byte-identical against style50 3.0.0; `check` and `submit` are on the roadmap.
+u50 unifies Harvard CS50's three command-line tools ([check50](https://github.com/cs50/check50), [style50](https://github.com/cs50/style50), and [submit50](https://github.com/cs50/submit50)) into a single Rust binary. The `style` engine is fully implemented and verified byte-identical against style50 3.0.0; `check` and `submit` are on the roadmap.
 
 ## Features
 
@@ -70,16 +70,6 @@ Example output (`-o unified`):
 > Any language's formatter can be swapped per invocation via `U50_STYLE_<LANG>` —
 > for example: `U50_STYLE_PYTHON="ruff format -" u50 style foo.py`
 
-## Status
-
-| Subcommand | Crate | State |
-| --- | --- | --- |
-| `u50 style` | [`u50_style`](u50_style/) | **Fully implemented** — all 8 languages of style50 3.0.0, verified byte-identical against the original |
-| `u50 check` | [`u50_check`](u50_check/) | Stub — request types defined, engine on the roadmap |
-| `u50 submit` | [`u50_submit`](u50_submit/) | Stub — request types defined, engine on the roadmap |
-
-The binary entry point lives in [`u50_cli`](u50_cli/).
-
 ## Exit codes
 
 | Code | Meaning |
@@ -101,6 +91,34 @@ cargo fmt --all -- --check
 ```
 
 CI (GitHub Actions, workflow name `Rust`) runs build, tests, format check, clippy, the golden suite, and a harness-score ratchet on every push/PR to `main`.
+
+## Roadmap
+
+### `u50 style` — [`u50_style`](u50_style/)
+
+- [x] Style checking for all 8 style50 3.0.0 languages (C, C++, Java, Python, JavaScript, HTML, CSS, SQL), verified byte-identical against the original
+- [x] Self-provisioning backends via uv library crates (managed CPython, venv, pinned wheels)
+- [x] Cache-only tool resolution (system `PATH` never consulted)
+- [x] In-place fix (`--fix`) with dry-run preview
+- [x] Output modes: `character`, `split`, `unified`, `json`
+- [x] Per-language formatter overrides (`U50_STYLE_<LANG>`)
+- [ ] `--ignore` — exclude directories (e.g. `node_modules`) from directory walks
+- [ ] `--clang-format-style` — custom clang-format style override
+- [ ] `score` and `html` output modes (style50 v2 features)
+- [ ] Comment-count hints ("But consider adding more comments!")
+- [ ] Windows support (uv console-script trampolines)
+
+### `u50 check` — [`u50_check`](u50_check/)
+
+- [ ] check50 reimplementation: online, local, offline, and dev modes
+- [ ] check results rendering (ANSI / HTML / JSON)
+
+### `u50 submit` — [`u50_submit`](u50_submit/)
+
+- [ ] submit50 reimplementation: GitHub submission via git (`git2` with SSH)
+- [ ] `--yes` / `--dry-run` / `--logout` submit flags
+
+The binary entry point lives in [`u50_cli`](u50_cli/).
 
 ## Documentation
 
