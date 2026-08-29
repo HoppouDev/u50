@@ -156,8 +156,9 @@ pub fn setup_missing() -> anyhow::Result<()> {
         .collect();
 
     // Local install of the successfully downloaded wheels: one pip call.
-    // The wheels are already pinned at download time, so bare names here
-    // resolve to exactly the pinned versions from the `wheels` dir.
+    // Packages are passed as pinned specs (`<pkg>==<version>`), not bare
+    // names: the `wheels` dir persists across runs, and without the pin a
+    // stale higher-version wheel left there would win over the pinned one.
     let downloaded: Vec<String> = results
         .iter()
         .filter(|(_, ok, _)| *ok)
@@ -166,12 +167,13 @@ pub fn setup_missing() -> anyhow::Result<()> {
     let mut any_failure = false;
     if !downloaded.is_empty() {
         let target = cache.join("python");
+        let specs: Vec<String> = downloaded.iter().map(|pkg| pip_spec(pkg)).collect();
         let install_ok = Command::new("python3")
             .args(["-m", "pip", "install", "--no-index", "--find-links"])
             .arg(&wheels)
             .arg("--target")
             .arg(&target)
-            .args(&downloaded)
+            .args(&specs)
             .output()
             .is_ok_and(|out| out.status.success());
         if !install_ok {
