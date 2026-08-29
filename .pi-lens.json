@@ -1,0 +1,4 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nicobailon/pi-lens/main/config/schema.json",
+  "ignore": ["u50_style/tests/fixtures/**"]
+}
