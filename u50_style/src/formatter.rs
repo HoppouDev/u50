@@ -24,18 +24,15 @@ pub trait Formatter {
     fn format(&self, source: &str, language: Language) -> anyhow::Result<String>;
 }
 
-/// Runs `tool` with `args`, feeding `source` on stdin, and returns its
-/// stdout. Writes stdin from a separate thread so a child that fills its
-/// stdout pipe cannot deadlock against us still writing its stdin.
-///
-/// # Errors
-/// Returns an error when the binary is missing (with the per-tool install
-/// hint from [`missing_tool_message`]) or exits unsuccessfully.
 /// Spawns `tool` with `args`, feeds `source` on stdin (written from a
 /// separate thread so a child that fills its stdout pipe cannot deadlock
 /// against us still writing its stdin), and waits for it to exit. Spawn
 /// errors are mapped by `on_spawn` so callers can phrase the failure for
 /// their context (built-in install hint vs. override env var).
+///
+/// # Errors
+/// Returns any error while attaching stdin or waiting on the child;
+/// spawn failures are mapped by `on_spawn` instead.
 fn run_process(
     tool: &str,
     args: &[&str],

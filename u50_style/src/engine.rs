@@ -260,7 +260,8 @@ fn walk_dir(dir: &Path, files: &mut BTreeSet<PathBuf>) {
 }
 
 /// Runs the in-place fix for `req` using the CS50 formatter stack
-/// ([`Cs50Formatter::default()`]), printing per-file outcomes (the only
+/// ([`Cs50Formatter::from_env()`], honoring any `U50_STYLE_<LANG>`
+/// overrides exactly like [`run`]), printing per-file outcomes (the only
 /// place this crate prints) and returning the report so the caller can
 /// decide the exit code. Mirrors the original style50's `-i`/`--in-place`.
 ///
@@ -276,7 +277,7 @@ fn walk_dir(dir: &Path, files: &mut BTreeSet<PathBuf>) {
 /// - errors always go to stderr as `error: <path>: <message>`.
 pub fn fix(req: &Request, dry_run: bool) -> Report {
     tracing::debug!(?req, dry_run, "u50_style::fix");
-    let report = fix_with(req, &Cs50Formatter::default(), dry_run);
+    let report = fix_with(req, &Cs50Formatter::from_env(), dry_run);
     if dry_run {
         if req.output == Output::Json {
             // The JSON document promises *would-fix* results only, so feed
