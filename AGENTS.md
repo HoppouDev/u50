@@ -55,7 +55,7 @@ GitHub Actions workflow `.github/workflows/rust.yml` (name: `Rust`) runs on push
 - `cargo build`
 - `cargo test`
 - `cargo fmt --all -- --check` — code must be rustfmt-clean.
-- `cargo clippy --verbose -- -Dwarnings` — **zero warnings allowed**; with pedantic enabled, this is strict.
+- `cargo clippy --verbose -- -Dwarnings` — **zero warnings allowed**; with pedantic enabled, this is strict. Linter configuration lives in the root `clippy.toml`.
 
 ## Common commands
 

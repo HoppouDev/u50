@@ -1,0 +1,4 @@
+# Clippy configuration for the u50 workspace.
+# msrv = the compatibility floor u50_style must compile against (the MSRV
+# required by the uv library crates it uses); keeps msrv-gated lints honest.
+msrv = "1.96.0"
