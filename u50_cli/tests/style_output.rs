@@ -210,10 +210,10 @@ fn cache_backends_spawn_when_path_lacks_the_formatter() {
     std::fs::create_dir_all(&bins).expect("create bins");
     std::os::unix::fs::symlink("/usr/bin/cat", bins.join("cat")).expect("symlink cat");
 
-    // A fake `--setup`-populated cache: `python/bin/autopep8` as an
-    // identity stub (`cat`), mirroring pip's `--target` layout.
+    // A fake `--setup`-populated cache: `venv/bin/autopep8` as an
+    // identity stub (`cat`), mirroring the uv-managed venv layout.
     let cache = root.join("cache");
-    let stub = cache.join("u50/style50/python/bin/autopep8");
+    let stub = cache.join("u50/style50/venv/bin/autopep8");
     std::fs::create_dir_all(stub.parent().expect("cache bin parent")).expect("create cache bin");
     std::fs::write(&stub, "#!/bin/sh\ncat\n").expect("write stub");
     std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755))

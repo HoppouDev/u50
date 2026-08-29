@@ -898,7 +898,7 @@ fn cache_dirs_are_nested_under_the_cache_root() {
     let root = cache_dir();
     assert!(root.ends_with(std::path::Path::new("u50").join("style50")));
     let bin = cache_bin_dir();
-    assert_eq!(bin, root.join("python").join("bin"));
+    assert_eq!(bin, root.join("venv").join("bin"));
 }
 
 #[test]

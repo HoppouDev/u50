@@ -52,10 +52,10 @@ pub(crate) fn cache_dir() -> PathBuf {
 }
 
 /// The directory holding binaries installed by `u50 style --setup`
-/// (pip `--target <cache>/python` puts console scripts in `bin/`).
+/// (the uv-managed venv `<cache>/venv` puts console scripts in `bin/`).
 #[must_use]
 pub(crate) fn cache_bin_dir() -> PathBuf {
-    cache_dir().join("python").join("bin")
+    cache_dir().join("venv").join("bin")
 }
 
 /// Whether `path` is an existing regular file with an execute bit.
@@ -117,30 +117,16 @@ fn run_process(
 ) -> anyhow::Result<std::process::Output> {
     // Cache-aware resolution: a bare tool name is looked up on PATH
     // first, then in the u50 style cache. Only cache hits get their spawn
-    // rewritten to the resolved path (plus a `PYTHONPATH` pointing at the
-    // cache's python target dir, so the cached pure-Python console
-    // scripts can import their modules); PATH hits and unresolved tools
-    // spawn by name exactly as before, preserving the missing-tool error
-    // messages, and paths containing `/` are used as-is (overrides).
+    // rewritten to the resolved path; PATH hits and unresolved tools spawn
+    // by name exactly as before, preserving the missing-tool error
+    // messages, and paths containing `/` are used as-is (overrides). No
+    // env fixup is needed: the venv console scripts installed by `--setup`
+    // carry absolute shebangs and are self-contained.
     let mut command = Command::new(tool);
-    let mut python_root: Option<PathBuf> = None;
     if !tool.contains('/')
         && let Some((path, ToolOrigin::Cache)) = locate_tool(tool)
     {
         command = Command::new(path);
-        python_root = Some(cache_dir().join("python"));
-    }
-    if let Some(root) = python_root {
-        let mut entries = vec![root.clone()];
-        match std::env::var("PYTHONPATH") {
-            Ok(existing) if !existing.is_empty() => {
-                entries.push(PathBuf::from(existing));
-            }
-            _ => {}
-        }
-        let joined =
-            std::env::join_paths(&entries).unwrap_or_else(|_| root.clone().into_os_string());
-        command.env("PYTHONPATH", joined);
     }
     let mut child = command
         .args(args)
@@ -200,9 +186,10 @@ pub(crate) fn run_tool(tool: &str, args: &[&str], source: &str) -> anyhow::Resul
 /// by older `djhtml` releases (the convention `style50/languages.py`
 /// documents for it): exit 0 is success, and exit 1 with non-empty
 /// stdout is also treated as success; anything else is an error. The
-/// installed djhtml 3.0.6 always exits 0 (the source comment is stale
-/// for it), so in practice the strict path is what runs — the leniency
-/// keeps u50 compatible with older djhtml versions too.
+/// installed djhtml (3.0.11; like 3.0.6 before it) always exits 0 (the
+/// source comment is stale for it), so in practice the strict path is
+/// what runs — the leniency keeps u50 compatible with older djhtml
+/// versions too.
 fn run_tool_lenient(tool: &str, args: &[&str], source: &str) -> anyhow::Result<String> {
     let output = run_process(tool, args, source, |e| {
         anyhow::anyhow!("{}: {e}", missing_tool_message(tool))

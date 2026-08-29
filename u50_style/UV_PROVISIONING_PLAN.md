@@ -36,7 +36,7 @@
 - `PINNED_VERSIONS` (setup.rs) ↔ `tests/tool-versions.txt` (CI constraints),
   cross-checked by an `include_str!` unit test. Tools:
   clang-format==22.1.8 (platform wheel), autopep8==2.3.2, jsbeautifier==2.0.3,
-  cssbeautifier==2.0.3, djhtml==3.0.6, sqlparse==0.5.3 (+ transitive deps:
+  cssbeautifier==2.0.3, djhtml==3.0.11, sqlparse==0.5.3 (+ transitive deps:
   pycodestyle, editorconfig, …).
 - CI (rust.yml): builds, then creates a **system-python venv**, pip-installs
   the pinned tools into it, puts it on PATH, runs `U50_STYLE_GOLDEN=1 cargo
