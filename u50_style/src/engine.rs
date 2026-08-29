@@ -297,21 +297,11 @@ pub fn fix(req: &Request, dry_run: bool) -> Report {
             };
             println!("{}", json_document(&would_fix));
         } else {
-            // The rendered diffs come first, the per-file status summary
-            // last (`would fix` in place of plain fix's `fixed`) — so on
-            // large inputs `| tail` still shows the summary.
-            for result in &report.results {
-                if !result.clean
-                    && let Some(rendered) = &result.rendered
-                {
-                    print!("{rendered}");
-                }
-            }
             for result in &report.results {
                 if result.clean {
                     println!("already clean: {}", result.path.display());
                 } else {
-                    println!("would fix: {}", result.path.display());
+                    println!("fixed: {}", result.path.display());
                 }
             }
         }
