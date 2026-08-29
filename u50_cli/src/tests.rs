@@ -85,6 +85,52 @@ fn style_dry_run_requires_fix() {
 }
 
 #[test]
+fn style_list_parses_alone_and_with_files() {
+    let cli = Cli::try_parse_from(["u50", "style", "--list"]).expect("valid arguments");
+    let Command::Style(args) = cli.command else {
+        panic!("expected style subcommand");
+    };
+    assert!(args.list);
+    assert!(!args.setup);
+
+    let cli =
+        Cli::try_parse_from(["u50", "style", "--list", "a.c", "b/"]).expect("valid arguments");
+    let Command::Style(args) = cli.command else {
+        panic!("expected style subcommand");
+    };
+    assert!(args.list);
+    assert_eq!(args.files.len(), 2);
+}
+
+#[test]
+fn style_setup_parses() {
+    let cli = Cli::try_parse_from(["u50", "style", "--setup"]).expect("valid arguments");
+    let Command::Style(args) = cli.command else {
+        panic!("expected style subcommand");
+    };
+    assert!(args.setup);
+    assert!(!args.list);
+}
+
+#[test]
+fn style_list_conflicts_with_setup() {
+    let result = Cli::try_parse_from(["u50", "style", "--list", "--setup"]);
+    assert!(result.is_err(), "--list must conflict with --setup");
+}
+
+#[test]
+fn style_list_conflicts_with_output() {
+    let result = Cli::try_parse_from(["u50", "style", "--list", "-o", "json"]);
+    assert!(result.is_err(), "--list must conflict with -o/--output");
+}
+
+#[test]
+fn style_setup_conflicts_with_fix() {
+    let result = Cli::try_parse_from(["u50", "style", "--setup", "--fix"]);
+    assert!(result.is_err(), "--setup must conflict with --fix");
+}
+
+#[test]
 fn submit_parses_flags() {
     let cli = Cli::try_parse_from(["u50", "submit", "pset1", "--yes", "--dry-run"])
         .expect("valid arguments");

@@ -75,6 +75,9 @@ struct CheckArgs {
     output_file: Option<std::path::PathBuf>,
 }
 
+// The bool fields mirror the CLI's `--fix`/`--dry-run`/`--list`/`--setup`
+// mode flags one-to-one, so the bool count is inherent to the interface.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Args, Debug)]
 struct StyleArgs {
     /// Files to style-check
@@ -91,6 +94,20 @@ struct StyleArgs {
     /// Show what would change without writing (requires --fix)
     #[arg(long, requires = "fix")]
     dry_run: bool,
+
+    /// List supported languages and their required binaries
+    #[arg(
+        long,
+        conflicts_with_all = ["output", "fix", "dry_run", "setup"]
+    )]
+    list: bool,
+
+    /// Download and install missing formatter backends into the cache
+    #[arg(
+        long,
+        conflicts_with_all = ["output", "fix", "dry_run", "list"]
+    )]
+    setup: bool,
 }
 
 // The bool fields mirror the CLI's `--yes`/`--ssh`/`--dry-run`/`--logout`
@@ -174,33 +191,47 @@ fn main() -> ExitCode {
             .map(|()| ExitCode::SUCCESS)
         }
         Command::Style(args) => {
-            let request = u50_style::Request {
-                files: args.files,
-                output: map_style_output(args.output),
-                color: resolve_ansi(cli.globals.color, no_color),
-            };
-            if args.fix {
-                // In-place fix: 3 on any per-file error (incl. write
-                // failures); 1 only for a dry run that would change
-                // something (check-style convention); 0 when every file was
-                // fixed or was already clean.
-                let report = u50_style::fix(&request, args.dry_run);
-                Ok(if report.has_errors() {
-                    ExitCode::from(3)
-                } else if args.dry_run && !report.clean() {
-                    ExitCode::from(1)
-                } else {
+            if args.list {
+                // File operands and other style flags are ignored; the
+                // table alone is the output.
+                u50_style::list_languages();
+                Ok(ExitCode::SUCCESS)
+            } else if args.setup {
+                // A setup failure maps to the unified exit-3
+                // infrastructure-error code via the generic handler below.
+                u50_style::setup_missing().map(|()| {
+                    u50_style::list_languages();
                     ExitCode::SUCCESS
                 })
             } else {
-                let report = u50_style::run(&request);
-                Ok(if report.has_errors() {
-                    ExitCode::from(3)
-                } else if report.clean() {
-                    ExitCode::SUCCESS
+                let request = u50_style::Request {
+                    files: args.files,
+                    output: map_style_output(args.output),
+                    color: resolve_ansi(cli.globals.color, no_color),
+                };
+                if args.fix {
+                    // In-place fix: 3 on any per-file error (incl. write
+                    // failures); 1 only for a dry run that would change
+                    // something (check-style convention); 0 when every file was
+                    // fixed or was already clean.
+                    let report = u50_style::fix(&request, args.dry_run);
+                    Ok(if report.has_errors() {
+                        ExitCode::from(3)
+                    } else if args.dry_run && !report.clean() {
+                        ExitCode::from(1)
+                    } else {
+                        ExitCode::SUCCESS
+                    })
                 } else {
-                    ExitCode::from(1)
-                })
+                    let report = u50_style::run(&request);
+                    Ok(if report.has_errors() {
+                        ExitCode::from(3)
+                    } else if report.clean() {
+                        ExitCode::SUCCESS
+                    } else {
+                        ExitCode::from(1)
+                    })
+                }
             }
         }
         Command::Submit(args) => u50_submit::run(&u50_submit::Request {
