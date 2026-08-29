@@ -37,6 +37,10 @@ pub struct FileResult {
     /// Human-readable per-file output for text modes (or the unified patch
     /// in JSON mode); `None` when the file is clean.
     pub rendered: Option<String>,
+    /// The style50-styled content for successfully processed files (the
+    /// normalized input when the file is clean); `None` when the file could
+    /// not be processed. In-place fix mode writes this back to the file.
+    pub formatted: Option<String>,
 }
 
 /// The aggregated style-check outcome for a request.

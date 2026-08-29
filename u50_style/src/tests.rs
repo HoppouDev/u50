@@ -59,6 +59,14 @@ impl Formatter for Failing {
     }
 }
 
+fn fix_request(files: Vec<PathBuf>) -> Request {
+    Request {
+        files,
+        output: Output::Unified,
+        color: false,
+    }
+}
+
 fn temp_file(name: &str, contents: &str) -> PathBuf {
     let path = std::env::temp_dir().join(format!("u50_style_test_{}_{name}", std::process::id()));
     std::fs::write(&path, contents).expect("write temp file");
@@ -275,11 +283,13 @@ fn json_document_multi_file_mixed_clean_and_dirty() {
         rendered: Some(
             "--- dirty.c\n+++ dirty.c\n@@ -1 +1 @@\n-return 0;\n+    return 0;\n".to_owned(),
         ),
+        formatted: None,
     };
     let clean = FileResult {
         path: PathBuf::from("clean.c"),
         clean: true,
         rendered: None,
+        formatted: None,
     };
     let report = Report {
         results: vec![dirty, clean],
@@ -520,6 +530,95 @@ fn split_render_truncates_columns_at_50_chars() {
     assert_eq!(line.chars().count(), 50 + 3 + 50);
     assert_eq!(line.matches('x').count(), 50, "not truncated: {line:?}");
     assert_eq!(line.matches('y').count(), 50, "not truncated: {line:?}");
+}
+
+#[test]
+fn fix_writes_styled_content_for_dirty_file() {
+    let path = temp_file("fixdirty.c", "int main(void)\n{\nreturn 0;\n}\n");
+    let report = fix_with(&fix_request(vec![path.clone()]), &Reindent, false);
+    assert!(!report.has_errors());
+    assert_eq!(report.results.len(), 1);
+    assert!(!report.results[0].clean);
+    let expected = "    int main(void)\n    {\n    return 0;\n    }\n";
+    assert_eq!(report.results[0].formatted.as_deref(), Some(expected));
+    assert_eq!(std::fs::read_to_string(&path).expect("read back"), expected);
+    std::fs::remove_file(&path).expect("cleanup");
+}
+
+#[test]
+fn fix_dry_run_leaves_file_unchanged() {
+    let original = "int main(void)\n{\nreturn 0;\n}\n";
+    let path = temp_file("fixdry.c", original);
+    let report = fix_with(&fix_request(vec![path.clone()]), &Reindent, true);
+    assert!(!report.has_errors());
+    // A dry run with a would-fix reports dirty (drives the exit-1 contract).
+    assert!(!report.clean());
+    assert!(!report.results[0].clean);
+    assert!(report.results[0].rendered.is_some());
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("read back"),
+        original,
+        "dry run must not write"
+    );
+    std::fs::remove_file(&path).expect("cleanup");
+}
+
+#[test]
+fn fix_clean_file_is_not_rewritten() {
+    let original = "int main(void)\n{\n    return 0;\n}\n";
+    let path = temp_file("fixclean.c", original);
+    let report = fix_with(&fix_request(vec![path.clone()]), &Identity, false);
+    assert!(!report.has_errors());
+    assert!(report.clean());
+    assert!(report.results[0].clean);
+    assert_eq!(report.results[0].formatted.as_deref(), Some(original));
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("read back"),
+        original,
+        "clean file must not be rewritten"
+    );
+    std::fs::remove_file(&path).expect("cleanup");
+}
+
+#[test]
+fn fix_already_styled_file_is_not_rewritten() {
+    let original = "x = 1\ny = 2\n";
+    let path = temp_file("fixfixed.py", original);
+    // Rstrip's output equals the normalized input, so the file is already
+    // styled for this formatter: nothing to write.
+    let report = fix_with(&fix_request(vec![path.clone()]), &Rstrip, false);
+    assert!(!report.has_errors());
+    assert!(report.results[0].clean);
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("read back"),
+        original,
+        "already-styled file must not be rewritten"
+    );
+    std::fs::remove_file(&path).expect("cleanup");
+}
+
+#[test]
+fn fix_missing_file_errors_and_still_fixes_others() {
+    let dirty = temp_file("fixmix.c", "int main(void)\n{\nreturn 0;\n}\n");
+    let missing =
+        std::env::temp_dir().join(format!("u50_style_test_{}_nofix.c", std::process::id()));
+    let report = fix_with(
+        &fix_request(vec![dirty.clone(), missing.clone()]),
+        &Reindent,
+        false,
+    );
+    assert!(report.has_errors());
+    assert_eq!(report.errors.len(), 1);
+    assert_eq!(&report.errors[0].0, &missing);
+    assert!(report.errors[0].1.contains("could not read"));
+    assert_eq!(report.results.len(), 1);
+    assert_eq!(report.results[0].path, dirty);
+    assert!(!report.results[0].clean);
+    assert_eq!(
+        std::fs::read_to_string(&dirty).expect("read back"),
+        "    int main(void)\n    {\n    return 0;\n    }\n"
+    );
+    std::fs::remove_file(&dirty).expect("cleanup");
 }
 
 #[test]

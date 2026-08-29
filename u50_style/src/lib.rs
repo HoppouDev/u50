@@ -9,7 +9,7 @@ mod request;
 #[cfg(test)]
 mod tests;
 
-pub use engine::{normalize_source, run, run_with};
+pub use engine::{fix, fix_with, normalize_source, run, run_with};
 pub use formatter::{Cs50Formatter, Formatter};
 pub use language::{Language, detect_language};
 pub use request::{FileResult, Output, Report, Request};

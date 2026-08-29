@@ -83,6 +83,14 @@ struct StyleArgs {
     /// Diff output format
     #[arg(short = 'o', long, value_enum, default_value_t = StyleOutput::Character)]
     output: StyleOutput,
+
+    /// Rewrite files in place with style50 formatting
+    #[arg(long, conflicts_with = "output")]
+    fix: bool,
+
+    /// Show what would change without writing (requires --fix)
+    #[arg(long, requires = "fix")]
+    dry_run: bool,
 }
 
 // The bool fields mirror the CLI's `--yes`/`--ssh`/`--dry-run`/`--logout`
@@ -166,18 +174,34 @@ fn main() -> ExitCode {
             .map(|()| ExitCode::SUCCESS)
         }
         Command::Style(args) => {
-            let report = u50_style::run(&u50_style::Request {
+            let request = u50_style::Request {
                 files: args.files,
                 output: map_style_output(args.output),
                 color: resolve_ansi(cli.globals.color, no_color),
-            });
-            Ok(if report.has_errors() {
-                ExitCode::from(3)
-            } else if report.clean() {
-                ExitCode::SUCCESS
+            };
+            if args.fix {
+                // In-place fix: 3 on any per-file error (incl. write
+                // failures); 1 only for a dry run that would change
+                // something (check-style convention); 0 when every file was
+                // fixed or was already clean.
+                let report = u50_style::fix(&request, args.dry_run);
+                Ok(if report.has_errors() {
+                    ExitCode::from(3)
+                } else if args.dry_run && !report.clean() {
+                    ExitCode::from(1)
+                } else {
+                    ExitCode::SUCCESS
+                })
             } else {
-                ExitCode::from(1)
-            })
+                let report = u50_style::run(&request);
+                Ok(if report.has_errors() {
+                    ExitCode::from(3)
+                } else if report.clean() {
+                    ExitCode::SUCCESS
+                } else {
+                    ExitCode::from(1)
+                })
+            }
         }
         Command::Submit(args) => u50_submit::run(&u50_submit::Request {
             slug: args.slug,
@@ -330,6 +354,39 @@ mod tests {
             ]
         );
         assert!(matches!(args.output, StyleOutput::Unified));
+    }
+
+    #[test]
+    fn style_fix_parses() {
+        let cli = Cli::try_parse_from(["u50", "style", "a.c", "--fix"]).expect("valid arguments");
+        let Command::Style(args) = cli.command else {
+            panic!("expected style subcommand");
+        };
+        assert!(args.fix);
+        assert!(!args.dry_run);
+    }
+
+    #[test]
+    fn style_fix_dry_run_parses() {
+        let cli =
+            Cli::try_parse_from(["u50", "style", "a.c", "--fix", "--dry-run"]).expect("valid");
+        let Command::Style(args) = cli.command else {
+            panic!("expected style subcommand");
+        };
+        assert!(args.fix);
+        assert!(args.dry_run);
+    }
+
+    #[test]
+    fn style_fix_conflicts_with_output() {
+        let result = Cli::try_parse_from(["u50", "style", "a.c", "--fix", "-o", "json"]);
+        assert!(result.is_err(), "--fix must conflict with -o/--output");
+    }
+
+    #[test]
+    fn style_dry_run_requires_fix() {
+        let result = Cli::try_parse_from(["u50", "style", "a.c", "--dry-run"]);
+        assert!(result.is_err(), "--dry-run must require --fix");
     }
 
     #[test]

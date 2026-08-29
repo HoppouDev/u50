@@ -44,6 +44,8 @@ enum Command {
 ### `u50 style <FILES>... [flags]` → `u50_style`
 
 - `-o/--output <character|split|unified|json>` — default `character`; `json` also exists in the original (its README documents it; readthedocs was stale). Exit codes: 0 clean, 1 violations, 3 any per-file error (unreadable file, unsupported type, formatter failure) — other files are still checked and their output streamed.
+- `--fix` — rewrite files in place with style50 formatting (mirrors the original's `-i`/`--in-place`; conflicts with `-o/--output`). Exit codes: 0 all files fixed or already clean, 3 any per-file error (incl. write failures). No exit 1: a plain fix either fixes or errors.
+- `--dry-run` — show what would change without writing (requires `--fix`); prints the rendered diff per would-change file (JSON mode: the JSON document). Exit codes: 1 when at least one file would change (check-style convention), 0 when everything is already clean, 3 on errors.
 
 ### `u50 submit <SLUG> [flags]` → `u50_submit`
 
@@ -71,7 +73,7 @@ enum Command {
 
 | Code | Meaning |
 | ---- | ------- |
-| 0 | success (all checks passed / style clean / submitted) |
-| 1 | checks failed or style violations found |
+| 0 | success (all checks passed / style clean / submitted / style fixed or already clean) |
+| 1 | checks failed or style violations found; `style --fix --dry-run` with at least one would-fix |
 | 2 | usage error |
-| 3 | any per-file error (unreadable file, unsupported type, formatter failure) |
+| 3 | any per-file error (unreadable file, unsupported type, formatter/write failure) |

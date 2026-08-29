@@ -8,9 +8,19 @@ Rust rewrite of [style50](https://github.com/cs50/style50): checks code style an
 
 Engine implemented, supporting all 8 languages of style50 3.0.0: `run(&Request) -> Result<Report>` uses `Cs50Formatter::from_env()` (impl of the `Formatter` trait, injectable via `run_with` for tests without the formatters installed), renders per-file diffs (`character` with inline char emphasis / `split` / `unified` / `json`) and prints them; the CLI maps `Report::clean()` to exit 0/1. Every language can be redirected to a custom formatter via `U50_STYLE_<LANG>` environment variables (see 'Formatter overrides', below).
 
-API: `Language` (`detect_language` by extension for all supported languages; `Language::required_tool() -> Option<&'static str>` names the backing binary; `Language::env_var_key()` gives the override variable suffix), `Formatter` trait, `Cs50Formatter` (`Default` = built-in tools with no overrides; `with_overrides(HashMap<Language, Vec<String>>)`; `from_env()`), `Request { files, output, color }`, `FileResult { path, clean, rendered }`, `Report { results, errors }` with `clean()` and `has_errors()`. Pure renderers (`render_character`/`render_split`/`render_unified`/`json_document`) take `(source, formatted, ...)` and are unit-testable without the tools.
+API: `Language` (`detect_language` by extension for all supported languages; `Language::required_tool() -> Option<&'static str>` names the backing binary; `Language::env_var_key()` gives the override variable suffix), `Formatter` trait, `Cs50Formatter` (`Default` = built-in tools with no overrides; `with_overrides(HashMap<Language, Vec<String>>)`; `from_env()`), `Request { files, output, color }`, `FileResult { path, clean, rendered, formatted }`, `Report { results, errors }` with `clean()` and `has_errors()`. Pure renderers (`render_character`/`render_split`/`render_unified`/`json_document`) take `(source, formatted, ...)` and are unit-testable without the tools.
 
 Per-file errors never abort the run: an unreadable file, unsupported extension, or formatter failure for one file records `(path, message)` in `Report.errors` and processing continues with the remaining files, so earlier results are preserved. `run()` prints rendered output for every processed file to stdout (stdout stays pure diff/JSON), then writes each error to stderr as `error: <path>: <message>`. Formatter-level failures (e.g. missing clang-format) are therefore per-file skips, not whole-run bails.
+
+## In-place fix
+
+`fix(&Request, dry_run: bool) -> Report` (and the injectable `fix_with(&Request, &dyn Formatter, dry_run) -> Report`) rewrites dirty files in place, mirroring the original style50's `-i`/`--in-place`. It reuses the exact per-file machinery of the style check (a shared `process_file` helper), so clean/dirty and error semantics (normalization, empty-file error, per-file error continuation) are identical.
+
+- `FileResult.formatted: Option<String>` — the style50-styled content for every successfully processed file (the normalized input when clean); `None` only for files that could not be processed. Fix mode writes this back byte-for-byte (the styled content, never the rendered diff).
+- Write policy: a file is written only when it is dirty, `dry_run` is false, and no error occurred. Clean files and dry runs never touch the filesystem; write failures are recorded in `Report.errors` as `could not write \`<path>\`: ...` (no bail).
+- Printing policy (in `fix`, engine-side like `run()`): plain fix prints per file `fixed: <path>` or `already clean: <path>` to stdout (diff rendering ignored); dry run prints the rendered diff for each file that would change, respecting `req.output` (JSON mode prints the whole JSON document of would-fix results). Errors always go to stderr as `error: <path>: <message>`.
+- Exit-code contract (implemented in u50_cli): **0** — plain fix succeeded (every file fixed or already clean); **1** — dry run with at least one would-fix (check-style convention); **3** — any per-file error (unreadable/unsupported/empty/formatter/write failure), taking precedence.
+- The CLI exposes this as `u50 style --fix [--dry-run]`; `--dry-run` requires `--fix`, and `--fix` conflicts with `-o/--output` (fix output is the fixed/already-clean lines or the dry-run diff, not a chosen render mode).
 
 ## Language support
 
@@ -133,7 +143,7 @@ clang-format >= 14 is required; when a formatter binary is missing the engine er
 
 ### Not yet implemented (present in the original; future work)
 
-- `-i` (in-place fix), `--ignore`, `--clang-format-style` (custom style override).
+- `--ignore`, `--clang-format-style` (custom style override).
 - `score` and `html` output modes (style50 v2 features).
 - comment-count hints (style50's "But consider adding more comments!" suggestion).
 
