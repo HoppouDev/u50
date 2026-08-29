@@ -12,6 +12,9 @@ tracing-subscriber = "0.3"
 similar = { version = "2", features = ["inline"] }
 serde_json = "1"
 indicatif = "0.17"
+uv-python = "=0.0.74"
+uv-virtualenv = "=0.0.74"
+uv-installer = "=0.0.74"
 
 
 [profile.release]
