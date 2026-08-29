@@ -12,10 +12,24 @@ tracing-subscriber = "0.3"
 similar = { version = "2", features = ["inline"] }
 serde_json = "1"
 indicatif = "0.17"
+reqwest = { version = "0.13.4", default-features = false, features = [
+    "json",
+    "gzip",
+    "rustls",
+    "system-proxy",
+] }
 uv-python = "=0.0.74"
 uv-virtualenv = "=0.0.74"
 uv-installer = "=0.0.74"
-
+uv-cache = "=0.0.74"
+uv-cache-info = "=0.0.74"
+uv-client = "=0.0.74"
+uv-distribution-filename = "=0.0.74"
+uv-distribution-types = "=0.0.74"
+uv-pep508 = "=0.0.74"
+uv-pypi-types = "=0.0.74"
+uv-preview = "=0.0.74"
+uv-redacted = "=0.0.74"
 
 [profile.release]
 opt-level = "z"

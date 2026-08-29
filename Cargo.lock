@@ -4447,11 +4447,22 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "indicatif",
+ "reqwest",
  "serde_json",
  "similar",
+ "tokio",
  "tracing",
+ "uv-cache",
+ "uv-cache-info",
+ "uv-client",
+ "uv-distribution-filename",
+ "uv-distribution-types",
  "uv-installer",
+ "uv-pep508",
+ "uv-preview",
+ "uv-pypi-types",
  "uv-python",
+ "uv-redacted",
  "uv-virtualenv",
 ]
 
