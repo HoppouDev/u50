@@ -70,6 +70,76 @@ Per-tool options (mirroring the original's `languages.py` option values; flag na
 
 The original calls the Python libraries (`autopep8`, `jsbeautifier`, `cssbeautifier`, `sqlparse`) directly; u50 shells out to the pip CLIs, which apply the same defaults. A missing binary produces a per-language error, e.g. "`autopep8` is required to check Python style (pip install autopep8)".
 
+## Tool management (`--list` / `--setup`)
+
+The 6 backing formatters are all pip-installable: `clang-format` (standalone
+binary wheel), `autopep8`, `jsbeautifier` (bin `js-beautify`), `djhtml`,
+`cssbeautifier` (bin `css-beautify`), and `sqlparse` (bin `sqlformat`).
+Mapping per language: C/C++/Java → clang-format, Python → autopep8,
+JavaScript → js-beautify, HTML → djhtml, CSS → css-beautify, SQL → sqlformat
+(`Language::pip_package`).
+
+### `u50 style --list`
+
+Prints an aligned table of languages, extensions, backing binary, and status
+(`found (PATH)` / `found (cache)` / `missing`, computed with the same
+resolution the formatter uses):
+
+```text
+Language    Extensions  Binary        Status
+----------  ----------  ------------  ------
+C           c, h        clang-format  found (PATH)
+C++         cpp, hpp    clang-format  found (PATH)
+Java        java        clang-format  found (PATH)
+Python      py          autopep8      found (PATH)
+JavaScript  js          js-beautify   found (PATH)
+HTML        html        djhtml        found (PATH)
+CSS         css         css-beautify  found (PATH)
+SQL         sql         sqlformat     found (PATH)
+```
+
+File operands and the other style flags are ignored; always exits 0. Clap
+makes `--list` conflict with `--setup`, `--fix`, `--dry-run`, and
+`-o/--output` (usage error, exit 2).
+
+### `u50 style --setup`
+
+Installs missing formatter backends into u50's cache —
+`$XDG_CACHE_HOME`/`~/.cache` → `u50/style50` (paths built by `cache_dir()` /
+`cache_bin_dir()`):
+
+1. Determines the distinct pip packages of tools not resolvable from PATH or
+   the cache; if none, prints `all formatter backends are already available`.
+2. Prints `installing N package(s) into <cache dir>`.
+3. Verifies `python3 -m pip --version`; if pip is missing, prints a
+   per-package `failed:` line and exits 3.
+4. **Parallel downloads**: one thread per package (indicatif `MultiProgress`
+   spinner each) running `python3 -m pip download --dest <cache>/wheels <pkg>`
+   (stderr captured for failure reasons).
+5. Installs with a single local `python3 -m pip install --no-index
+   --find-links <cache>/wheels --target <cache>/python <pkgs...>` — console
+   scripts land in `<cache>/python/bin`, modules in `<cache>/python`.
+6. Prints per-package `installed: <pkg> (<tool>)` or `failed: <pkg>: <reason>`
+   (a package counts as installed only when its tool is resolvable from the
+   cache bin dir afterwards), then prints the `--list` table. Any failure
+   exits 3.
+
+### Cache-aware tool resolution
+
+Formatter spawn (`run_process`) resolves bare tool names via
+`locate_tool(tool)`: **PATH first, then `<cache>/python/bin`** — PATH
+behavior is unchanged (backward compatible; unresolved tools keep the
+missing-tool error messages). Only **cache hits** spawn the resolved path and
+additionally set `PYTHONPATH` with `<cache>/python` prepended (cached
+pure-Python console scripts import their modules from there). Tools given as
+paths (override commands containing `/`) are used as-is.
+
+Verified end-to-end: with the 6 tools absent from PATH, `--setup` installed
+all 6 packages in parallel into a scratch cache and a subsequent
+`u50 style --fix` on Python and C files formatted both correctly via the
+cache (`found (cache)` in `--list`), exercising the `PYTHONPATH` path for
+`autopep8` and the standalone `clang-format` binary wheel.
+
 ## Input normalization (style50 3.0.0 semantics)
 
 Before formatting and comparison, u50 normalizes the file's source exactly as style50 3.0.0's `_api.py` does:
