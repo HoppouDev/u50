@@ -80,7 +80,10 @@ struct CheckArgs {
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Args, Debug)]
 struct StyleArgs {
-    /// Files to style-check
+    /// Files to style-check. At least one operand is required unless
+    /// `--list` or `--setup` is given (both ignore FILE operands and work
+    /// without them); zero operands otherwise is a usage error (exit 2).
+    #[arg(required_unless_present_any = ["list", "setup"], num_args = 1..)]
     files: Vec<std::path::PathBuf>,
 
     /// Diff output format

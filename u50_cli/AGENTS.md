@@ -43,11 +43,12 @@ enum Command {
 
 ### `u50 style <FILES>... [flags]` → `u50_style`
 
+- **At least one FILE operand is required** unless `--list` or `--setup` is used; `u50 style` with no operands (and neither mode flag) is a usage error (exit 2), matching the original's `nargs='+'` — so an empty-glob mistake cannot silently exit 0.
 - FILE operands may be **directories**: each is expanded recursively like style50 3.0.0 (`os.walk`, symlinked dirs not followed) — only supported extensions are collected, hidden dirs included, results deduplicated and sorted; explicit file args keep per-file error semantics.
 - `-o/--output <character|split|unified|json>` — default `character`; `json` also exists in the original (its README documents it; readthedocs was stale). Exit codes: 0 clean, 1 violations, 3 any per-file error (unreadable file, unsupported type, formatter failure) — other files are still checked and their output streamed.
 - `--fix` — rewrite files in place with style50 formatting (mirrors the original's `-i`/`--in-place`; conflicts with `-o/--output`). Exit codes: 0 all files fixed or already clean, 3 any per-file error (incl. write failures). No exit 1: a plain fix either fixes or errors.
 - `--dry-run` — report what would change without writing (requires `--fix`); prints `would fix: <path>` / `already clean: <path>` status lines, with no diff. Exit codes: 1 when at least one file would change (check-style convention), 0 when everything is already clean, 3 on errors.
-- `--list` — print the language/extensions/binary/status table (see `u50_style/AGENTS.md`, 'Tool management'); ignores FILE operands and the other style flags; exits 0. Conflicts with `--setup`, `--fix`, `--dry-run`, `-o/--output`.
+- `--list` — print the language/extensions/binary/status table (see `u50_style/AGENTS.md`, 'Tool management'); ignores FILE operands and the other style flags; exits 0. Conflicts with `--setup`, `--fix`, `--dry-run`, `-o/--output`. `--list` and `--setup` are the only style invocations that may omit FILE operands.
 - `--setup` — install missing formatter backends into `~/.cache/u50/style50` (parallel pip downloads, one spinner per package), then print the `--list` table. Exit 0 on success, 3 when pip is unavailable or any package failed. Conflicts with `--list`, `--fix`, `--dry-run`, `-o/--output`.
 
 ### `u50 submit <SLUG> [flags]` → `u50_submit`
