@@ -74,6 +74,10 @@ cargo fmt --all -- --check
 CI (GitHub Actions, workflow name `Rust`) runs build, tests, fmt, clippy,
 and the golden suite on every push/PR to `main`.
 
+Optional git-hook integration via [lefthook](https://lefthook.dev): install
+it (`brew install lefthook` or `go install github.com/evilmartians/lefthook@latest`),
+then run `lefthook install` to enable the fmt + clippy pre-commit gates.
+
 ## Documentation
 
 - [`AGENTS.md`](AGENTS.md) — repository conventions for humans and agents

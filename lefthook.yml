@@ -1,0 +1,9 @@
+# Fast feedback before a commit exists: formatting and lint gates.
+# Install once per clone:  lefthook install
+pre-commit:
+  commands:
+    fmt-check:
+      run: cargo fmt --all -- --check
+    clippy:
+      glob: "*.rs"
+      run: cargo clippy --workspace --all-targets -- -Dwarnings
