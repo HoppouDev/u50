@@ -7,7 +7,9 @@
 //! expected.<ext>` shows no diff).
 //!
 //! These tests are GATED: they only run when `U50_STYLE_GOLDEN=1` is set in
-//! the environment AND the language's backing formatter binary is on PATH.
+//! the environment AND the language's backing formatter binary is
+//! resolvable from the u50 style cache (bare tool names are cache-only;
+//! the system `PATH` is never consulted).
 //! Rationale: the ground truth is only byte-stable for a given set of tool
 //! versions, and clang-format in particular varies across machines. CI
 //! installs the exact pinned versions from `tests/tool-versions.txt` (a
@@ -36,10 +38,10 @@ const LANGUAGES: &[(&str, &str, Language, &str)] = &[
     ("sql", "sql", Language::Sql, "sqlformat"),
 ];
 
-/// Whether the engine can resolve `<tool>` — the same resolution the
-/// formatter uses (PATH first, then the u50 style cache installed by
-/// `u50 style --setup`), so the gate never skips a language the engine
-/// itself would check.
+/// Whether the engine can resolve `<tool>` — the same cache-only
+/// resolution the formatter uses (the u50 style cache installed by
+/// `u50 style --setup`; the system `PATH` is never consulted), so the
+/// gate never skips a language the engine itself would check.
 fn tool_available(tool: &str) -> bool {
     u50_style::locate_tool(tool).is_some()
 }
@@ -52,7 +54,7 @@ fn gate(dir: &str, tool: &str) -> bool {
         return false;
     }
     if !tool_available(tool) {
-        eprintln!("skip {dir} golden: `{tool}` not available on PATH");
+        eprintln!("skip {dir} golden: `{tool}` not available in the u50 style cache");
         return false;
     }
     true

@@ -1,9 +1,10 @@
 //! Formatter backend backed by external style tools.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{LazyLock, Mutex};
 
 use crate::language::{Language, missing_tool_message};
 
@@ -25,11 +26,18 @@ pub trait Formatter {
     fn format(&self, source: &str, language: Language) -> anyhow::Result<String>;
 }
 
-/// Where a tool binary was found: the system `PATH`, or u50's cache
-/// (installed by `u50 style --setup`).
+/// Where a tool command came from: an explicit path, or u50's cache
+/// (installed by `u50 style --setup` or auto-provisioned on first use).
+///
+/// u50 NEVER resolves formatter tools through the system `PATH`: bare
+/// tool names are looked up in the cache only, and missing backends are
+/// downloaded into it on first use. [`ToolOrigin::Path`] therefore only
+/// ever applies to commands that themselves contain a `/` — explicit
+/// user-provided paths and `U50_STYLE_<LANG>` override commands, which
+/// are used as-is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolOrigin {
-    /// Found on `PATH`.
+    /// An explicit path command (contains `/`), used as-is.
     Path,
     /// Found in the u50 style cache (`~/.cache/u50/style50`).
     Cache,
@@ -67,22 +75,18 @@ fn is_executable_file(path: &Path) -> bool {
             .is_ok_and(|m| m.permissions().mode() & 0o111 != 0)
 }
 
-/// Resolves `tool` to its location: a path containing `/` is used as-is;
-/// otherwise `PATH` is searched first, then the u50 style cache bin dir
-/// (`u50 style --setup`'s install location). Returns `None` when the tool
-/// is nowhere to be found.
+/// Resolves `tool` to its location, cache-only: a path containing `/` is
+/// an explicit override and is used as-is ([`ToolOrigin::Path`]); a bare
+/// tool name is looked up ONLY in the u50 style cache bin dir (the
+/// `u50 style --setup` / lazy auto-provision install location) — the
+/// system `PATH` is never consulted, so a hostile or unrelated
+/// same-named binary on `PATH` can never be picked up. Returns `None`
+/// when the tool is not in the cache (the caller may then auto-provision
+/// it; see [`Cs50Formatter::format`]).
 #[must_use]
 pub fn locate_tool(tool: &str) -> Option<(PathBuf, ToolOrigin)> {
     if tool.contains('/') {
         return Some((PathBuf::from(tool), ToolOrigin::Path));
-    }
-    if let Ok(path_var) = std::env::var("PATH") {
-        for dir in std::env::split_paths(&path_var) {
-            let candidate = dir.join(tool);
-            if is_executable_file(&candidate) {
-                return Some((candidate, ToolOrigin::Path));
-            }
-        }
     }
     let cached = cache_bin_dir().join(tool);
     if is_executable_file(&cached) {
@@ -115,10 +119,10 @@ fn run_process(
     source: &str,
     on_spawn: impl Fn(std::io::Error) -> anyhow::Error,
 ) -> anyhow::Result<std::process::Output> {
-    // Cache-aware resolution: a bare tool name is looked up on PATH
-    // first, then in the u50 style cache. Only cache hits get their spawn
-    // rewritten to the resolved path; PATH hits and unresolved tools spawn
-    // by name exactly as before, preserving the missing-tool error
+    // Cache-only resolution: bare tool names come from the u50 style
+    // cache only (the system `PATH` is never consulted). Only cache hits
+    // get their spawn rewritten to the resolved path; unresolved tools
+    // spawn by name exactly as before, preserving the missing-tool error
     // messages, and paths containing `/` are used as-is (overrides). No
     // env fixup is needed: the venv console scripts installed by `--setup`
     // carry absolute shebangs and are self-contained.
@@ -169,6 +173,15 @@ fn run_override(var: &str, command: &[String], source: &str) -> anyhow::Result<S
 }
 
 pub(crate) fn run_tool(tool: &str, args: &[&str], source: &str) -> anyhow::Result<String> {
+    // Cache-only spawn guard: never let the OS resolve a bare formatter
+    // tool through `PATH` (user overrides in `run_override` keep their
+    // own semantics).
+    if !tool.contains('/') && locate_tool(tool).is_none() {
+        anyhow::bail!(
+            "{} (not found in the u50 style cache)",
+            missing_tool_message(tool)
+        );
+    }
     let output = run_process(tool, args, source, |e| {
         anyhow::anyhow!("{}: {e}", missing_tool_message(tool))
     })?;
@@ -191,6 +204,13 @@ pub(crate) fn run_tool(tool: &str, args: &[&str], source: &str) -> anyhow::Resul
 /// what runs — the leniency keeps u50 compatible with older djhtml
 /// versions too.
 fn run_tool_lenient(tool: &str, args: &[&str], source: &str) -> anyhow::Result<String> {
+    // Cache-only spawn guard, as in [`run_tool`].
+    if !tool.contains('/') && locate_tool(tool).is_none() {
+        anyhow::bail!(
+            "{} (not found in the u50 style cache)",
+            missing_tool_message(tool)
+        );
+    }
     let output = run_process(tool, args, source, |e| {
         anyhow::anyhow!("{}: {e}", missing_tool_message(tool))
     })?;
@@ -202,6 +222,41 @@ fn run_tool_lenient(tool: &str, args: &[&str], source: &str) -> anyhow::Result<S
         );
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// Tools whose lazy auto-provisioning was already attempted in this
+/// process (see [`ensure_backend_once`]). The first missing-tool
+/// occurrence per run triggers provisioning; later files in the same run
+/// skip straight to the missing-tool error when the first attempt
+/// failed. When an attempt succeeded, [`locate_tool`] finds the tool and
+/// the dedupe never matters.
+static PROVISION_ATTEMPTED: LazyLock<Mutex<HashSet<String>>> =
+    LazyLock::new(|| Mutex::new(HashSet::new()));
+
+/// Attempts to lazily auto-provision `tool` into the u50 style cache
+/// exactly once per process: downloads it via the same uv library path
+/// `u50 style --setup` uses (never through the formatter, so there is no
+/// recursion) and lets the caller's subsequent spawn fail naturally when
+/// provisioning did not help. Set `U50_STYLE_NO_PROVISION` in the
+/// environment to disable (used by hermetic tests).
+fn ensure_backend_once(tool: &str) {
+    if std::env::var_os("U50_STYLE_NO_PROVISION").is_some() {
+        return;
+    }
+    let mut attempted = PROVISION_ATTEMPTED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !attempted.insert(tool.to_owned()) {
+        return;
+    }
+    drop(attempted);
+    tracing::info!(
+        tool,
+        "formatter backend missing from the cache; auto-provisioning"
+    );
+    if let Err(e) = crate::setup::ensure_backend(tool) {
+        tracing::warn!(tool, error = %e, "auto-provisioning failed");
+    }
 }
 
 /// Formatter backed by the same per-language external formatters the
@@ -299,6 +354,17 @@ impl Formatter for Cs50Formatter {
                 argv,
                 source,
             );
+        }
+        // Lazy auto-provisioning: bare tools resolve cache-only, so a
+        // missing backend is downloaded into the cache on first use.
+        // Overridden languages never reach this (early return above), so
+        // overrides never trigger provisioning. A failed attempt is only
+        // warned about — the `run_tool` call below then produces the
+        // usual per-file missing-tool error.
+        if let Some(tool) = language.required_tool()
+            && locate_tool(tool).is_none()
+        {
+            ensure_backend_once(tool);
         }
         match language {
             Language::C | Language::Cpp | Language::Java => {

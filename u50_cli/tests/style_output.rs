@@ -194,10 +194,10 @@ fn fix_honors_override_instead_of_builtin_formatter() {
 fn cache_backends_spawn_when_path_lacks_the_formatter() {
     use std::os::unix::fs::PermissionsExt;
 
-    // Exercises the `--setup` cache-spawn branch deterministically, with
-    // no network and no formatter on PATH: `locate_tool` searches PATH
-    // before the cache, so a cache-only autopep8 + a PATH without it is
-    // the only way a clean result can come from the cache branch.
+    // Exercises the cache-spawn branch deterministically, with no network:
+    // bare tool names resolve cache-only, so a hostile `autopep8` on PATH
+    // (one that fails loudly if it were ever spawned) plus a populated
+    // cache proves the cached backend wins over anything on PATH.
     let root = std::env::temp_dir().join(format!(
         "u50_style_output_cache_spawn_{}",
         std::process::id()
@@ -205,10 +205,15 @@ fn cache_backends_spawn_when_path_lacks_the_formatter() {
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).expect("create root");
 
-    // Restricted PATH: a dir containing ONLY `cat` (no autopep8 at all).
+    // Restricted PATH: `cat`, plus a HOSTILE `autopep8` that fails loudly
+    // (`FAKE` on stderr) if it were ever spawned — it must never win.
     let bins = root.join("bins");
     std::fs::create_dir_all(&bins).expect("create bins");
     std::os::unix::fs::symlink("/usr/bin/cat", bins.join("cat")).expect("symlink cat");
+    let fake = bins.join("autopep8");
+    std::fs::write(&fake, "#!/bin/sh\necho FAKE >&2\nexit 42\n").expect("write fake");
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755))
+        .expect("chmod fake executable");
 
     // A fake `--setup`-populated cache: `venv/bin/autopep8` as an
     // identity stub (`cat`), mirroring the uv-managed venv layout.
@@ -226,12 +231,15 @@ fn cache_backends_spawn_when_path_lacks_the_formatter() {
     let path = temp_py("cache_spawn", "x = 1   \n");
     let p = path.to_str().expect("utf-8 temp path");
 
+    // `U50_STYLE_NO_PROVISION` keeps the runs hermetic: without it the
+    // empty-cache control would attempt a real network auto-provision.
     let run = |cache: &Path| {
         let out = Command::new(EXE)
             .args(["style", "--fix", "--dry-run", p])
             .args(["--color", "never"])
             .env("XDG_CACHE_HOME", cache)
             .env("PATH", &bins)
+            .env("U50_STYLE_NO_PROVISION", "1")
             .env_remove("U50_STYLE_PYTHON")
             .output()
             .expect("spawn u50");
@@ -242,8 +250,8 @@ fn cache_backends_spawn_when_path_lacks_the_formatter() {
         )
     };
 
-    // Populated cache: the cached stub is used despite the restricted
-    // PATH (a PATH-based resolution would fail to find autopep8).
+    // Populated cache: the cached stub is used even though a hostile
+    // `autopep8` sits on PATH — PATH is never consulted.
     let (code, stdout, stderr) = run(&cache);
     assert_eq!(
         code, 0,
@@ -253,10 +261,15 @@ fn cache_backends_spawn_when_path_lacks_the_formatter() {
         stdout.contains(&format!("already clean: {}", path.display())),
         "expected `already clean:` line: {stdout}"
     );
+    assert!(
+        !stderr.contains("FAKE"),
+        "the PATH fake must never be spawned: {stderr}"
+    );
 
-    // Control: the SAME restricted PATH with an EMPTY cache — the tool is
-    // nowhere to be found, proving the result above came from the cache
-    // branch, not PATH: per-file error naming the backend, exit 3.
+    // Control: the SAME hostile PATH with an EMPTY cache — the tool is
+    // nowhere to be found (provisioning disabled), so the per-file error
+    // naming the backend fires (exit 3). The fake's loud failure (FAKE,
+    // exit 42) must not leak into the result: PATH was ignored.
     let empty = root.join("empty-cache");
     std::fs::create_dir_all(&empty).expect("create empty cache");
     let (code, stdout, stderr) = run(&empty);
@@ -264,6 +277,68 @@ fn cache_backends_spawn_when_path_lacks_the_formatter() {
     assert!(
         stderr.contains("autopep8"),
         "error must name the missing backend: {stderr}"
+    );
+    assert!(
+        !stderr.contains("FAKE"),
+        "the PATH fake must never be spawned: {stderr}"
+    );
+
+    cleanup(&path);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn path_fake_is_never_used_for_formatter_tools() {
+    use std::os::unix::fs::PermissionsExt;
+
+    // Cache-only resolution, end to end: a scratch cache, a trivial py
+    // file, and a PATH whose `autopep8` is a fake that would report the
+    // file as "already clean" if it were ever used. The run must NOT go
+    // through the fake: with provisioning disabled it errors on the real
+    // missing cache backend (exit 3) instead of the fake's clean exit 0.
+    let root =
+        std::env::temp_dir().join(format!("u50_style_output_path_fake_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let bins = root.join("bins");
+    std::fs::create_dir_all(&bins).expect("create bins");
+    let fake = bins.join("autopep8");
+    std::fs::write(&fake, "#!/bin/sh\ncat\n").expect("write fake");
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755))
+        .expect("chmod fake executable");
+
+    let scratch_cache = root.join("cache");
+    std::fs::create_dir_all(&scratch_cache).expect("create scratch cache");
+    let path = temp_py("path_fake", "x = 1\n");
+    let p = path.to_str().expect("utf-8 temp path");
+
+    let out = Command::new(EXE)
+        .args(["style", "--fix", "--dry-run", p])
+        .args(["--color", "never"])
+        .env("XDG_CACHE_HOME", &scratch_cache)
+        .env("PATH", &bins)
+        .env("U50_STYLE_NO_PROVISION", "1")
+        .env_remove("U50_STYLE_PYTHON")
+        .output()
+        .expect("spawn u50");
+    let code = out.status.code().unwrap_or(-1);
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+
+    assert_ne!(
+        code, 0,
+        "the PATH fake's clean outcome must not happen (stdout: {stdout})"
+    );
+    assert!(
+        !stdout.contains("already clean"),
+        "the PATH fake must never win: {stdout}"
+    );
+    assert_eq!(
+        code, 3,
+        "cache-only miss must produce the per-file error exit 3 (stderr: {stderr})"
+    );
+    assert!(
+        stderr.contains("autopep8"),
+        "error must name the real backend, not use the fake: {stderr}"
     );
 
     cleanup(&path);

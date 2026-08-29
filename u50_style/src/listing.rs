@@ -1,9 +1,10 @@
 //! `--list` support: a table of supported languages, their backing
-//! binaries, and where each binary was found (PATH, cache, or nowhere).
+//! binaries, and whether each binary was found in u50's cache (bare tool
+//! names are resolved cache-only — the system `PATH` is never consulted).
 
 use std::fmt::Write as _;
 
-use crate::formatter::{ToolOrigin, locate_tool};
+use crate::formatter::locate_tool;
 use crate::language::Language;
 
 /// Prints the language/binary/status table to stdout:
@@ -11,7 +12,7 @@ use crate::language::Language;
 /// ```text
 /// Language    Extensions         Binary         Status
 /// ----------  -----------------  -------------  ----------
-/// C           c, h               clang-format   found (PATH)
+/// C           c, h               clang-format   found (cache)
 /// ```
 ///
 /// # Panics
@@ -23,10 +24,12 @@ pub fn list_languages() {
         let tool = language
             .required_tool()
             .expect("every supported language has a backing tool");
-        let status = match locate_tool(tool) {
-            Some((_, ToolOrigin::Path)) => "found (PATH)",
-            Some((_, ToolOrigin::Cache)) => "found (cache)",
-            None => "missing",
+        // Bare tool names resolve cache-only, so a hit is always a
+        // cache hit (the status never claims `PATH` for these tools).
+        let status = if locate_tool(tool).is_some() {
+            "found (cache)"
+        } else {
+            "missing"
         };
         rows.push((
             language.display_name().to_owned(),

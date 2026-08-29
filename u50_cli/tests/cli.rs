@@ -35,14 +35,15 @@ fn style_list_prints_language_table() {
         assert_eq!(rows, 1, "expected exactly one row for {name}");
     }
 
-    // Status column only ever says found (PATH|cache) or missing.
+    // Status column only ever says found (cache) or missing: bare tool
+    // names resolve cache-only.
     for line in stdout.lines().skip(2) {
         if line.trim().is_empty() {
             continue;
         }
         let status = line.rsplit(' ').next().unwrap_or("");
         assert!(
-            ["(PATH)", "(cache)", "missing"].contains(&status),
+            ["(cache)", "missing"].contains(&status),
             "unexpected status token {status:?} in {line:?}"
         );
     }
