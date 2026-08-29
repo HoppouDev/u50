@@ -124,7 +124,7 @@ fn fix_rewrites_dirty_file_then_reports_already_clean() {
 }
 
 #[test]
-fn fix_dry_run_prints_status_lines_then_diff_leaves_files_untouched() {
+fn fix_dry_run_prints_status_lines_and_leaves_files_untouched() {
     let dirty = temp_py("fix_dry_run", "x = 1\n");
     let clean = temp_py("fix_dry_run_clean", "X = 1\n");
     let args = [
@@ -138,25 +138,15 @@ fn fix_dry_run_prints_status_lines_then_diff_leaves_files_untouched() {
         code, 1,
         "dry run with a would-fix must exit 1 (stderr: {stderr})"
     );
+    // Dry run reports per-file status (no diff since 12545d8): the label
+    // is `would fix` because nothing was written.
     assert!(
         stdout.contains(&format!("would fix: {}", dirty.display())),
-        "expected `would fix:` line: {stdout}"
+        "expected `would fix:` status line: {stdout}"
     );
     assert!(
         stdout.contains(&format!("already clean: {}", clean.display())),
         "expected `already clean:` line: {stdout}"
-    );
-    assert!(
-        stdout.contains("+X = 1"),
-        "dry run must print diff: {stdout}"
-    );
-    // The diff comes first, the status summary after it — so on large
-    // inputs `| tail` still shows the summary.
-    let diff_start = stdout.find("+X = 1").expect("diff present");
-    let status_start = stdout.find("already clean:").expect("status line present");
-    assert!(
-        diff_start < status_start,
-        "diff must precede the status summary: {stdout}"
     );
     assert_eq!(
         read_back(&dirty),

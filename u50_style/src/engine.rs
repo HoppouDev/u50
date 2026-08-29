@@ -270,10 +270,10 @@ fn walk_dir(dir: &Path, files: &mut BTreeSet<PathBuf>) {
 /// - plain fix (`dry_run == false`): each processed file prints to stdout
 ///   as `fixed: <path>` or `already clean: <path>` (diff rendering is
 ///   ignored).
-/// - dry run (`dry_run == true`, text modes): nothing is written; the
-///   rendered diff for every file that would change is printed first,
-///   followed by a per-file status summary (`would fix: <path>` /
-///   `already clean: <path>`) at the end (per `req.output`).
+/// - dry run (`dry_run == true`, text modes): nothing is written; each
+///   processed file prints to stdout as `would fix: <path>` or
+///   `already clean: <path>` — no diff rendering (the exit code 1
+///   signals what would have changed).
 /// - dry run in JSON mode (`dry_run == true`, `Output::Json`): the JSON
 ///   document of would-fix results only — no status lines (the output is
 ///   machine-readable; already-clean files are omitted).
@@ -301,7 +301,7 @@ pub fn fix(req: &Request, dry_run: bool) -> Report {
                 if result.clean {
                     println!("already clean: {}", result.path.display());
                 } else {
-                    println!("fixed: {}", result.path.display());
+                    println!("would fix: {}", result.path.display());
                 }
             }
         }
