@@ -50,14 +50,14 @@ All 8 languages of **style50 3.0.0** (per `style50 -E` → `[c, h, cpp, hpp, py,
 
 | Language | Extensions | Backend tool | Install hint |
 | --- | --- | --- | --- |
-| C | c, h | `clang-format` (>= 14) | distro package |
-| C++ | cpp, hpp | `clang-format` (>= 14) | distro package |
-| Java | java | `clang-format` (>= 14) | distro package |
-| Python | py | `autopep8` | `pip install autopep8` |
-| JavaScript | js | `js-beautify` | `pip install jsbeautifier` |
-| HTML | html | `djhtml` | `pip install djhtml` |
-| CSS | css | `css-beautify` | `pip install cssbeautifier` |
-| SQL | sql | `sqlformat` | `pip install sqlparse` |
+| C | c, h | `clang-format` (>= 14) | auto-provisioned by u50 on first use |
+| C++ | cpp, hpp | `clang-format` (>= 14) | auto-provisioned by u50 on first use |
+| Java | java | `clang-format` (>= 14) | auto-provisioned by u50 on first use |
+| Python | py | `autopep8` | auto-provisioned by u50 on first use |
+| JavaScript | js | `js-beautify` | auto-provisioned by u50 on first use |
+| HTML | html | `djhtml` | auto-provisioned by u50 on first use |
+| CSS | css | `css-beautify` | auto-provisioned by u50 on first use |
+| SQL | sql | `sqlformat` | auto-provisioned by u50 on first use |
 
 Per-tool options (mirroring the original's `languages.py` option values; flag names verified against the installed CLIs):
 
@@ -68,7 +68,7 @@ Per-tool options (mirroring the original's `languages.py` option values; flag na
 - CSS: `css-beautify --indent-size 4 --end-with-newline -` (original: `cssbeautifier.beautify(...)` with `indent_size = 4, end_with_newline = True`; verified byte-identical to the library call).
 - SQL: `sqlformat -k upper -r --indent_width 4 -`, with a `\n` appended when the output lacks one (matching the original's `Sql.style` fix-up). `sqlformat` is the CLI of the same `sqlparse` library the original calls; verified byte-identical to `sqlparse.format(code, reindent=True, keyword_case='upper', indent_width=4)` + trailing-newline append.
 
-The original calls the Python libraries (`autopep8`, `jsbeautifier`, `cssbeautifier`, `sqlparse`) directly; u50 shells out to the pip CLIs, which apply the same defaults. A missing binary produces a per-language error, e.g. "`autopep8` is required to check Python style (pip install autopep8)".
+The original calls the Python libraries (`autopep8`, `jsbeautifier`, `cssbeautifier`, `sqlparse`) directly; u50 shells out to the pip CLIs, which apply the same defaults. All backends are auto-provisioned by u50 into its cache on first use (see 'Tool management'); a system-wide `pip install` still works but is not required. When provisioning fails (or is disabled via `U50_STYLE_NO_PROVISION=1`) and the binary is absent, a per-language error is produced, e.g. "`autopep8` is required to check Python style (pip install autopep8)".
 
 ## Tool management (`--list` / `--setup`)
 
@@ -77,25 +77,35 @@ binary wheel), `autopep8`, `jsbeautifier` (bin `js-beautify`), `djhtml`,
 `cssbeautifier` (bin `css-beautify`), and `sqlparse` (bin `sqlformat`).
 Mapping per language: C/C++/Java → clang-format, Python → autopep8,
 JavaScript → js-beautify, HTML → djhtml, CSS → css-beautify, SQL → sqlformat
-(`Language::pip_package`).
+(`Language::pip_package`). u50 installs them **itself** into a uv-managed
+cache — `$XDG_CACHE_HOME`/`~/.cache` → `u50/style50` (paths built by
+`cache_dir()`; binaries in `cache_bin_dir()` = `<cache>/venv/bin`) — with no
+system pip, no distro packages, and no PATH reliance. Tool resolution is
+**cache-only** (see below), so a missing backend is simply one not yet in
+the cache, and such backends are auto-provisioned lazily on first use (see
+'Lazy auto-provisioning', below). That makes `--setup` the
+**bulk/explicit** path — for pre-downloading everything up front (CI,
+ahead of offline runs) — but never a prerequisite for formatting.
 
 ### `u50 style --list`
 
-Prints an aligned table of languages, extensions, backing binary, and status
-(`found (PATH)` / `found (cache)` / `missing`, computed with the same
-resolution the formatter uses):
+Prints an aligned table of languages, extensions, backing binary, and
+status. Because bare tool names resolve cache-only, the status is
+`found (cache)` when the binary is in the u50 cache and `missing` when it
+is not — the system `PATH` is never consulted and never reported. `--list`
+**never provisions**; it purely reports:
 
 ```text
 Language    Extensions  Binary        Status
-----------  ----------  ------------  ------
-C           c, h        clang-format  found (PATH)
-C++         cpp, hpp    clang-format  found (PATH)
-Java        java        clang-format  found (PATH)
-Python      py          autopep8      found (PATH)
-JavaScript  js          js-beautify   found (PATH)
-HTML        html        djhtml        found (PATH)
-CSS         css         css-beautify  found (PATH)
-SQL         sql         sqlformat     found (PATH)
+----------  ----------  ------------  -------------
+C           c, h        clang-format  found (cache)
+C++         cpp, hpp    clang-format  found (cache)
+Java        java        clang-format  found (cache)
+Python      py          autopep8      found (cache)
+JavaScript  js          js-beautify   found (cache)
+HTML        html        djhtml        found (cache)
+CSS         css         css-beautify  found (cache)
+SQL         sql         sqlformat     found (cache)
 ```
 
 File operands and the other style flags are ignored; always exits 0. Clap
@@ -104,41 +114,65 @@ makes `--list` conflict with `--setup`, `--fix`, `--dry-run`, and
 
 ### `u50 style --setup`
 
-Installs missing formatter backends into u50's cache —
-`$XDG_CACHE_HOME`/`~/.cache` → `u50/style50` (paths built by `cache_dir()` /
-`cache_bin_dir()`):
+Installs missing formatter backends into u50's cache in-process (uv library
+calls — no pip subprocesses, no system Python required). Same in-process
+flow as lazy provisioning, but as the **bulk/explicit** path: single tools
+are also provisioned automatically on first use (see 'Lazy
+auto-provisioning', below), so `--setup` is not needed anymore on a bare
+machine — it exists to pre-download everything up front and to report
+per-package outcomes:
 
-1. Determines the distinct pip packages of tools not resolvable from PATH or
-   the cache; if none, prints `all formatter backends are already available`.
+1. Determines the distinct pip packages of tools not resolvable from the
+   cache; if none, prints `all formatter backends are already available`.
 2. Prints `installing N package(s) into <cache dir>`.
-3. Verifies `python3 -m pip --version`; if pip is missing, prints a
-   per-package `failed:` line and exits 3.
-4. **Parallel downloads**: one thread per package (indicatif `MultiProgress`
-   spinner each) running `python3 -m pip download --dest <cache>/wheels <pkg>`
-   (stderr captured for failure reasons).
-5. Installs with a single local `python3 -m pip install --no-index
-   --find-links <cache>/wheels --target <cache>/python <pkgs...>` — console
-   scripts land in `<cache>/python/bin`, modules in `<cache>/python`.
+3. Provisions a uv-managed CPython 3.14 and a venv at `<cache>/venv` when
+   absent. The venv's console scripts carry absolute shebangs and are
+   self-contained, so no environment fixup is needed at spawn time.
+4. **Parallel downloads**: one task and one spinner per package (indicatif
+   `MultiProgress`), each fetching the package's best wheel via the PyPI
+   JSON API. Backend versions are pinned (`PINNED_VERSIONS`, matching
+   [`tests/tool-versions.txt`](tests/tool-versions.txt) — the golden-fixture
+   source of truth); each backend's hardcoded transitive runtime
+   dependencies (`TRANSITIVE_DEPS`) are fetched alongside it, unpinned
+   (latest release). Previously fetched wheels are reused across runs.
+5. Installs every fetched wheel into the venv in a single `uv-installer`
+   call.
 6. Prints per-package `installed: <pkg> (<tool>)` or `failed: <pkg>: <reason>`
    (a package counts as installed only when its tool is resolvable from the
    cache bin dir afterwards), then prints the `--list` table. Any failure
    exits 3.
 
-### Cache-aware tool resolution
+### Cache-only tool resolution
 
-Formatter spawn (`run_process`) resolves bare tool names via
-`locate_tool(tool)`: **PATH first, then `<cache>/python/bin`** — PATH
-behavior is unchanged (backward compatible; unresolved tools keep the
-missing-tool error messages). Only **cache hits** spawn the resolved path and
-additionally set `PYTHONPATH` with `<cache>/python` prepended (cached
-pure-Python console scripts import their modules from there). Tools given as
-paths (override commands containing `/`) are used as-is.
+Formatter spawn resolves tool commands via `locate_tool(tool)`, which
+resolves **bare tool names from `<cache>/venv/bin` ONLY — the system `PATH`
+is never consulted**, so a hostile or unrelated same-named binary on
+`PATH` can never be picked up. A bare tool absent from the cache is never
+spawned by name (which would let `Command::new` fall back to the OS `PATH`):
+the built-in and override call sites check `locate_tool` first and emit the
+standard missing-tool error instead of spawning. Cache hits spawn by
+resolved path; commands containing `/` (explicit paths and
+`U50_STYLE_<LANG>` override commands) are used as-is.
 
-Verified end-to-end: with the 6 tools absent from PATH, `--setup` installed
-all 6 packages in parallel into a scratch cache and a subsequent
-`u50 style --fix` on Python and C files formatted both correctly via the
-cache (`found (cache)` in `--list`), exercising the `PYTHONPATH` path for
-`autopep8` and the standalone `clang-format` binary wheel.
+### Lazy auto-provisioning
+
+When a language's backend is missing from the cache at format time (and no
+`U50_STYLE_<LANG>` override applies to that language), u50 auto-provisions
+it on first use: the tool is mapped to its pip package and installed via
+the same install core as `--setup` (uv library path — managed CPython 3.14
+if needed, venv, pinned wheel + transitive deps), deduplicated per process
+(`ensure_backend_once`: the first missing-tool occurrence per run triggers
+provisioning; later files in the same run skip straight to the error when
+the first attempt failed). Provisioning failures degrade to the standard
+per-file missing-tool error (exit 3). Set `U50_STYLE_NO_PROVISION=1` to
+disable auto-provisioning entirely (hermetic tests / CI).
+
+Verified end-to-end: a fake same-named binary planted on `PATH` is never
+used (cache-only resolution ignores `PATH` entirely), and on an empty cache
+u50 auto-provisions the needed backend on first format and then formats
+correctly via the cache (`found (cache)` in `--list`), exercising both the
+managed CPython + venv provisioning and the standalone `clang-format`
+binary wheel.
 
 ## Input normalization (style50 3.0.0 semantics)
 
@@ -249,7 +283,7 @@ Run:
 U50_STYLE_GOLDEN=1 cargo test --test golden
 ```
 
-**Gating/skip behavior**: each language's golden test runs only when `U50_STYLE_GOLDEN=1` is set AND the language's backing tool is on PATH (`<tool> --version` succeeds); otherwise the test prints a `skip` line and returns. The ground truth is only byte-stable for a given set of tool versions, so backend versions are pinned in [`tests/tool-versions.txt`](tests/tool-versions.txt) (a pip constraints file — the single source of truth). CI installs exactly those versions into a venv and runs the golden suite as a dedicated step; locally, run `U50_STYLE_GOLDEN=1 cargo test --test golden` (with your tools at the pinned versions — `u50 style --list` shows what you have). When a backend is upgraded, refresh this file, `tool-versions.txt`, and the goldens together.
+**Gating/skip behavior**: each language's golden test runs only when `U50_STYLE_GOLDEN=1` is set AND the language's backing tool is found in the u50 style cache (cache-only resolution — the system `PATH` is never consulted); otherwise the test prints a `skip` line and returns. The ground truth is only byte-stable for a given set of tool versions, so backend versions are pinned in [`tests/tool-versions.txt`](tests/tool-versions.txt) (a pip constraints file — the single source of truth). CI provisions exactly those versions via `u50 style --setup` (dogfooding u50's own installer) and runs the golden suite as a dedicated step; locally, run `u50 style --setup` once, then `U50_STYLE_GOLDEN=1 cargo test --test golden` (`u50 style --list` shows what is in your cache). When a backend is upgraded, refresh this file, `tool-versions.txt`, and the goldens together.
 
 ### Large real-world fixtures and provenance
 

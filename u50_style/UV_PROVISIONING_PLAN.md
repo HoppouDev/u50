@@ -24,6 +24,10 @@
 
 ## Current state (baseline: HEAD 6f1db0e/dcf6d43 chain, origin/main a6dd917+)
 
+> Superseded: as of 2026-08-29 the shipped semantics are cache-only
+> resolution + lazy auto-provisioning — see the Status log and
+> `u50_style/AGENTS.md`. The pip-era description below is kept as history.
+
 - `setup.rs` `setup_missing()`: `python3 -m pip --version` probe →
   parallel `python3 -m pip download --dest <cache>/wheels <pkg==ver>` threads
   (indicatif spinners) → one `python3 -m pip install --no-index --find-links
@@ -59,8 +63,9 @@
 - Tool spawn after migration: cached console scripts live in
   `<cache>/venv/bin` with **absolute shebangs to the venv python** —
   self-contained, so `run_process` **drops the PYTHONPATH injection**.
-  `locate_tool` order stays PATH-first-then-cache (PATH still wins if the
-  user has system tools).
+  (Implemented with a change: `locate_tool` is **cache-only** — bare tool
+  names resolve from `<cache>/venv/bin` only and `PATH` is never consulted —
+  per user directive during implementation; see the Status log.)
 - CI: golden step dogfoods the new path — `cargo run -q --bin u50 -- style
   --setup` provisions everything, then `U50_STYLE_GOLDEN=1 cargo test --test
   golden` (the gate resolves tools from the cache via locate_tool).
@@ -183,3 +188,17 @@ Phase 1's setup.rs rewrite.
 - 2026-08-29: plan created and committed; Phase 0 starting.
 - 2026-08-29 (late): deps commit 32cb133; spike example 09da6e0; Phase 0
   COMPLETE — all three primitives verified end-to-end. Phase 1 next.
+- 2026-08-29 (later): Phase 1 COMPLETE — `setup.rs` rewritten onto the uv
+  library path (in-process provisioning: managed CPython 3.14, venv,
+  pinned wheels + transitive deps; no pip subprocesses); committed e0ff01a
+  plus retry/timeout hardening 0052a78. Phase 2 next.
+- 2026-08-29: Phase 2 COMPLETE — CI dogfoods `u50 style --setup` in the
+  golden step; distro clang-format collision fixed (runner cleanup, later
+  obsoleted by cache-only resolution); run 33275249425 green.
+- 2026-08-29: cache-only tool resolution + lazy auto-provisioning
+  implemented (user directive: no PATH reliance) — `locate_tool` resolves
+  bare tool names from `<cache>/venv/bin` only and never consults `PATH`;
+  bare tools absent from the cache are never spawned by name; missing
+  backends auto-provision on first use via the same uv install core
+  (per-process dedup; `U50_STYLE_NO_PROVISION=1` opts out); `--list`
+  reports `found (cache)`/`missing`.
