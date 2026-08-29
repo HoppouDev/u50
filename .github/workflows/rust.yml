@@ -23,10 +23,6 @@ jobs:
       run: cargo test --verbose
     - name: Golden tests (dogfood `u50 style --setup`; byte-compare against style50 3.0.0 ground truth)
       run: |
-        # ubuntu runners ship a distro clang-format; remove it so u50
-        # provisions and uses its own pinned wheel (the golden fixtures are
-        # byte-stable only for the pinned backend versions).
-        sudo rm -f /usr/bin/clang-format*
         cargo run -q --bin u50 -- style --setup
         U50_STYLE_GOLDEN=1 cargo test -p u50_style --test golden --release
     - name: Format
