@@ -124,25 +124,54 @@ fn fix_rewrites_dirty_file_then_reports_already_clean() {
 }
 
 #[test]
-fn fix_dry_run_prints_diff_but_leaves_file_untouched() {
-    let path = temp_py("fix_dry_run", "x = 1\n");
-    let p = path.to_str().expect("utf-8 temp path");
-    let args = ["--fix", "--dry-run", p];
+fn fix_dry_run_prints_status_lines_then_diff_leaves_files_untouched() {
+    let dirty = temp_py("fix_dry_run", "x = 1\n");
+    let clean = temp_py("fix_dry_run_clean", "X = 1\n");
+    let args = [
+        "--fix",
+        "--dry-run",
+        dirty.to_str().expect("utf-8 temp path"),
+        clean.to_str().expect("utf-8 temp path"),
+    ];
     let (code, stdout, stderr) = style(&args, UPPER);
     assert_eq!(
         code, 1,
         "dry run with a would-fix must exit 1 (stderr: {stderr})"
     );
     assert!(
+        stdout.contains(&format!("would fix: {}", dirty.display())),
+        "expected `would fix:` line: {stdout}"
+    );
+    assert!(
+        stdout.contains(&format!("already clean: {}", clean.display())),
+        "expected `already clean:` line: {stdout}"
+    );
+    assert!(
         stdout.contains("+X = 1"),
         "dry run must print diff: {stdout}"
     );
-    assert_eq!(
-        read_back(&path),
-        "x = 1\n",
-        "dry run must not touch the file"
+    // Status lines come first, the diff after them.
+    let status_end = stdout
+        .find(&format!("already clean: {}", clean.display()))
+        .expect("status line present")
+        + "already clean:".len();
+    let diff_start = stdout.find("+X = 1").expect("diff present");
+    assert!(
+        status_end <= diff_start,
+        "status lines must precede the diff: {stdout}"
     );
-    cleanup(&path);
+    assert_eq!(
+        read_back(&dirty),
+        "x = 1\n",
+        "dry run must not touch the dirty file"
+    );
+    assert_eq!(
+        read_back(&clean),
+        "X = 1\n",
+        "dry run must not touch the clean file"
+    );
+    cleanup(&dirty);
+    cleanup(&clean);
 }
 
 #[test]
@@ -160,7 +189,15 @@ fn fix_honors_override_instead_of_builtin_formatter() {
         code, 0,
         "clean-under-override must exit 0 (stdout: {stdout}, stderr: {stderr})"
     );
-    assert!(stdout.is_empty(), "no diff may be printed: {stdout}");
+    // Status lines are printed in dry-run text mode too, but no diff.
+    assert!(
+        stdout.contains(&format!("already clean: {}", path.display())),
+        "expected `already clean:` line: {stdout}"
+    );
+    assert!(
+        !stdout.contains("-x=1") && !stdout.contains('+'),
+        "no diff may be printed: {stdout}"
+    );
     assert_eq!(read_back(&path), "x=1\n");
     cleanup(&path);
 }

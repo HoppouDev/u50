@@ -46,7 +46,7 @@ enum Command {
 - FILE operands may be **directories**: each is expanded recursively like style50 3.0.0 (`os.walk`, symlinked dirs not followed) — only supported extensions are collected, hidden dirs included, results deduplicated and sorted; explicit file args keep per-file error semantics.
 - `-o/--output <character|split|unified|json>` — default `character`; `json` also exists in the original (its README documents it; readthedocs was stale). Exit codes: 0 clean, 1 violations, 3 any per-file error (unreadable file, unsupported type, formatter failure) — other files are still checked and their output streamed.
 - `--fix` — rewrite files in place with style50 formatting (mirrors the original's `-i`/`--in-place`; conflicts with `-o/--output`). Exit codes: 0 all files fixed or already clean, 3 any per-file error (incl. write failures). No exit 1: a plain fix either fixes or errors.
-- `--dry-run` — show what would change without writing (requires `--fix`); prints the rendered diff per would-change file (JSON mode: the JSON document). Exit codes: 1 when at least one file would change (check-style convention), 0 when everything is already clean, 3 on errors.
+- `--dry-run` — show what would change without writing (requires `--fix`); prints `would fix: <path>` / `already clean: <path>` status lines per file, then the rendered diff per would-change file (JSON mode: the would-fix JSON document only, no status lines). Exit codes: 1 when at least one file would change (check-style convention), 0 when everything is already clean, 3 on errors.
 
 ### `u50 submit <SLUG> [flags]` → `u50_submit`
 
