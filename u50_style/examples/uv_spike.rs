@@ -1,12 +1,12 @@
 //! Phase 0 spike: prove the three uv library provisioning primitives
-//! (u50_style/UV_PROVISIONING_PLAN.md):
+//! (`u50_style/UV_PROVISIONING_PLAN.md`):
 //!
-//!   (a) uv-python downloads/installs a managed CPython 3.14 and reports its location,
-//!   (b) uv-virtualenv creates a venv from that interpreter,
-//!   (c) uv-installer installs wheels fetched from PyPI into the venv and the
+//!   (a) `uv-python` downloads/installs a managed `CPython` 3.14 and reports its location,
+//!   (b) `uv-virtualenv` creates a venv from that interpreter,
+//!   (c) `uv-installer` installs wheels fetched from `PyPI` into the venv and the
 //!       console script runs.
 //!
-//! Run with: cargo run -p u50_style --example uv_spike --release
+//! Run with: `cargo run -p u50_style --example uv_spike --release`
 #![warn(clippy::pedantic)]
 
 use std::path::Path;
@@ -21,9 +21,9 @@ use uv_client::BaseClientBuilder;
 use uv_distribution_filename::WheelFilename;
 use uv_distribution_types::{CachedDirectUrlDist, CachedDist};
 use uv_installer::Installer;
-use uv_pypi_types::{HashDigest, HashDigests, ParsedUrl, VerbatimParsedUrl};
 use uv_pep508::VerbatimUrl;
 use uv_preview::Preview;
+use uv_pypi_types::{HashDigest, HashDigests, ParsedUrl, VerbatimParsedUrl};
 use uv_python::downloads::{DownloadResult, ManagedPythonDownloadList, PythonDownloadRequest};
 use uv_python::managed::{ManagedPythonInstallation, ManagedPythonInstallations};
 use uv_python::{Interpreter, VersionRequest};
@@ -43,6 +43,10 @@ const WHEELS: &[(&str, &str)] = &[("autopep8", "2.3.2"), ("pycodestyle", "2.14.0
 async fn main() -> Result<()> {
     // Shared cache: interpreter-info queries (Interpreter::query) and wheel
     // storage both want one. Persistent (not temp) so re-runs are cheap.
+    // Several uv crates read the process-global preview state; initialize it
+    // before touching any uv APIs.
+    uv_preview::set(Preview::default()).context("preview init")?;
+
     let cache = Cache::from_path(CACHE_DIR)
         .init()
         .await
@@ -108,11 +112,11 @@ async fn main() -> Result<()> {
         venv_path,
         interpreter,
         Prompt::Static("u50-spike".to_string()),
-        false,              // system_site_packages
-        OnExisting::Allow,  // idempotent re-runs
-        false,              // relocatable
+        false,             // system_site_packages
+        OnExisting::Allow, // idempotent re-runs
+        false,             // relocatable
         Seed::Disabled,
-        false,              // upgradeable
+        false, // upgradeable
     )
     .context("create venv")?;
     println!("[b] venv: {}", venv.root().display());
@@ -122,7 +126,9 @@ async fn main() -> Result<()> {
     // ---- (c) install wheels fetched from PyPI --------------------------
     let mut dists = Vec::new();
     for (package, version) in WHEELS {
-        let dist = fetch_wheel(package, version).await.with_context(|| format!("resolve {package} {version}"))?;
+        let dist = fetch_wheel(package, version)
+            .await
+            .with_context(|| format!("resolve {package} {version}"))?;
         println!("[c] wheel ready: {}", dist.path().display());
         dists.push(dist);
     }
@@ -156,7 +162,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// Resolve the pure-python wheel for `package == version` via the PyPI JSON
+/// Resolve the pure-python wheel for `package == version` via the `PyPI` JSON
 /// API, download it into the cache dir, and wrap it as a [`CachedDist`] that
 /// `uv-installer` accepts.
 async fn fetch_wheel(package: &str, version: &str) -> Result<CachedDist> {
@@ -205,15 +211,27 @@ async fn fetch_wheel(package: &str, version: &str) -> Result<CachedDist> {
         .context("no sha256")?
         .to_string();
 
+    // Download the wheel, then unzip it into a cache archive dir: the
+    // installer installs from an *unzipped* wheel tree (it reads
+    // `<prefix>.dist-info/WHEEL` from `dist.path()`), mirroring uv's own
+    // `archive-v0` layout.
     let dir = Path::new(CACHE_DIR).join("spike-wheels");
     tokio::fs::create_dir_all(&dir).await?;
-    let path = dir.join(&filename);
+    let wheel_path = dir.join(&filename);
     let bytes = reqwest::get(&wheel_url)
         .await?
         .error_for_status()?
         .bytes()
         .await?;
-    tokio::fs::write(&path, &bytes).await?;
+    tokio::fs::write(&wheel_path, &bytes).await?;
+    let archive = dir.join(filename.trim_end_matches(".whl"));
+    tokio::fs::remove_dir_all(&archive).await.ok();
+    tokio::fs::create_dir_all(&archive).await?;
+    uv_extract::unzip(
+        fs_err::File::open(&wheel_path).context("open wheel")?,
+        &archive,
+    )
+    .context("unzip wheel")?;
 
     let display_url = DisplaySafeUrl::parse(&wheel_url).context("wheel url")?;
     Ok(CachedDist::Url(CachedDirectUrlDist {
@@ -222,9 +240,10 @@ async fn fetch_wheel(package: &str, version: &str) -> Result<CachedDist> {
             parsed_url: ParsedUrl::try_from(display_url.clone()).context("parsed url")?,
             verbatim: VerbatimUrl::from_url(display_url),
         },
-        path: path.into_boxed_path(),
-        hashes: HashDigests::from(vec![HashDigest::from_str(&format!("sha256:{sha256}"))
-            .context("hash digest")?]),
+        path: archive.into_boxed_path(),
+        hashes: HashDigests::from(vec![
+            HashDigest::from_str(&format!("sha256:{sha256}")).context("hash digest")?,
+        ]),
         cache_info: CacheInfo::default(),
         build_info: None,
     }))

@@ -2,3 +2,5 @@
 .pi/
 tmp/
 /.ruff-cache/
+.env
+.env.*

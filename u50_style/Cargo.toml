@@ -16,6 +16,8 @@ uv-cache = { workspace = true }
 uv-cache-info = { workspace = true }
 uv-client = { workspace = true }
 uv-distribution-filename = { workspace = true }
+fs-err = { workspace = true }
+uv-extract = { workspace = true }
 uv-distribution-types = { workspace = true }
 uv-pep508 = { workspace = true }
 uv-pypi-types = { workspace = true }
