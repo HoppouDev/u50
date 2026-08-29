@@ -191,14 +191,27 @@ pub fn fix_with(req: &Request, formatter: &dyn Formatter, dry_run: bool) -> Repo
 ///   ignored).
 /// - dry run (`dry_run == true`): nothing is written; for every file that
 ///   would change, the rendered diff is printed (per `req.output`; JSON
-///   mode prints the whole JSON document of would-fix results).
+///   mode prints the JSON document of would-fix results only —
+///   already-clean files are omitted).
 /// - errors always go to stderr as `error: <path>: <message>`.
 pub fn fix(req: &Request, dry_run: bool) -> Report {
     tracing::debug!(?req, dry_run, "u50_style::fix");
     let report = fix_with(req, &Cs50Formatter::default(), dry_run);
     if dry_run {
         if req.output == Output::Json {
-            println!("{}", json_document(&report));
+            // The JSON document promises *would-fix* results only, so feed
+            // it a report filtered to dirty files (errors were never part
+            // of the document; they still go to stderr below).
+            let would_fix = Report {
+                results: report
+                    .results
+                    .iter()
+                    .filter(|result| !result.clean)
+                    .cloned()
+                    .collect(),
+                errors: Vec::new(),
+            };
+            println!("{}", json_document(&would_fix));
         } else {
             for result in &report.results {
                 if !result.clean
