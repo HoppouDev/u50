@@ -1,3 +1,4 @@
 /target
 .pi/
 tmp/
+/.ruff-cache/
