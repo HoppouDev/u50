@@ -5,7 +5,7 @@
 # not recognize. It only DENIES (exit 2 + stderr reason) clearly destructive
 # patterns:
 #   * rm -rf/-fr/--recursive targeting /, ~, $HOME, ., .. or /* (root/home/cwd wipe)
-#   * git push --force / -f / --delete / :main / +main / +refs/heads/main
+#   * git push --force / --force-with-lease / -f / --delete / :main / +main / +refs/heads/main
 #   * git reset --hard
 #   * redirects into .env / .env.*
 #
@@ -39,10 +39,13 @@ deny() {
   exit 2
 }
 
-# 1. rm with a recursive flag aimed at /, /*, ~, $HOME, . or ..
-#    Matches rm -rf, rm -fr, rm -r -f (also -R). Plain 'rm -rf build/' and
-#    'rm -rf ./build' stay allowed.
-if printf '%s\n' "$cmd" | grep -Eq "${BUGGER}rm[[:space:]]+(-[a-zA-Z]*[rR][a-zA-Z]*|--recursive)([[:space:]]+(-[a-zA-Z]*[rR][a-zA-Z]*|--recursive)[[:space:]]+)*"; then
+# 1. rm with any flags aimed at /, /*, ~, $HOME, . or ..
+#    Do not enumerate flag orders (e.g. 'rm -f -r /' puts the recursive
+#    flag second): match any run of flag tokens (tokens starting with -
+#    containing only [a-zA-Z-]) and let the dangerous-target check below
+#    decide. Plain 'rm src/foo.rs' and safe targets like 'rm -rf build/'
+#    or 'rm -f build.log' stay allowed.
+if printf '%s\n' "$cmd" | grep -Eq "${BUGGER}rm[[:space:]]+(-[a-zA-Z-]+[[:space:]]+)+"; then
   if printf '%s\n' "$cmd" | grep -Eq '(^|[[:space:]])(/\*|\.\.?/|\$\{?HOME\}?/|~/|/|\.\.?|\$\{?HOME\}?|~)([[:space:]]|$)'; then
     deny "$cmd"
   fi
@@ -52,7 +55,7 @@ fi
 #    pre-authorized; force-push and branch-delete of main are not).
 if printf '%s\n' "$cmd" | grep -Eq "${BUGGER}git[[:space:]]+push([[:space:]]|$)"; then
   if printf '%s\n' "$cmd" | grep -Eq '(^|[[:space:]:/+])(refs/heads/)?main([[:space:]]|:|/|$)' \
-     && printf '%s\n' "$cmd" | grep -Eq '(^|[[:space:]])--force([[:space:]]|$)|(^|[[:space:]])-f([[:space:]]|$)|(^|[[:space:]])--delete([[:space:]]|$)|:main([[:space:]]|$)|(^|[[:space:]])\+(refs/heads/)?main([[:space:]]|:|$)'; then
+     && printf '%s\n' "$cmd" | grep -Eq '(^|[[:space:]])--force(-with-lease)?(=[^[:space:]]*)?([[:space:]]|$)|(^|[[:space:]])-f([[:space:]]|$)|(^|[[:space:]])--delete([[:space:]]|$)|:main([[:space:]]|$)|(^|[[:space:]])\+(refs/heads/)?main([[:space:]]|:|$)'; then
     deny "$cmd"
   fi
 fi
