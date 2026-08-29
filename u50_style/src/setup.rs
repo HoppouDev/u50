@@ -292,7 +292,6 @@ pub(crate) fn ensure_backend(tool: &str) -> Result<()> {
 /// The async provisioning pipeline: uv cache, venv, parallel wheel
 /// fetches, install, and per-backend verification. Returns one
 /// [`BackendOutcome`] per entry in `missing`.
-#[allow(clippy::too_many_lines)]
 async fn provision_backends(
     cache_root: &Path,
     missing: &[(String, String)],
@@ -557,7 +556,6 @@ async fn resolve_version(
 /// the package version, so a version bump invalidates it) and contains
 /// its `<name>-<version>.dist-info` directory, the download and unzip
 /// steps are skipped.
-#[allow(clippy::too_many_lines)]
 async fn fetch_wheel(
     client: &BaseClient,
     package: &str,

@@ -14,7 +14,7 @@ fn numbered_lines(prefix: &str, n: usize) -> String {
     }
     out
 }
-use crate::formatter::{cache_bin_dir, cache_dir, overrides_from_env, resolve_tool, run_tool};
+use crate::formatter::{cache_bin_dir, cache_dir, locate_tool, overrides_from_env, run_tool};
 use crate::render::{
     BOLD, GREEN, RED, RESET, json_document, render_character, render_split, render_unified,
     select_algorithm,
@@ -902,23 +902,25 @@ fn cache_dirs_are_nested_under_the_cache_root() {
 }
 
 #[test]
-fn resolve_tool_passes_through_explicit_paths() {
+fn locate_tool_passes_through_explicit_paths() {
     // A tool name containing '/' is used as-is (override semantics).
     assert_eq!(
-        resolve_tool("/bin/sh").as_deref(),
+        locate_tool("/bin/sh").map(|(path, _)| path).as_deref(),
         Some(std::path::Path::new("/bin/sh"))
     );
     // Absolute paths are reported even when the file does not exist —
     // the exec failure surfaces through the normal spawn error path.
     assert_eq!(
-        resolve_tool("/nonexistent/u50-probe-xyz").as_deref(),
+        locate_tool("/nonexistent/u50-probe-xyz")
+            .map(|(path, _)| path)
+            .as_deref(),
         Some(std::path::Path::new("/nonexistent/u50-probe-xyz"))
     );
     // Bare names resolve only from the u50 style cache (never from PATH);
     // on machines without u50-installed tools this branch is simply not
     // taken. A name that exists nowhere must resolve to None.
-    if let Some(path) = resolve_tool("sh") {
+    if let Some((path, _)) = locate_tool("sh") {
         assert_eq!(path.file_name().and_then(|n| n.to_str()), Some("sh"));
     }
-    assert_eq!(resolve_tool("u50-definitely-not-installed-xyz"), None);
+    assert_eq!(locate_tool("u50-definitely-not-installed-xyz"), None);
 }

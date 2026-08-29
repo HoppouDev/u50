@@ -95,15 +95,6 @@ pub fn locate_tool(tool: &str) -> Option<(PathBuf, ToolOrigin)> {
     None
 }
 
-/// The path of [`locate_tool`], when found. Part of the crate's tool
-/// management API (exercised by tests; `run_process` uses the richer
-/// [`locate_tool`]).
-#[must_use]
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn resolve_tool(tool: &str) -> Option<PathBuf> {
-    locate_tool(tool).map(|(path, _)| path)
-}
-
 /// Spawns `tool` with `args`, feeds `source` on stdin (written from a
 /// separate thread so a child that fills its stdout pipe cannot deadlock
 /// against us still writing its stdin), and waits for it to exit. Spawn
