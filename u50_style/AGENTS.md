@@ -203,8 +203,17 @@ invariants **by construction**:
    == X_i` byte-equal. The converged `F := X_i` becomes `expected` — a fixed
    point, so `format(expected) == expected` holds by definition.
 3. Set `dirty := X_{n-1}`, the iterate immediately before convergence, so
-   `format(dirty) == F == expected` holds by construction.
-   (For languages converging on the first pass, `dirty == expected`.)
+   `format(dirty) == F == expected` holds by construction. For languages
+   converging on the first pass, use `dirty := dirty0` (the minified upstream
+   source) instead — `format(dirty0) == F` directly, giving a true
+   transformation test rather than an idempotency-only check. A vacuous
+   `dirty == expected` fixture fails the golden test's `assert_ne!` guard.
+
+   Fixture classification: c, cpp, js, sql use `X_{n-1}` (style50 needs 2-3
+   passes on their large minified inputs); py and html use `dirty0`; java is
+   `X_{n-1}` with a 1-byte diff (borderline — the X0->X1 step for java, and
+   every language's first transformation step, is separately covered by the
+   byte-parity verification against `style50 -o format` during generation).
 
 If a language does not converge in 25 passes, shrink/replace that language's
 source (e.g. truncate the minified lib at a top-level statement boundary that

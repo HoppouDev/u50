@@ -77,6 +77,11 @@ fn run_golden(dir: &str, ext: &str, language: Language, tool: &str) {
         .unwrap_or_else(|e| panic!("format {dir}: {e}"));
     let expected = std::fs::read_to_string(fixture(dir, &format!("expected.{ext}")))
         .unwrap_or_else(|e| panic!("read expected fixture {dir}: {e}"));
+    assert_ne!(
+        dirty, expected,
+        "vacuous golden fixture for {dir}: dirty == expected; regenerate dirty \
+         from the pre-first-pass input (see AGENTS.md golden fixture section)"
+    );
     assert_eq!(
         formatted, expected,
         "formatter output differs from style50 3.0.0 ground truth for {dir}\n\

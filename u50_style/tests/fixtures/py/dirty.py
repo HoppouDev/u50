@@ -6,6 +6,7 @@ from threading import Lock
 from urllib.parse import quote
 from urllib.parse import urljoin
 from urllib.parse import urlunsplit
+from .._internal import _get_environ
 from .._internal import _wsgi_decoding_dance
 from ..datastructures import ImmutableDict
 from ..datastructures import MultiDict
@@ -14,7 +15,6 @@ from ..exceptions import HTTPException
 from ..exceptions import MethodNotAllowed
 from ..exceptions import NotFound
 from ..urls import _urlencode
-from ..wrappers.request import Request
 from ..wsgi import get_host
 from .converters import DEFAULT_CONVERTERS
 from .exceptions import BuildError
@@ -29,10 +29,9 @@ from .rules import Rule
 if t.TYPE_CHECKING:
     from _typeshed.wsgi import WSGIApplication
     from _typeshed.wsgi import WSGIEnvironment
+    from ..wrappers.request import Request
     from .converters import BaseConverter
     from .rules import RuleFactory
-
-
 class Map:
     """The map class stores all the URL rules and some configuration
     parameters.  Some of the configuration values are only stored on the
@@ -40,9 +39,8 @@ class Map:
     and can be overridden for each rule.  Note that you have to specify all
     arguments besides the `rules` as keyword arguments!
     :param rules: sequence of url rules for this map.
-    :param default_subdomain: The default subdomain used by
-        :meth:`bind_to_environ` and :meth:`bind` if the current subdomain can't
-        be determined.
+    :param default_subdomain: The default subdomain for rules without a
+                              subdomain defined.
     :param strict_slashes: If a rule ends with a slash but the matched
         URL does not, redirect to the URL with a trailing slash.
     :param merge_slashes: Merge consecutive slashes when matching or
@@ -57,16 +55,10 @@ class Map:
     :param sort_parameters: If set to `True` the url parameters are sorted.
                             See `url_encode` for more details.
     :param sort_key: The sort key function for `url_encode`.
-    :param host_matching: Whether to route based on the full ``Host`` rather
-        than subdomains of ``server_name``. Uses the ``host`` parameter for
-        each :class:`Rule`.
-    :param subdomain_matching: Whether to detect the subdomain from ``Host`` and
-        ``server_name``, and route based on it. Uses the ``subdomain`` parameter
-        of each :class:`Rule`, which defaults to ``default_subdomain``, which
-        defaults to empty. Enabled by default, but always disabled if
-        ``host_matching`` is enabled.
-    .. versionchanged:: 3.2
-        The ``subdomain_matching`` parameter was added.
+    :param host_matching: if set to `True` it enables the host matching
+                          feature and disables the subdomain one.  If
+                          enabled the `host` parameter to rules is used
+                          instead of the `subdomain` one.
     .. versionchanged:: 3.0
         The ``charset`` and ``encoding_errors`` parameters were removed.
     .. versionchanged:: 1.0
@@ -76,11 +68,10 @@ class Map:
     .. versionchanged:: 0.7
         The ``encoding_errors`` and ``host_matching`` parameters were added.
     .. versionchanged:: 0.5
-        The ``sort_parameters`` and ``sort_key``  parameters were added.
+        The ``sort_parameters`` and ``sort_key``  paramters were added.
     """
     default_converters = ImmutableDict(DEFAULT_CONVERTERS)
     lock_class = Lock
-
     def __init__(
         self,
         rules: t.Iterable[RuleFactory] | None = None,
@@ -92,8 +83,6 @@ class Map:
         sort_parameters: bool = False,
         sort_key: t.Callable[[t.Any], t.Any] | None = None,
         host_matching: bool = False,
-        *,
-        subdomain_matching: bool = True,
     ) -> None:
         self._matcher = StateMachineMatcher(merge_slashes)
         self._rules_by_endpoint: dict[t.Any, list[Rule]] = {}
@@ -102,7 +91,6 @@ class Map:
         self.default_subdomain = default_subdomain
         self.strict_slashes = strict_slashes
         self.redirect_defaults = redirect_defaults
-        self.subdomain_matching = subdomain_matching and not host_matching
         self.host_matching = host_matching
         self.converters = self.default_converters.copy()
         if converters:
@@ -111,15 +99,12 @@ class Map:
         self.sort_key = sort_key
         for rulefactory in rules or ():
             self.add(rulefactory)
-
     @property
     def merge_slashes(self) -> bool:
         return self._matcher.merge_slashes
-
     @merge_slashes.setter
     def merge_slashes(self, value: bool) -> None:
         self._matcher.merge_slashes = value
-
     def is_endpoint_expecting(self, endpoint: t.Any, *arguments: str) -> bool:
         """Iterate over all rules and check if the endpoint expects
         the arguments provided.  This is for example useful if you have
@@ -138,11 +123,9 @@ class Map:
             if arguments_set.issubset(rule.arguments):
                 return True
         return False
-
     @property
     def _rules(self) -> list[Rule]:
         return [rule for rules in self._rules_by_endpoint.values() for rule in rules]
-
     def iter_rules(self, endpoint: t.Any | None = None) -> t.Iterator[Rule]:
         """Iterate over all rules or the rules of an endpoint.
         :param endpoint: if provided only the rules for that endpoint
@@ -153,7 +136,6 @@ class Map:
         if endpoint is not None:
             return iter(self._rules_by_endpoint[endpoint])
         return iter(self._rules)
-
     def add(self, rulefactory: RuleFactory) -> None:
         """Add a new rule or factory to the map and bind it.  Requires that the
         rule is not bound to another map.
@@ -165,7 +147,6 @@ class Map:
                 self._matcher.add(rule)
             self._rules_by_endpoint.setdefault(rule.endpoint, []).append(rule)
         self._remap = True
-
     def bind(
         self,
         server_name: str,
@@ -176,26 +157,19 @@ class Map:
         path_info: str | None = None,
         query_args: t.Mapping[str, t.Any] | str | None = None,
     ) -> MapAdapter:
-        """Create a :class:`MapAdapter` to match and build URLs based on the
-        given request information. Typically, you should call
-        :meth:`bind_to_environ` instead to extract the information from the WSGI
-        environ for the current request.
-        :param url_scheme: The protocol of the request. Used to match HTTP vs
-            WebSocket rules, and when building external URLs.
-        :param subdomain: The subdomain part of ``server_name``, used when
-            ``subdomain_matching`` is enabled. If not given, uses
-            :attr:`default_subdomain`, which default to empty. Must not be
-            passed if :attr:``host_matching`` is enabled.
-        :param server_name: The ``host:port`` of the request. The port is
-            optional if it's the standard port for ``url_scheme``. Used when
-            ``host_matching`` is enabled, and required to build external URLs.
-        :param default_method: The HTTP method of the request.
-        :param script_name: The URL path prefix under which the application is
-            served, used to build URLs. Defaults to the root ``/``.
-        :param path_info: The path part after ``script_name``, used to match
-            rules. Defaults to the base ``/``.
-        :param query_args: The part of the URL after ``?``. Used to preserve the
-            args when redirecting during matching, not used to match or build.
+        """Return a new :class:`MapAdapter` with the details specified to the
+        call.  Note that `script_name` will default to ``'/'`` if not further
+        specified or `None`.  The `server_name` at least is a requirement
+        because the HTTP RFC requires absolute URLs for redirects and so all
+        redirect exceptions raised by Werkzeug will contain the full canonical
+        URL.
+        If no path_info is passed to :meth:`match` it will use the default path
+        info passed to bind.  While this doesn't really make sense for
+        manual bind calls, it's useful if you bind a map to a WSGI
+        environment which already contains the path info.
+        `subdomain` will default to the `default_subdomain` for this map if
+        no defined. If there is no `default_subdomain` you cannot use the
+        subdomain feature.
         .. versionchanged:: 1.0
             If ``url_scheme`` is ``ws`` or ``wss``, only WebSocket rules
             will match.
@@ -206,95 +180,81 @@ class Map:
         .. versionchanged:: 0.7
             Added ``query_args``.
         """
+        server_name = server_name.lower()
         if self.host_matching:
             if subdomain is not None:
-                raise RuntimeError(
-                    "Passing 'subdomain' is invalid when host matching is enabled."
-                )
+                raise RuntimeError("host matching enabled and a subdomain was provided")
         elif subdomain is None:
             subdomain = self.default_subdomain
         if script_name is None:
             script_name = "/"
         if path_info is None:
             path_info = "/"
-        server_name, port_sep, port = server_name.lower().partition(":")
+        server_name, port_sep, port = server_name.partition(":")
         try:
             server_name = server_name.encode("idna").decode("ascii")
         except UnicodeError as e:
             raise BadHost() from e
         return MapAdapter(
-            map=self,
-            url_scheme=url_scheme,
-            server_name=f"{server_name}{port_sep}{port}",
-            subdomain=subdomain,
-            default_method=default_method,
-            script_name=script_name,
-            path_info=path_info,
-            query_args=query_args,
+            self,
+            f"{server_name}{port_sep}{port}",
+            script_name,
+            subdomain,
+            url_scheme,
+            path_info,
+            default_method,
+            query_args,
         )
-
     def bind_to_environ(
         self,
         environ: WSGIEnvironment | Request,
         server_name: str | None = None,
         subdomain: str | None = None,
     ) -> MapAdapter:
-        """Call :meth:`bind` with information from the WSGI environ.
-        ``PATH_INFO`` is used so it doesn't need to be passed to
-        :meth:`~.MapAdapter.match`.
-        The WSGI environ does not have information to determine what subdomain
-        was accessed, so ``server_name`` or ``subdomain`` must be passed in for
-        :attr:`subdomain_matching`. For example, if ``Host`` is
-        ``abc.example.test`` and ``server_name`` is ``example.test``,
-        ``subdomain`` is determined to be ``abc``. If the ``server_name`` is not
-        a suffix of the current ``Host``, such as when accessed by IP or an
-        alternate domain name, then :attr:`default_subdomain` is used.
-        :param environ: The WSGI environ for the request. Can also be a
-            ``Request`` with an ``environ`` attribute; in that case, its
-            :attr:`~.Request.host` is accessed to validate its
-            :attr:`~.Request.trusted_hosts`.
-        :param server_name: When subdomain matching is enabled and ``subdomain``
-            is not given, the subdomain is determined by removing this
-            ``host:port`` as a suffix from the request's ``Host``. If the scheme
-            is ``http``, ``https``, ``ws``, or ``wss``, the corresponding port
-            80 or 443 will be removed.
-        :param subdomain: Route using this subdomain rather than determining it
-            using ``server_name``.
-        .. versionchanged:: 3.2
-            If ``server_name`` is not a suffix of ``Host``,
-            :attr:`default_subdomain` is used rather than ``"<invalid>"``.
-        .. versionchanged:: 3.2
-            ``subdomain_matching`` can be disabled.
-        .. versionchanged:: 3.2
-            ``server_name`` is ignored if ``host_matching`` is enabled.
-        .. versionchanged:: 3.2
-            If the ``environ`` argument is a ``Request``, access ``request.host``
-            to validate``request.trusted_hosts``.
+        """Like :meth:`bind` but you can pass it an WSGI environment and it
+        will fetch the information from that dictionary.  Note that because of
+        limitations in the protocol there is no way to get the current
+        subdomain and real `server_name` from the environment.  If you don't
+        provide it, Werkzeug will use `SERVER_NAME` and `SERVER_PORT` (or
+        `HTTP_HOST` if provided) as used `server_name` with disabled subdomain
+        feature.
+        If `subdomain` is `None` but an environment and a server name is
+        provided it will calculate the current subdomain automatically.
+        Example: `server_name` is ``'example.com'`` and the `SERVER_NAME`
+        in the wsgi `environ` is ``'staging.dev.example.com'`` the calculated
+        subdomain will be ``'staging.dev'``.
+        If the object passed as environ has an environ attribute, the value of
+        this attribute is used instead.  This allows you to pass request
+        objects.  Additionally `PATH_INFO` added as a default of the
+        :class:`MapAdapter` so that you don't have to pass the path info to
+        the match method.
         .. versionchanged:: 1.0.0
-            If ``server_name`` specifies port 443, it will match if the scheme
-            is ``https`` and ``Host`` does not specify a port.
-        .. versionchanged:: 1.0
-            A warning is shown when ``server_name`` is not a suffix of ``Host``.
+            If the passed server name specifies port 443, it will match
+            if the incoming scheme is ``https`` without a port.
+        .. versionchanged:: 1.0.0
+            A warning is shown when the passed server name does not
+            match the incoming WSGI server name.
         .. versionchanged:: 0.8
-            ``"<invalid>"`` is used as the subdomain if ``server_name`` is not a
-            suffix of ``Host``, rather than raising ``ValueError``.
+           This will no longer raise a ValueError when an unexpected server
+           name was passed.
         .. versionchanged:: 0.5
-            Removed the ``calculate_subdomain`` parameter which was not used.
+            previously this method accepted a bogus `calculate_subdomain`
+            parameter that did not have any effect.  It was removed because
+            of that.
+        :param environ: a WSGI environment.
+        :param server_name: an optional server name hint (see above).
+        :param subdomain: optionally the current subdomain (see above).
         """
-        if isinstance(environ, Request):
-            wsgi_server_name = environ.host.lower()
-            env = environ.environ
-        else:
-            wsgi_server_name = get_host(environ).lower()
-            env = environ
+        env = _get_environ(environ)
+        wsgi_server_name = get_host(env).lower()
         scheme = env["wsgi.url_scheme"]
         upgrade = any(
-            v.strip(" \t") == "upgrade"
+            v.strip() == "upgrade"
             for v in env.get("HTTP_CONNECTION", "").lower().split(",")
         )
         if upgrade and env.get("HTTP_UPGRADE", "").lower() == "websocket":
             scheme = "wss" if scheme == "https" else "ws"
-        if server_name is None or self.host_matching:
+        if server_name is None:
             server_name = wsgi_server_name
         else:
             server_name = server_name.lower()
@@ -302,31 +262,37 @@ class Map:
                 server_name = server_name[:-3]
             elif scheme in {"https", "wss"} and server_name.endswith(":443"):
                 server_name = server_name[:-4]
-        if subdomain is None and self.subdomain_matching:
+        if subdomain is None and not self.host_matching:
             cur_server_name = wsgi_server_name.split(".")
             real_server_name = server_name.split(".")
             offset = -len(real_server_name)
             if cur_server_name[offset:] != real_server_name:
                 warnings.warn(
-                    "Couldn't determine current subdomain, but subdomain"
-                    " matching is enabled. Using configured default"
-                    f" {self.default_subdomain!r}.\n"
-                    f"Current server name {wsgi_server_name!r} isn't under"
-                    f" configured server name {server_name!r}.",
+                    f"Current server name {wsgi_server_name!r} doesn't match configured"
+                    f" server name {server_name!r}",
                     stacklevel=2,
                 )
+                subdomain = "<invalid>"
             else:
-                subdomain = ".".join(cur_server_name[:offset])
-        return self.bind(
-            url_scheme=scheme,
-            subdomain=subdomain,
-            server_name=server_name,
-            default_method=env["REQUEST_METHOD"],
-            script_name=_get_wsgi_string(env, "SCRIPT_NAME"),
-            path_info=_get_wsgi_string(env, "PATH_INFO"),
-            query_args=_get_wsgi_string(env, "QUERY_STRING"),
+                subdomain = ".".join(filter(None, cur_server_name[:offset]))
+        def _get_wsgi_string(name: str) -> str | None:
+            val = env.get(name)
+            if val is not None:
+                return _wsgi_decoding_dance(val)
+            return None
+        script_name = _get_wsgi_string("SCRIPT_NAME")
+        path_info = _get_wsgi_string("PATH_INFO")
+        query_args = _get_wsgi_string("QUERY_STRING")
+        return Map.bind(
+            self,
+            server_name,
+            script_name,
+            subdomain,
+            scheme,
+            env["REQUEST_METHOD"],
+            path_info,
+            query_args=query_args,
         )
-
     def update(self) -> None:
         """Called before matching and building to keep the compiled rules
         in the correct order after things changed.
@@ -340,24 +306,13 @@ class Map:
             for rules in self._rules_by_endpoint.values():
                 rules.sort(key=lambda x: x.build_compare_key())
             self._remap = False
-
     def __repr__(self) -> str:
         rules = self.iter_rules()
         return f"{type(self).__name__}({pformat(list(rules))})"
-
-
-def _get_wsgi_string(env: WSGIEnvironment, name: str) -> str | None:
-    val = env.get(name)
-    if val is not None:
-        return _wsgi_decoding_dance(val)
-    return None
-
-
 class MapAdapter:
     """Returned by :meth:`Map.bind` or :meth:`Map.bind_to_environ` and does
     the URL matching and building based on runtime information.
     """
-
     def __init__(
         self,
         map: Map,
@@ -374,13 +329,12 @@ class MapAdapter:
         if not script_name.endswith("/"):
             script_name += "/"
         self.script_name = script_name
-        self.subdomain = subdomain or ""
+        self.subdomain = subdomain
         self.url_scheme = url_scheme
         self.path_info = path_info
         self.default_method = default_method
         self.query_args = query_args
         self.websocket = self.url_scheme in {"ws", "wss"}
-
     def dispatch(
         self,
         view_func: t.Callable[[str, t.Mapping[str, t.Any]], WSGIApplication],
@@ -433,7 +387,6 @@ class MapAdapter:
             if catch_http_exceptions:
                 return e
             raise
-
     @t.overload
     def match(
         self,
@@ -443,7 +396,6 @@ class MapAdapter:
         query_args: t.Mapping[str, t.Any] | str | None = None,
         websocket: bool | None = None,
     ) -> tuple[t.Any, t.Mapping[str, t.Any]]: ...
-
     @t.overload
     def match(
         self,
@@ -453,7 +405,6 @@ class MapAdapter:
         query_args: t.Mapping[str, t.Any] | str | None = None,
         websocket: bool | None = None,
     ) -> tuple[Rule, t.Mapping[str, t.Any]]: ...
-
     def match(
         self,
         path_info: str | None = None,
@@ -541,12 +492,9 @@ class MapAdapter:
         method = (method or self.default_method).upper()
         if websocket is None:
             websocket = self.websocket
-        if self.map.subdomain_matching:
+        domain_part = self.server_name
+        if not self.map.host_matching and self.subdomain is not None:
             domain_part = self.subdomain
-        elif self.map.host_matching:
-            domain_part = self.server_name
-        else:
-            domain_part = ""
         path_part = f"/{path_info.lstrip('/')}" if path_info else ""
         try:
             result = self.map._matcher.match(domain_part, path_part, method, websocket)
@@ -599,7 +547,6 @@ class MapAdapter:
                 return rule, rv
             else:
                 return rule.endpoint, rv
-
     def test(self, path_info: str | None = None, method: str | None = None) -> bool:
         """Test if a rule would match.  Works like `match` but returns `True`
         if the URL matches, or `False` if it does not exist.
@@ -615,7 +562,6 @@ class MapAdapter:
         except HTTPException:
             return False
         return True
-
     def allowed_methods(self, path_info: str | None = None) -> t.Iterable[str]:
         """Returns the valid methods that match for a given path.
         .. versionadded:: 0.7
@@ -627,7 +573,6 @@ class MapAdapter:
         except HTTPException:
             pass
         return []
-
     def get_host(self, domain_part: str | None) -> str:
         """Figures out the full host name for the given domain part.  The
         domain part is a subdomain in case host matching is disabled or
@@ -645,7 +590,6 @@ class MapAdapter:
             return f"{subdomain}.{self.server_name}"
         else:
             return self.server_name
-
     def get_default_redirect(
         self,
         rule: Rule,
@@ -666,12 +610,10 @@ class MapAdapter:
                 domain_part, path = r.build(values)  # type: ignore
                 return self.make_redirect_url(path, query_args, domain_part=domain_part)
         return None
-
     def encode_query_args(self, query_args: t.Mapping[str, t.Any] | str) -> str:
         if not isinstance(query_args, str):
             return _urlencode(query_args)
         return query_args
-
     def make_redirect_url(
         self,
         path_info: str,
@@ -691,7 +633,6 @@ class MapAdapter:
         host = self.get_host(domain_part)
         path = "/".join((self.script_name.strip("/"), path_info.lstrip("/")))
         return urlunsplit((scheme, host, path, query_str, None))
-
     def make_alias_redirect_url(
         self,
         path: str,
@@ -708,7 +649,6 @@ class MapAdapter:
             url += f"?{self.encode_query_args(query_args)}"
         assert url != path, "detected invalid alias setting. No canonical URL found"
         return url
-
     def _partial_build(
         self,
         endpoint: t.Any,
@@ -740,7 +680,6 @@ class MapAdapter:
                     else:
                         return rv
         return first_match
-
     def build(
         self,
         endpoint: t.Any,
@@ -750,40 +689,57 @@ class MapAdapter:
         append_unknown: bool = True,
         url_scheme: str | None = None,
     ) -> str:
-        """Build a URL by filling in any variable slots in the endpoint's rule
-        with the provided values.
-        This produces relative URLs (path only, no host) by default, which is
-        appropriate for most use cases. When using subdomain or host matching,
-        the URL will be absolute if the endpoint is not on the same host as the
-        current request. If you need an absolute URL no matter what, such as
-        when adding a link to an email, pass ``force_external=True``.
-        Characters that are not allowed directly in URLs will be percent-encoded
-        using UTF-8.
-        Additional values that don't match any rule parts are added to the query
-        (``?key=value``) part of the URL.
-        If a rule is not found, an :exc:`.BuildError` is raised. Converters may
-        also raise exceptions when preparing a value.
-        Unlike matching, building does not perform comprehensive validation of
-        the values, it's assumed that they are trusted and correct. It's also
-        possible to build a URL for one endpoint that will be matched by
-        another, or will not match. This is very unlikely to happen or to matter
-        in most applications, especially with testing. If you need a
-        stronger guarantee, you can use a helper to verify that
-        ``match(build(endpoint)) == endpoint``.
-        :param endpoint: The endpoint for the rule to build.
-        :param values: Values for the variable parts of the rule, which will be
-            converted using the part's converter's
-            :meth:`~.BaseConverter.to_url` method. Keys that don't match
-            variable parts will be converted to a query string unless
-            ``append_unknown`` is disabled.
-        :param method: Further match the rule to build by this HTTP method, for
-            when there are multiple rules for the same endpoint that vary based
-            on method.
-        :param force_external: Always produce an absolute URL, for external use.
-            If ``scheme`` is not set, this produces a protocol-relative URL.
-        :param append_unknown: Convert values that don't match any rule parts
-            to a query string. Disable to ignore such values.
-        :param url_scheme: Scheme to use for absolute URLs. Defaults to
+        """Building URLs works pretty much the other way round.  Instead of
+        `match` you call `build` and pass it the endpoint and a dict of
+        arguments for the placeholders.
+        The `build` function also accepts an argument called `force_external`
+        which, if you set it to `True` will force external URLs. Per default
+        external URLs (include the server name) will only be used if the
+        target URL is on a different subdomain.
+        >>> m = Map([
+        ...     Rule('/', endpoint='index'),
+        ...     Rule('/downloads/', endpoint='downloads/index'),
+        ...     Rule('/downloads/<int:id>', endpoint='downloads/show')
+        ... ])
+        >>> urls = m.bind("example.com", "/")
+        >>> urls.build("index", {})
+        '/'
+        >>> urls.build("downloads/show", {'id': 42})
+        '/downloads/42'
+        >>> urls.build("downloads/show", {'id': 42}, force_external=True)
+        'http://example.com/downloads/42'
+        Because URLs cannot contain non ASCII data you will always get
+        bytes back.  Non ASCII characters are urlencoded with the
+        charset defined on the map instance.
+        Additional values are converted to strings and appended to the URL as
+        URL querystring parameters:
+        >>> urls.build("index", {'q': 'My Searchstring'})
+        '/?q=My+Searchstring'
+        When processing those additional values, lists are furthermore
+        interpreted as multiple values (as per
+        :py:class:`werkzeug.datastructures.MultiDict`):
+        >>> urls.build("index", {'q': ['a', 'b', 'c']})
+        '/?q=a&q=b&q=c'
+        Passing a ``MultiDict`` will also add multiple values:
+        >>> urls.build("index", MultiDict((('p', 'z'), ('q', 'a'), ('q', 'b'))))
+        '/?p=z&q=a&q=b'
+        If a rule does not exist when building a `BuildError` exception is
+        raised.
+        The build method accepts an argument called `method` which allows you
+        to specify the method you want to have an URL built for if you have
+        different methods for the same endpoint specified.
+        :param endpoint: the endpoint of the URL to build.
+        :param values: the values for the URL to build.  Unhandled values are
+                       appended to the URL as query parameters.
+        :param method: the HTTP method for the rule if there are different
+                       URLs for different methods on the same endpoint.
+        :param force_external: enforce full canonical external URLs. If the URL
+                               scheme is not provided, this will generate
+                               a protocol-relative URL.
+        :param append_unknown: unknown parameters are appended to the generated
+                               URL as query string argument.  Disable this
+                               if you want the builder to ignore those.
+        :param url_scheme: Scheme to use in place of the bound
             :attr:`url_scheme`.
         .. versionchanged:: 2.0
             Added the ``url_scheme`` parameter.
@@ -816,9 +772,8 @@ class MapAdapter:
         elif url_scheme:
             url_scheme = "https" if secure else "http"
         if not force_external and (
-            not (self.map.subdomain_matching or self.map.host_matching)
-            or (self.map.subdomain_matching and domain_part == self.subdomain)
-            or (self.map.host_matching and host == self.server_name)
+            (self.map.host_matching and host == self.server_name)
+            or (not self.map.host_matching and domain_part == self.subdomain)
         ):
             return f"{self.script_name.rstrip('/')}/{path.lstrip('/')}"
         scheme = f"{url_scheme}:" if url_scheme else ""
