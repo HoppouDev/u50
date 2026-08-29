@@ -107,7 +107,7 @@ golden_test!(sql_golden, "sql", "sql", Language::Sql, "sqlformat");
 /// property style50 verified during generation); gated per language.
 #[test]
 fn expected_files_are_clean() {
-    for (dir, ext, language, tool) in LANGUAGES {
+    for (dir, ext, _language, tool) in LANGUAGES {
         if !gate(dir, tool) {
             continue;
         }
