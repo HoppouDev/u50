@@ -150,15 +150,13 @@ fn fix_dry_run_prints_status_lines_then_diff_leaves_files_untouched() {
         stdout.contains("+X = 1"),
         "dry run must print diff: {stdout}"
     );
-    // Status lines come first, the diff after them.
-    let status_end = stdout
-        .find(&format!("already clean: {}", clean.display()))
-        .expect("status line present")
-        + "already clean:".len();
+    // The diff comes first, the status summary after it — so on large
+    // inputs `| tail` still shows the summary.
     let diff_start = stdout.find("+X = 1").expect("diff present");
+    let status_start = stdout.find("already clean:").expect("status line present");
     assert!(
-        status_end <= diff_start,
-        "status lines must precede the diff: {stdout}"
+        diff_start < status_start,
+        "diff must precede the status summary: {stdout}"
     );
     assert_eq!(
         read_back(&dirty),

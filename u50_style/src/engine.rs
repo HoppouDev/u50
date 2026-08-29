@@ -270,10 +270,10 @@ fn walk_dir(dir: &Path, files: &mut BTreeSet<PathBuf>) {
 /// - plain fix (`dry_run == false`): each processed file prints to stdout
 ///   as `fixed: <path>` or `already clean: <path>` (diff rendering is
 ///   ignored).
-/// - dry run (`dry_run == true`, text modes): nothing is written; each
-///   processed file prints to stdout as `would fix: <path>` or
-///   `already clean: <path>`, followed by the rendered diff for every
-///   file that would change (per `req.output`).
+/// - dry run (`dry_run == true`, text modes): nothing is written; the
+///   rendered diff for every file that would change is printed first,
+///   followed by a per-file status summary (`would fix: <path>` /
+///   `already clean: <path>`) at the end (per `req.output`).
 /// - dry run in JSON mode (`dry_run == true`, `Output::Json`): the JSON
 ///   document of would-fix results only — no status lines (the output is
 ///   machine-readable; already-clean files are omitted).
@@ -297,21 +297,21 @@ pub fn fix(req: &Request, dry_run: bool) -> Report {
             };
             println!("{}", json_document(&would_fix));
         } else {
-            // Same per-file status lines as plain fix, with `would fix`
-            // in place of `fixed`; the diffs follow after all status
-            // lines so the two kinds of output never interleave.
-            for result in &report.results {
-                if result.clean {
-                    println!("already clean: {}", result.path.display());
-                } else {
-                    println!("would fix: {}", result.path.display());
-                }
-            }
+            // The rendered diffs come first, the per-file status summary
+            // last (`would fix` in place of plain fix's `fixed`) — so on
+            // large inputs `| tail` still shows the summary.
             for result in &report.results {
                 if !result.clean
                     && let Some(rendered) = &result.rendered
                 {
                     print!("{rendered}");
+                }
+            }
+            for result in &report.results {
+                if result.clean {
+                    println!("already clean: {}", result.path.display());
+                } else {
+                    println!("would fix: {}", result.path.display());
                 }
             }
         }
