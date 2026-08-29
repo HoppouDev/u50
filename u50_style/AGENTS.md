@@ -149,6 +149,35 @@ U50_STYLE_GOLDEN=1 cargo test --test golden
 
 **Gating/skip behavior**: each language's golden test runs only when `U50_STYLE_GOLDEN=1` is set AND the language's backing tool (e.g. `clang-format`, `autopep8`, `js-beautify`, `djhtml`, `css-beautify`, `sqlformat`) is on PATH (`<tool> --version` succeeds); otherwise the test prints a `skip` line and returns. This is deliberate: the ground truth is only byte-stable for a given set of tool versions, and clang-format version skew across machines would flake CI — CI runs without the env var and skips these tests.
 
+### Large real-world fixtures and provenance
+
+The fixtures are **large, real-world, minified sources** (50–90KB dirty / 60–200KB
+expected per language), not toy snippets: c=cJSON, cpp=JsonCpp, java=Guava
+`ImmutableList`, py=Werkzeug `routing/map.py`, js=official jQuery 3.7.1
+`jquery.min.js`, css=normalize.css, html=Bootstrap 5.3 dashboard example,
+sql=collapsed Supabase migrations. Per-language provenance (project, upstream
+source file, license SPDX/copyright, and the exact minification applied) is
+documented in [`tests/fixtures/NOTICE.md`](tests/fixtures/NOTICE.md) — update
+that file whenever a fixture's provenance changes.
+
+### Fixed-point generation procedure
+
+Golden equality requires BOTH `format(dirty) == expected` AND `format(expected)
+== expected` (byte-clean per style50). The fixtures therefore satisfy both
+invariants **by construction**:
+
+1. Start from the minified upstream source `dirty0`.
+2. Iterate `X_{i+1} := style50 -o format X_i` (up to 25 passes) until `X_{i+1}
+   == X_i` byte-equal. The converged `F := X_i` becomes `expected` — a fixed
+   point, so `format(expected) == expected` holds by definition.
+3. Set `dirty := X_{n-1}`, the iterate immediately before convergence, so
+   `format(dirty) == F == expected` holds by construction.
+   (For languages converging on the first pass, `dirty == expected`.)
+
+If a language does not converge in 25 passes, shrink/replace that language's
+source (e.g. truncate the minified lib at a top-level statement boundary that
+still parses) and restart its iteration.
+
 Regenerate (after adjusting a dirty fixture) — `style50 -o format` is the oracle, and the second command must show **no diff**:
 
 ```sh
