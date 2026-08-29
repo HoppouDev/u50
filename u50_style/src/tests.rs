@@ -3,8 +3,23 @@ use std::path::{Path, PathBuf};
 
 use super::*;
 use crate::engine::expand_paths;
+
+/// Builds `n` distinct lines `prefix 0..n`, one per line (test input helper).
+fn numbered_lines(prefix: &str, n: usize) -> String {
+    let mut out = String::with_capacity(n * 12);
+    for i in 0..n {
+        out.push_str(prefix);
+        out.push_str(&i.to_string());
+        out.push('\n');
+    }
+    out
+}
 use crate::formatter::{overrides_from_env, run_tool};
-use crate::render::{BOLD, GREEN, RED, RESET, json_document, render_character, render_split};
+use crate::render::{
+    BOLD, GREEN, RED, RESET, json_document, render_character, render_split, render_unified,
+    select_algorithm,
+};
+use similar::algorithms::Algorithm;
 
 /// Formatter that leaves the source untouched (models a clean file).
 struct Identity;
@@ -785,4 +800,69 @@ fn fix_with_fixes_every_file_in_directory() {
         std::fs::read_to_string(&js).expect("read back js"),
         "    x = 1;\n"
     );
+}
+
+#[test]
+fn select_algorithm_small_input_uses_myers() {
+    // Below ADAPTIVE_MIN_LINES the probe is skipped entirely.
+    let source = "a\nb\nc\n";
+    assert_eq!(select_algorithm(source, "x\ny\n"), Algorithm::Myers);
+    // Identical large texts with many distinct lines: always Myers.
+    let big = numbered_lines("same ", 2000);
+    assert_eq!(select_algorithm(&big, &big), Algorithm::Myers);
+}
+
+#[test]
+fn select_algorithm_large_zero_overlap_uses_lcs() {
+    let source = numbered_lines("old ", 2000);
+    let formatted = numbered_lines("new ", 2000);
+    assert_eq!(select_algorithm(&source, &formatted), Algorithm::Lcs);
+}
+
+#[test]
+fn select_algorithm_large_with_many_common_lines_uses_myers() {
+    // 3 distinct common lines on a 2000-line pair: 3 * 1000 >= 2000, so the
+    // heuristic keeps Myers (mirrors the measured 8-common@7.5k collapse).
+    let source = numbered_lines("old ", 2000);
+    let mut formatted = numbered_lines("new ", 2000);
+    formatted.push_str("old 0\nold 1\nold 2\n");
+    assert_eq!(select_algorithm(&source, &formatted), Algorithm::Myers);
+    // Identical large texts share every line: always Myers.
+    let big = numbered_lines("same ", 3000);
+    assert_eq!(select_algorithm(&big, &big), Algorithm::Myers);
+}
+
+#[test]
+fn large_wholly_changed_input_renders_completely() {
+    // 5000 wholly-changed lines: exercises the adaptive Lcs path and guards
+    // against any rendering mode dropping change rows on large inputs.
+    let source = numbered_lines("old ", 5000);
+    let formatted = numbered_lines("new ", 5000);
+
+    let unified = render_unified(&source, &formatted, Path::new("x.c"));
+    let dels = unified
+        .lines()
+        .filter(|l| l.starts_with('-') && !l.starts_with("---"))
+        .count();
+    let adds = unified
+        .lines()
+        .filter(|l| l.starts_with('+') && !l.starts_with("+++"))
+        .count();
+    assert_eq!(dels, 5000, "unified deletions incomplete");
+    assert_eq!(adds, 5000, "unified insertions incomplete");
+
+    let character = render_character(&source, &formatted, false);
+    let char_dels = character.lines().filter(|l| l.starts_with('-')).count();
+    let char_adds = character.lines().filter(|l| l.starts_with('+')).count();
+    assert_eq!(char_dels, 5000, "character deletions incomplete");
+    assert_eq!(char_adds, 5000, "character insertions incomplete");
+
+    let split = render_split(&source, &formatted, false);
+    let rows: Vec<&str> = split.lines().collect();
+    assert_eq!(rows.len(), 5000, "split must pair every changed row");
+    for row in &rows {
+        let (left, right) = row.split_once(" | ").expect("split row separator");
+        assert!(!left.trim().is_empty(), "unpaired deletion row: {row:?}");
+        assert!(!right.trim().is_empty(), "unpaired insertion row: {row:?}");
+    }
 }
