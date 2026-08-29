@@ -24,6 +24,23 @@ pub enum Language {
 }
 
 impl Language {
+    /// Every supported language, in listing order (C, C++, Java, Python,
+    /// JavaScript, HTML, CSS, SQL — the style50 3.0.0 set).
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "consumed by listing.rs/tests, next commit")
+    )]
+    pub(crate) const ALL: [Language; 8] = [
+        Self::C,
+        Self::Cpp,
+        Self::Java,
+        Self::Python,
+        Self::JavaScript,
+        Self::Html,
+        Self::Css,
+        Self::Sql,
+    ];
+
     /// Canonical file name used with `--assume-filename` so clang-format
     /// picks the right lexer for the language (only meaningful for the
     /// clang-format-backed languages).
@@ -49,6 +66,60 @@ impl Language {
             Self::Html => Some("djhtml"),
             Self::Css => Some("css-beautify"),
             Self::Sql => Some("sqlformat"),
+        }
+    }
+
+    /// The pip package that provides this language's formatter backend
+    /// (all backends are pip-installable: `clang-format` ships a standalone
+    /// binary wheel, the rest are pure-Python packages with console
+    /// scripts).
+    #[must_use]
+    pub fn pip_package(self) -> &'static str {
+        match self {
+            Self::C | Self::Cpp | Self::Java => "clang-format",
+            Self::Python => "autopep8",
+            Self::JavaScript => "jsbeautifier",
+            Self::Html => "djhtml",
+            Self::Css => "cssbeautifier",
+            Self::Sql => "sqlparse",
+        }
+    }
+
+    /// Human-readable name used in listings.
+    #[must_use]
+    #[expect(
+        dead_code,
+        reason = "consumed by listing.rs, introduced in the next commit"
+    )]
+    pub(crate) fn display_name(self) -> &'static str {
+        match self {
+            Self::C => "C",
+            Self::Cpp => "C++",
+            Self::Java => "Java",
+            Self::Python => "Python",
+            Self::JavaScript => "JavaScript",
+            Self::Html => "HTML",
+            Self::Css => "CSS",
+            Self::Sql => "SQL",
+        }
+    }
+
+    /// File extensions this language is detected from.
+    #[must_use]
+    #[expect(
+        dead_code,
+        reason = "consumed by listing.rs, introduced in the next commit"
+    )]
+    pub(crate) fn extensions(self) -> &'static [&'static str] {
+        match self {
+            Self::C => &["c", "h"],
+            Self::Cpp => &["cpp", "hpp"],
+            Self::Java => &["java"],
+            Self::Python => &["py"],
+            Self::JavaScript => &["js"],
+            Self::Html => &["html"],
+            Self::Css => &["css"],
+            Self::Sql => &["sql"],
         }
     }
 

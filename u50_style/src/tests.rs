@@ -14,7 +14,7 @@ fn numbered_lines(prefix: &str, n: usize) -> String {
     }
     out
 }
-use crate::formatter::{overrides_from_env, run_tool};
+use crate::formatter::{cache_bin_dir, cache_dir, overrides_from_env, resolve_tool, run_tool};
 use crate::render::{
     BOLD, GREEN, RED, RESET, json_document, render_character, render_split, render_unified,
     select_algorithm,
@@ -865,4 +865,60 @@ fn large_wholly_changed_input_renders_completely() {
         assert!(!left.trim().is_empty(), "unpaired deletion row: {row:?}");
         assert!(!right.trim().is_empty(), "unpaired insertion row: {row:?}");
     }
+}
+
+#[test]
+fn pip_package_maps_every_language_to_its_backend() {
+    let cases = [
+        (Language::C, "clang-format"),
+        (Language::Cpp, "clang-format"),
+        (Language::Java, "clang-format"),
+        (Language::Python, "autopep8"),
+        (Language::JavaScript, "jsbeautifier"),
+        (Language::Html, "djhtml"),
+        (Language::Css, "cssbeautifier"),
+        (Language::Sql, "sqlparse"),
+    ];
+    for (language, package) in cases {
+        assert_eq!(language.pip_package(), package);
+    }
+    // ALL covers every variant exactly once (8 entries, no duplicates).
+    assert_eq!(Language::ALL.len(), 8);
+    let mut seen: Vec<Language> = Vec::new();
+    for &language in &Language::ALL {
+        assert!(!seen.contains(&language), "duplicate in ALL: {language:?}");
+        seen.push(language);
+    }
+}
+
+#[test]
+fn cache_dirs_are_nested_under_the_cache_root() {
+    // Path construction only: the exact base depends on the environment
+    // (XDG_CACHE_HOME vs HOME/.cache), so the test asserts the suffix.
+    let root = cache_dir();
+    assert!(root.ends_with(std::path::Path::new("u50").join("style50")));
+    let bin = cache_bin_dir();
+    assert_eq!(bin, root.join("python").join("bin"));
+}
+
+#[test]
+fn resolve_tool_passes_through_explicit_paths() {
+    // A tool name containing '/' is used as-is (override semantics).
+    assert_eq!(
+        resolve_tool("/bin/sh").as_deref(),
+        Some(std::path::Path::new("/bin/sh"))
+    );
+    // Absolute paths are reported even when the file does not exist —
+    // the exec failure surfaces through the normal spawn error path.
+    assert_eq!(
+        resolve_tool("/nonexistent/u50-probe-xyz").as_deref(),
+        Some(std::path::Path::new("/nonexistent/u50-probe-xyz"))
+    );
+    // Bare names that exist on this machine resolve to a path whose file
+    // name matches the tool (PATH or cache hit — either is fine here);
+    // a name that exists nowhere must resolve to None.
+    if let Some(path) = resolve_tool("sh") {
+        assert_eq!(path.file_name().and_then(|n| n.to_str()), Some("sh"));
+    }
+    assert_eq!(resolve_tool("u50-definitely-not-installed-xyz"), None);
 }

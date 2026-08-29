@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use crate::language::{Language, missing_tool_message};
@@ -24,6 +25,81 @@ pub trait Formatter {
     fn format(&self, source: &str, language: Language) -> anyhow::Result<String>;
 }
 
+/// Where a tool binary was found: the system `PATH`, or u50's cache
+/// (installed by `u50 style --setup`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ToolOrigin {
+    /// Found on `PATH`.
+    Path,
+    /// Found in the u50 style cache (`~/.cache/u50/style50`).
+    Cache,
+}
+
+/// The u50 style cache root: `$XDG_CACHE_HOME` or `~/.cache`, then
+/// `u50/style50`.
+#[must_use]
+pub(crate) fn cache_dir() -> PathBuf {
+    let base = std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .map(|h| h.join(".cache"))
+        })
+        .unwrap_or_else(|| PathBuf::from(".cache"));
+    base.join("u50").join("style50")
+}
+
+/// The directory holding binaries installed by `u50 style --setup`
+/// (pip `--target <cache>/python` puts console scripts in `bin/`).
+#[must_use]
+pub(crate) fn cache_bin_dir() -> PathBuf {
+    cache_dir().join("python").join("bin")
+}
+
+/// Whether `path` is an existing regular file with an execute bit.
+fn is_executable_file(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    path.is_file()
+        && path
+            .metadata()
+            .is_ok_and(|m| m.permissions().mode() & 0o111 != 0)
+}
+
+/// Resolves `tool` to its location: a path containing `/` is used as-is;
+/// otherwise `PATH` is searched first, then the u50 style cache bin dir
+/// (`u50 style --setup`'s install location). Returns `None` when the tool
+/// is nowhere to be found.
+#[must_use]
+pub(crate) fn locate_tool(tool: &str) -> Option<(PathBuf, ToolOrigin)> {
+    if tool.contains('/') {
+        return Some((PathBuf::from(tool), ToolOrigin::Path));
+    }
+    if let Ok(path_var) = std::env::var("PATH") {
+        for dir in std::env::split_paths(&path_var) {
+            let candidate = dir.join(tool);
+            if is_executable_file(&candidate) {
+                return Some((candidate, ToolOrigin::Path));
+            }
+        }
+    }
+    let cached = cache_bin_dir().join(tool);
+    if is_executable_file(&cached) {
+        return Some((cached, ToolOrigin::Cache));
+    }
+    None
+}
+
+/// The path of [`locate_tool`], when found. Part of the crate's tool
+/// management API (exercised by tests; `run_process` uses the richer
+/// [`locate_tool`]).
+#[must_use]
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn resolve_tool(tool: &str) -> Option<PathBuf> {
+    locate_tool(tool).map(|(path, _)| path)
+}
+
 /// Spawns `tool` with `args`, feeds `source` on stdin (written from a
 /// separate thread so a child that fills its stdout pipe cannot deadlock
 /// against us still writing its stdin), and waits for it to exit. Spawn
@@ -39,7 +115,34 @@ fn run_process(
     source: &str,
     on_spawn: impl Fn(std::io::Error) -> anyhow::Error,
 ) -> anyhow::Result<std::process::Output> {
-    let mut child = Command::new(tool)
+    // Cache-aware resolution: a bare tool name is looked up on PATH
+    // first, then in the u50 style cache. Only cache hits get their spawn
+    // rewritten to the resolved path (plus a `PYTHONPATH` pointing at the
+    // cache's python target dir, so the cached pure-Python console
+    // scripts can import their modules); PATH hits and unresolved tools
+    // spawn by name exactly as before, preserving the missing-tool error
+    // messages, and paths containing `/` are used as-is (overrides).
+    let mut command = Command::new(tool);
+    let mut python_root: Option<PathBuf> = None;
+    if !tool.contains('/')
+        && let Some((path, ToolOrigin::Cache)) = locate_tool(tool)
+    {
+        command = Command::new(path);
+        python_root = Some(cache_dir().join("python"));
+    }
+    if let Some(root) = python_root {
+        let mut entries = vec![root.clone()];
+        match std::env::var("PYTHONPATH") {
+            Ok(existing) if !existing.is_empty() => {
+                entries.push(PathBuf::from(existing));
+            }
+            _ => {}
+        }
+        let joined =
+            std::env::join_paths(&entries).unwrap_or_else(|_| root.clone().into_os_string());
+        command.env("PYTHONPATH", joined);
+    }
+    let mut child = command
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
