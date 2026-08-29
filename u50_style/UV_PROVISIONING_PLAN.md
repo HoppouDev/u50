@@ -116,14 +116,70 @@
   needed; cache layout change; stale `<cache>/python` migration note).
 - **Phase 4**: cleanup sweep — dead code, clippy, final gate run, goldens.
 
-## Phase 0 findings
+### Phase 0 findings — ALL THREE PRIMITIVES PASS (verified end-to-end)
 
-(pending — record exact API calls, crate features, and gotchas here)
+- **(a) Managed CPython provisioning** (mirrors uv's own
+  `crates/uv/src/commands/python/install.rs`):
+  1. `BaseClientBuilder::default()` → capture `.retry_policy()` BEFORE
+     `.retries(0).build()` (GOTCHA: builder methods consume self).
+  2. `ManagedPythonDownloadList::new(&client_builder, &cache, None).await?`
+     → `.find(&PythonDownloadRequest::default().with_version(
+     VersionRequest::from_str("3.14")?).fill()?)?` → clone.
+  3. `ManagedPythonInstallations::from_settings(None)?.init()?` → root(),
+     scratch(), `lock().await` held for fetch+unpack.
+  4. `download.fetch_with_retry(&client, &retry_policy, &root, &scratch,
+     false, None, None, None).await?` → `DownloadResult::Fetched(path)`.
+  5. `ManagedPythonInstallation::new(path, &download).executable(false)` →
+     `Interpreter::query(&exe, &cache)?`.
+  Result: `cpython-3.14.7-linux-x86_64-gnu` provisioned into
+  `~/.local/share/uv/python/`, queryable.
+- **(b) `uv_virtualenv::create_venv(location, interpreter, Prompt::Static(..),
+  system_site_packages, OnExisting::Allow, relocatable, Seed::Disabled,
+  upgradeable)`** (bool order verified against vendored lib.rs:80) →
+  `PythonEnvironment` (`.root()`, `.python_executable()`, `.scripts()`).
+- **(c) `uv_installer::Installer::new(&PythonEnvironment, Preview::default())
+  .with_cache(&cache).with_installer_metadata(false).install_blocking(dists)`
+  with `CachedDist::Url(CachedDirectUrlDist { filename, url: VerbatimParsedUrl,
+  path, hashes: HashDigests, cache_info, build_info })` built from the PyPI
+  JSON API wheel entry (reqwest direct GET — uv-client exposes no plain-GET).
+- Managed pythons present after the run: 3.14.7, 3.12.13, 3.8.20.
 
-## API usage (for uv upgrades)
+### API usage (for uv upgrades)
 
-(pending — list each uv crate function/type u50 calls with its source file)
+All call sites live in `u50_style/examples/uv_spike.rs` (the reference
+implementation for Phase 1's setup.rs rewrite):
+
+- `uv_python::downloads::{ManagedPythonDownloadList, PythonDownloadRequest,
+  DownloadResult}` — `new(&BaseClientBuilder, &Cache, None)`, `.find()`,
+  `fetch_with_retry(...)`.
+- `uv_python::managed::{ManagedPythonInstallations, ManagedPythonInstallation}`
+  — `from_settings`, `init`, `lock`, `root`, `scratch`, `new`, `executable`.
+- `uv_python::{Interpreter, PythonEnvironment, VersionRequest}` —
+  `Interpreter::query`, `PythonEnvironment::from_interpreter` (via create_venv).
+- `uv_virtualenv::create_venv` (8-arg form; bool order is load-bearing).
+- `uv_installer::Installer` — `new`, `with_cache`, `with_installer_metadata`,
+  `install_blocking`.
+- `uv_cache::Cache` — `from_path(...).init()`.
+- `uv_preview::set(Preview::default())` — global init, REQUIRED first.
+- `uv_extract::unzip` + `uv_distribution_filename::WheelFilename` +
+  `uv_distribution_types::{CachedDirectUrlDist, CachedDist}` +
+  `uv_pypi_types::{HashDigest, HashDigests, ParsedUrl, VerbatimParsedUrl}` +
+  `uv_pep508::VerbatimUrl` + `uv_redacted::DisplaySafeUrl`.
+
+GOTCHAS: (1) `uv_preview::set(...)` required before any uv API (panic:
+"preview configuration has not been initialized"). (2) `install_blocking`
+requires an UNZIPPED wheel archive dir (reads `<prefix>.dist-info/WHEEL` from
+`dist.path()`) — download the .whl then `uv_extract::unzip(fs_err::File,
+&archive_dir)` (uv's archive-v0 layout). (3) `BaseClientBuilder` methods
+consume self — capture `retry_policy()` before building. (4)
+`install_blocking` rejects symlink link-mode with a temporary cache — use
+`Cache::from_path` (persistent). (5) uv-python APIs are async (tokio).
+
+Reference implementation: `u50_style/examples/uv_spike.rs` — the template for
+Phase 1's setup.rs rewrite.
 
 ## Status log
 
 - 2026-08-29: plan created and committed; Phase 0 starting.
+- 2026-08-29 (late): deps commit 32cb133; spike example 09da6e0; Phase 0
+  COMPLETE — all three primitives verified end-to-end. Phase 1 next.

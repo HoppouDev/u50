@@ -26,7 +26,7 @@ use uv_preview::Preview;
 use uv_pypi_types::{HashDigest, HashDigests, ParsedUrl, VerbatimParsedUrl};
 use uv_python::downloads::{DownloadResult, ManagedPythonDownloadList, PythonDownloadRequest};
 use uv_python::managed::{ManagedPythonInstallation, ManagedPythonInstallations};
-use uv_python::{Interpreter, VersionRequest};
+use uv_python::{Interpreter, PythonEnvironment, VersionRequest};
 use uv_redacted::DisplaySafeUrl;
 use uv_virtualenv::{OnExisting, Prompt, Seed, create_venv};
 
@@ -41,21 +41,32 @@ const WHEELS: &[(&str, &str)] = &[("autopep8", "2.3.2"), ("pycodestyle", "2.14.0
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Shared cache: interpreter-info queries (Interpreter::query) and wheel
-    // storage both want one. Persistent (not temp) so re-runs are cheap.
     // Several uv crates read the process-global preview state; initialize it
     // before touching any uv APIs.
     uv_preview::set(Preview::default()).context("preview init")?;
 
+    // Shared cache: interpreter-info queries (Interpreter::query) and wheel
+    // storage both want one. Persistent (not temp) so re-runs are cheap.
     let cache = Cache::from_path(CACHE_DIR)
         .init()
         .await
         .context("cache init")?;
 
     // ---- (a) managed CPython 3.14 -------------------------------------
+    let interpreter = provision_python(&cache).await?;
+
+    // ---- (b) venv ------------------------------------------------------
+    let venv = create_spike_venv(interpreter)?;
+
+    // ---- (c) install wheels fetched from PyPI --------------------------
+    install_and_verify(&venv, &cache).await
+}
+
+/// (a) Download and install a managed `CPython`, then query its interpreter.
+async fn provision_python(cache: &Cache) -> Result<Interpreter> {
     let client_builder = BaseClientBuilder::default();
     let retry_policy = client_builder.retry_policy();
-    let download_list = ManagedPythonDownloadList::new(&client_builder, &cache, None)
+    let download_list = ManagedPythonDownloadList::new(&client_builder, cache, None)
         .await
         .context("download list")?;
     // uv disables its own retries here because downloads retry internally.
@@ -99,14 +110,17 @@ async fn main() -> Result<()> {
     let executable = installation.executable(false);
     println!("[a] managed python: {}", executable.display());
 
-    let interpreter = Interpreter::query(&executable, &cache).context("interpreter query")?;
+    let interpreter = Interpreter::query(&executable, cache).context("interpreter query")?;
     println!(
         "[a] interpreter: CPython {} at {}",
         interpreter.python_version(),
         executable.display()
     );
+    Ok(interpreter)
+}
 
-    // ---- (b) venv ------------------------------------------------------
+/// (b) Create the spike venv from the managed interpreter.
+fn create_spike_venv(interpreter: Interpreter) -> Result<PythonEnvironment> {
     let venv_path = Path::new(VENV_DIR);
     let venv = create_venv(
         venv_path,
@@ -122,8 +136,11 @@ async fn main() -> Result<()> {
     println!("[b] venv: {}", venv.root().display());
     println!("[b] venv python: {}", venv.python_executable().display());
     println!("[b] venv scripts dir: {}", venv.scripts().display());
+    Ok(venv)
+}
 
-    // ---- (c) install wheels fetched from PyPI --------------------------
+/// (c) Fetch wheels from `PyPI`, install them, and run the console script.
+async fn install_and_verify(venv: &PythonEnvironment, cache: &Cache) -> Result<()> {
     let mut dists = Vec::new();
     for (package, version) in WHEELS {
         let dist = fetch_wheel(package, version)
@@ -132,8 +149,8 @@ async fn main() -> Result<()> {
         println!("[c] wheel ready: {}", dist.path().display());
         dists.push(dist);
     }
-    Installer::new(&venv, Preview::default())
-        .with_cache(&cache)
+    Installer::new(venv, Preview::default())
+        .with_cache(cache)
         .with_installer_metadata(false)
         .install_blocking(dists)
         .context("install wheels")?;
@@ -161,7 +178,6 @@ async fn main() -> Result<()> {
     println!("SPIKE OK");
     Ok(())
 }
-
 /// Resolve the pure-python wheel for `package == version` via the `PyPI` JSON
 /// API, download it into the cache dir, and wrap it as a [`CachedDist`] that
 /// `uv-installer` accepts.

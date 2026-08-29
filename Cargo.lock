@@ -4446,6 +4446,7 @@ name = "u50_style"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "fs-err",
  "indicatif",
  "reqwest",
  "serde_json",
@@ -4457,6 +4458,7 @@ dependencies = [
  "uv-client",
  "uv-distribution-filename",
  "uv-distribution-types",
+ "uv-extract",
  "uv-installer",
  "uv-pep508",
  "uv-preview",
