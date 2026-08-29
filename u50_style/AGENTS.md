@@ -249,7 +249,7 @@ Run:
 U50_STYLE_GOLDEN=1 cargo test --test golden
 ```
 
-**Gating/skip behavior**: each language's golden test runs only when `U50_STYLE_GOLDEN=1` is set AND the language's backing tool (e.g. `clang-format`, `autopep8`, `js-beautify`, `djhtml`, `css-beautify`, `sqlformat`) is on PATH (`<tool> --version` succeeds); otherwise the test prints a `skip` line and returns. This is deliberate: the ground truth is only byte-stable for a given set of tool versions, and clang-format version skew across machines would flake CI — CI runs without the env var and skips these tests.
+**Gating/skip behavior**: each language's golden test runs only when `U50_STYLE_GOLDEN=1` is set AND the language's backing tool is on PATH (`<tool> --version` succeeds); otherwise the test prints a `skip` line and returns. The ground truth is only byte-stable for a given set of tool versions, so backend versions are pinned in [`tests/tool-versions.txt`](tests/tool-versions.txt) (a pip constraints file — the single source of truth). CI installs exactly those versions into a venv and runs the golden suite as a dedicated step; locally, run `U50_STYLE_GOLDEN=1 cargo test --test golden` (with your tools at the pinned versions — `u50 style --list` shows what you have). When a backend is upgraded, refresh this file, `tool-versions.txt`, and the goldens together.
 
 ### Large real-world fixtures and provenance
 

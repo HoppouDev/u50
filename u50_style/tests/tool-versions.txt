@@ -1,0 +1,11 @@
+# Pinned versions of the formatter backends used to generate the golden
+# fixtures (u50_style/tests/fixtures/) and verified byte-identical.
+# CI installs exactly these versions before running the golden tests;
+# regenerate fixtures with these versions or refresh this file + goldens
+# together (see u50_style/AGENTS.md -> Golden fixture tests).
+clang-format==22.1.8
+autopep8==2.3.2
+jsbeautifier==2.0.3
+cssbeautifier==2.0.3
+djhtml==3.0.6
+sqlparse==0.5.3

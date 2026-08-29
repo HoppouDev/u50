@@ -28,7 +28,7 @@ pub trait Formatter {
 /// Where a tool binary was found: the system `PATH`, or u50's cache
 /// (installed by `u50 style --setup`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ToolOrigin {
+pub enum ToolOrigin {
     /// Found on `PATH`.
     Path,
     /// Found in the u50 style cache (`~/.cache/u50/style50`).
@@ -72,7 +72,7 @@ fn is_executable_file(path: &Path) -> bool {
 /// (`u50 style --setup`'s install location). Returns `None` when the tool
 /// is nowhere to be found.
 #[must_use]
-pub(crate) fn locate_tool(tool: &str) -> Option<(PathBuf, ToolOrigin)> {
+pub fn locate_tool(tool: &str) -> Option<(PathBuf, ToolOrigin)> {
     if tool.contains('/') {
         return Some((PathBuf::from(tool), ToolOrigin::Path));
     }

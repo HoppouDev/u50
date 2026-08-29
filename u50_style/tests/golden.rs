@@ -9,16 +9,18 @@
 //! These tests are GATED: they only run when `U50_STYLE_GOLDEN=1` is set in
 //! the environment AND the language's backing formatter binary is on PATH.
 //! Rationale: the ground truth is only byte-stable for a given set of tool
-//! versions, and clang-format in particular varies across machines (version
-//! skew would flake CI); CI therefore runs without `U50_STYLE_GOLDEN` and
-//! skips these tests. Run locally with:
+//! versions, and clang-format in particular varies across machines. CI
+//! installs the exact pinned versions from `tests/tool-versions.txt` (a
+//! pip constraints file — the single source of truth for backend versions)
+//! into a venv on PATH and runs these tests; without the env var they skip.
+//! When regenerating fixtures, use the pinned versions (or refresh
+//! `tool-versions.txt` and the goldens together). Run locally with:
 //!
 //! ```sh
 //! U50_STYLE_GOLDEN=1 cargo test --test golden
 //! ```
 
 use std::path::PathBuf;
-use std::process::Command;
 
 use u50_style::{Cs50Formatter, Formatter, Language, Output, Request, normalize_source, run_with};
 
@@ -34,13 +36,12 @@ const LANGUAGES: &[(&str, &str, Language, &str)] = &[
     ("sql", "sql", Language::Sql, "sqlformat"),
 ];
 
-/// Whether `<tool> --version` can be spawned successfully.
+/// Whether the engine can resolve `<tool>` — the same resolution the
+/// formatter uses (PATH first, then the u50 style cache installed by
+/// `u50 style --setup`), so the gate never skips a language the engine
+/// itself would check.
 fn tool_available(tool: &str) -> bool {
-    Command::new(tool)
-        .arg("--version")
-        .output()
-        .map(|out| out.status.success())
-        .unwrap_or(false)
+    u50_style::locate_tool(tool).is_some()
 }
 
 /// Whether the golden test for `dir` should run: requires `U50_STYLE_GOLDEN=1`

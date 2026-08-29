@@ -18,8 +18,15 @@ jobs:
     - uses: actions/checkout@v4
     - name: Build
       run: cargo build --verbose
+    - name: Install pinned formatter backends (for golden tests)
+      run: |
+        python3 -m venv "$HOME/.venv-u50"
+        "$HOME/.venv-u50/bin/pip" install -c u50_style/tests/tool-versions.txt clang-format autopep8 jsbeautifier cssbeautifier djhtml sqlparse
+        echo "$HOME/.venv-u50/bin" >> "$GITHUB_PATH"
     - name: Run tests
       run: cargo test --verbose
+    - name: Golden tests (byte-comparison against style50 3.0.0 ground truth)
+      run: U50_STYLE_GOLDEN=1 cargo test -p u50_style --test golden --release
     - name: Format
       run: cargo fmt --all -- --check
     - name: Clippy
