@@ -49,6 +49,13 @@
 
 ## Target state
 
+> **ACHIEVED** (2026-08-29): everything below shipped, plus the
+> implementation-time hardening noted above (cache-only resolution + lazy
+> auto-provisioning). Final set pinned: uv-python, uv-virtualenv,
+> uv-installer, uv-cache, uv-cache-info, uv-client,
+> uv-distribution-filename, uv-distribution-types, uv-extract, uv-pep508,
+> uv-pypi-types, uv-preview, uv-redacted (`=0.0.74`).
+
 - `u50_style` depends on uv member crates pinned `=0.0.74` (exact): at minimum
   `uv-python` (managed interpreter download/install + discovery),
   `uv-virtualenv` (venv creation), `uv-installer` (wheel installation),
@@ -202,3 +209,24 @@ Phase 1's setup.rs rewrite.
   backends auto-provision on first use via the same uv install core
   (per-process dedup; `U50_STYLE_NO_PROVISION=1` opts out); `--list`
   reports `found (cache)`/`missing`.
+- 2026-08-29: Phase 3 COMPLETE — `u50_style/AGENTS.md` tool-management
+  section rewritten for the uv library path (in-process provisioning,
+  cache-only resolution, no system python3/pip/uv requirement).
+- 2026-08-29: Phase 4 COMPLETE — cleanup sweep: deleted the test-only
+  `resolve_tool` wrapper from `formatter.rs` (tests exercise `locate_tool`
+  directly; the `#[cfg_attr(not(test), allow(dead_code))]` went with it);
+  dropped two stale `#[allow(clippy::too_many_lines)]` attributes in
+  `setup.rs` (clippy -Dwarnings green without them); corrected the stale
+  "parallel pip installer … PATH→cache tool resolution" description in the
+  root `AGENTS.md`. Dependency audit: all uv-*/fs-err/reqwest/indicatif/
+  tokio deps confirmed in use (reqwest only by `examples/uv_spike.rs`).
+  Remnant grep for `python/bin` / `PYTHONPATH` / `python3 -m pip` /
+  `pip download` / PATH-first / pip `--target`: clean in src and current
+  docs (remaining `pip install` strings are the per-language fallback error
+  hints, intentional). Release binary `target/release/u50` =
+  **14,815,592 bytes (≈14.1 MB)**, up from the pre-uv ~2-3 MB — the R2
+  dependency-weight risk materialized but is accepted (single static
+  binary; no runtime deps).
+- 2026-08-29: **PLAN IMPLEMENTED / DONE.** End state: `u50 style` needs NO
+  system python3/pip/uv; tools are cache-only, auto-provisioned on first
+  use, and `--setup` bulk-installs via uv library crates `=0.0.74`.
