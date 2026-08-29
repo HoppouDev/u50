@@ -227,8 +227,11 @@ pub(crate) fn expand_paths(paths: &[PathBuf]) -> Vec<PathBuf> {
 }
 
 /// Recursively collects the supported regular files under `dir` into
-/// `files`. Entries are visited in file-name order at each level, and an
-/// unreadable directory is skipped silently (see [`expand_paths`]).
+/// `files` (regular only: symlinks, FIFOs, devices, etc. inside the
+/// walked tree are skipped — `os.walk` with `followlinks=false` never
+/// visits them either). Entries are visited in file-name order at each
+/// level, and an unreadable directory is skipped silently (see
+/// [`expand_paths`]).
 fn walk_dir(dir: &Path, files: &mut BTreeSet<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -238,13 +241,20 @@ fn walk_dir(dir: &Path, files: &mut BTreeSet<PathBuf>) {
     for entry in entries {
         let path = entry.path();
         match std::fs::symlink_metadata(&path) {
+            // `is_file()` (regular file only, not a symlink —
+            // `symlink_metadata` never follows links) matches
+            // `os.walk` `followlinks=false`, which leaves symlinked
+            // entries unvisited, and also skips FIFOs/devices, which
+            // could block on open when read.
             Ok(meta) if meta.is_dir() => walk_dir(&path, files),
-            Ok(_) => {
+            Ok(meta) if meta.is_file() => {
                 if detect_language(&path).is_some() {
                     files.insert(path);
                 }
             }
-            Err(_) => {}
+            // Unreadable entries and non-regular files (symlinks,
+            // FIFOs, devices, …) contribute nothing.
+            Ok(_) | Err(_) => {}
         }
     }
 }

@@ -16,7 +16,7 @@ Per-file errors never abort the run: an unreadable file, unsupported extension, 
 
 Both `run_with` and `fix_with` call `expand_paths(&req.files)` before processing, mirroring style50 3.0.0's `FILE [FILE ...] — file or directory to lint` (`os.walk` expansion with `followlinks=false`):
 
-- A **directory** argument is walked recursively; only files whose `detect_language` is `Some` are collected (the extension filtering style50 applies while walking). **Hidden directories are included** — in the original, exclusion is `--ignore`'s job (e.g. skipping `node_modules`), which u50 has not implemented yet.
+- A **directory** argument is walked recursively; only **regular files** whose `detect_language` is `Some` are collected (the extension filtering style50 applies while walking; FIFOs/devices and symlinked entries inside the tree are skipped — no blocking opens). **Hidden directories are included** — in the original, exclusion is `--ignore`'s job (e.g. skipping `node_modules`), which u50 has not implemented yet.
 - **Symlinked directories are not followed** (top-level `symlink_metadata` reads a link as non-directory, and links inside a walked tree are neither descended into nor collected) — matches `os.walk`'s default.
 - Anything else (file, symlink to file, missing path) is kept **unchanged**, so explicit file arguments keep their per-file error semantics (unsupported extension → exit 3, missing → `could not read`).
 - A directory with zero supported files contributes nothing (no error — style50 likewise skips unknown types); **unreadable directories are skipped silently** (also matches `os.walk`'s ignored-error default).
