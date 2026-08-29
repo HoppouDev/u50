@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use super::*;
+use crate::engine::expand_paths;
 use crate::formatter::{overrides_from_env, run_tool};
 use crate::render::{BOLD, GREEN, RED, RESET, json_document, render_character, render_split};
 
@@ -654,4 +655,134 @@ fn split_render_pairs_deletions_with_insertions_and_pads_blanks() {
         "left cell not blank-padded: {row1:?}"
     );
     assert!(row1[sep + 3..].starts_with('b'), "row 1: {row1:?}");
+}
+
+fn temp_dir(name: &str) -> PathBuf {
+    let path = std::env::temp_dir().join(format!(
+        "u50_style_test_{}_{}_dir",
+        std::process::id(),
+        name
+    ));
+    let _ = std::fs::remove_dir_all(&path);
+    std::fs::create_dir_all(&path).expect("create temp dir");
+    path
+}
+
+fn write_in(dir: &Path, rel: &str, contents: &str) -> PathBuf {
+    let path = dir.join(rel);
+    std::fs::create_dir_all(path.parent().expect("parent")).expect("create subdir");
+    std::fs::write(&path, contents).expect("write file");
+    path
+}
+
+const DIRTY_C: &str = "int main(void)\n{\nreturn 0;\n}\n";
+
+#[test]
+fn expand_paths_walks_directories_filters_and_sorts() {
+    let root = temp_dir("walk");
+    let c = write_in(&root, "dirty.c", DIRTY_C);
+    let py = write_in(&root, "sub/dirty.py", "x = 1\n");
+    let js = write_in(&root, "sub/deep/dirty.js", "x = 1;\n");
+    write_in(&root, "unsupported.rb", "puts 1\n");
+    let hidden = write_in(&root, ".hiddendir/dirty2.c", DIRTY_C);
+    let expanded = expand_paths(std::slice::from_ref(&root));
+    // Hidden dirs are included (style50 parity: --ignore is the filter);
+    // unsupported extensions are dropped; result is sorted and unique.
+    let mut expected = vec![c, hidden, js, py];
+    expected.sort();
+    assert_eq!(expanded, expected);
+    std::fs::remove_dir_all(&root).expect("cleanup");
+}
+
+#[test]
+fn expand_paths_keeps_explicit_unsupported_file() {
+    let root = temp_dir("keepunsup");
+    let rb = write_in(&root, "bad.rb", "puts 1\n");
+    assert_eq!(expand_paths(std::slice::from_ref(&rb)), vec![rb]);
+    std::fs::remove_dir_all(&root).expect("cleanup");
+}
+
+#[test]
+fn expand_paths_keeps_missing_path() {
+    let missing = std::env::temp_dir().join(format!(
+        "u50_style_test_{}_gone_dir_missing.c",
+        std::process::id()
+    ));
+    assert_eq!(expand_paths(std::slice::from_ref(&missing)), vec![missing]);
+}
+
+#[test]
+fn expand_paths_dedupes_dir_and_file_inside() {
+    let root = temp_dir("dedupe");
+    let c = write_in(&root, "dirty.c", DIRTY_C);
+    let py = write_in(&root, "sub/dirty.py", "x = 1\n");
+    let expanded = expand_paths(&[root.clone(), c.clone(), root]);
+    assert_eq!(expanded, vec![c, py]);
+}
+
+#[test]
+fn expand_paths_empty_input_is_empty() {
+    assert!(expand_paths(&[]).is_empty());
+}
+
+#[test]
+fn expand_paths_does_not_follow_symlinked_dirs() {
+    let root = temp_dir("symlink");
+    let other = temp_dir("symlink_target");
+    write_in(&other, "other.js", "x = 1;\n");
+    let link = root.join("link");
+    #[cfg(unix)]
+    if std::os::unix::fs::symlink(&other, &link).is_ok() {
+        // Inside a walked tree the symlinked dir is neither descended
+        // into (os.walk followlinks=false) nor collected as a file.
+        assert!(expand_paths(std::slice::from_ref(&root)).is_empty());
+        // A symlinked dir passed directly is a non-dir argument: kept
+        // unchanged (its per-file error happens downstream).
+        assert_eq!(
+            expand_paths(std::slice::from_ref(&link)),
+            vec![link.clone()]
+        );
+    }
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::remove_dir_all(&other);
+}
+
+#[test]
+fn expand_paths_empty_directory_contributes_nothing() {
+    let root = temp_dir("emptydir");
+    assert!(expand_paths(std::slice::from_ref(&root)).is_empty());
+    std::fs::remove_dir_all(&root).expect("cleanup");
+}
+
+#[test]
+fn run_with_expands_directory_argument() {
+    let root = temp_dir("rundir");
+    let c = write_in(&root, "dirty.c", DIRTY_C);
+    let py = write_in(&root, "sub/dirty.py", "x = 1\n");
+    let report = run_with(&fix_request(vec![root]), &Reindent);
+    assert!(!report.has_errors());
+    assert_eq!(report.results.len(), 2);
+    let mut paths: Vec<PathBuf> = report.results.iter().map(|r| r.path.clone()).collect();
+    paths.sort();
+    assert_eq!(paths, vec![c, py]);
+    assert!(report.results.iter().all(|r| !r.clean));
+}
+
+#[test]
+fn fix_with_fixes_every_file_in_directory() {
+    let root = temp_dir("fixdir");
+    let c = write_in(&root, "dirty.c", DIRTY_C);
+    let js = write_in(&root, "sub/dirty.js", "x = 1;\n");
+    write_in(&root, "unsupported.rb", "puts 1\n");
+    let report = fix_with(&fix_request(vec![root]), &Reindent, false);
+    assert!(!report.has_errors());
+    assert_eq!(report.results.len(), 2);
+    assert_eq!(
+        std::fs::read_to_string(&c).expect("read back c"),
+        "    int main(void)\n    {\n    return 0;\n    }\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&js).expect("read back js"),
+        "    x = 1;\n"
+    );
 }

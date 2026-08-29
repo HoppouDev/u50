@@ -6,11 +6,21 @@ Rust rewrite of [style50](https://github.com/cs50/style50): checks code style an
 
 ## Status
 
-Engine implemented, supporting all 8 languages of style50 3.0.0: `run(&Request) -> Result<Report>` uses `Cs50Formatter::from_env()` (impl of the `Formatter` trait, injectable via `run_with` for tests without the formatters installed), renders per-file diffs (`character` with inline char emphasis / `split` / `unified` / `json`) and prints them; the CLI maps `Report::clean()` to exit 0/1. Every language can be redirected to a custom formatter via `U50_STYLE_<LANG>` environment variables (see 'Formatter overrides', below).
+Engine implemented, supporting all 8 languages of style50 3.0.0. Directory arguments are expanded recursively (`expand_paths`, style50 3.0.0's `os.walk` expansion): `run(&Request) -> Result<Report>` uses `Cs50Formatter::from_env()` (impl of the `Formatter` trait, injectable via `run_with` for tests without the formatters installed), renders per-file diffs (`character` with inline char emphasis / `split` / `unified` / `json`) and prints them; the CLI maps `Report::clean()` to exit 0/1. Every language can be redirected to a custom formatter via `U50_STYLE_<LANG>` environment variables (see 'Formatter overrides', below).
 
 API: `Language` (`detect_language` by extension for all supported languages; `Language::required_tool() -> Option<&'static str>` names the backing binary; `Language::env_var_key()` gives the override variable suffix), `Formatter` trait, `Cs50Formatter` (`Default` = built-in tools with no overrides; `with_overrides(HashMap<Language, Vec<String>>)`; `from_env()`), `Request { files, output, color }`, `FileResult { path, clean, rendered, formatted }`, `Report { results, errors }` with `clean()` and `has_errors()`. Pure renderers (`render_character`/`render_split`/`render_unified`/`json_document`) take `(source, formatted, ...)` and are unit-testable without the tools.
 
-Per-file errors never abort the run: an unreadable file, unsupported extension, or formatter failure for one file records `(path, message)` in `Report.errors` and processing continues with the remaining files, so earlier results are preserved. `run()` prints rendered output for every processed file to stdout (stdout stays pure diff/JSON), then writes each error to stderr as `error: <path>: <message>`. Formatter-level failures (e.g. missing clang-format) are therefore per-file skips, not whole-run bails.
+Per-file errors never abort the run: an unreadable file, unsupported extension, or formatter failure for one file records `(path, message)` in `Report.errors` and processing continues with the remaining files, so earlier results are preserved.
+
+## Directory arguments (style50 3.0.0 parity)
+
+Both `run_with` and `fix_with` call `expand_paths(&req.files)` before processing, mirroring style50 3.0.0's `FILE [FILE ...] — file or directory to lint` (`os.walk` expansion with `followlinks=false`):
+
+- A **directory** argument is walked recursively; only files whose `detect_language` is `Some` are collected (the extension filtering style50 applies while walking). **Hidden directories are included** — in the original, exclusion is `--ignore`'s job (e.g. skipping `node_modules`), which u50 has not implemented yet.
+- **Symlinked directories are not followed** (top-level `symlink_metadata` reads a link as non-directory, and links inside a walked tree are neither descended into nor collected) — matches `os.walk`'s default.
+- Anything else (file, symlink to file, missing path) is kept **unchanged**, so explicit file arguments keep their per-file error semantics (unsupported extension → exit 3, missing → `could not read`).
+- A directory with zero supported files contributes nothing (no error — style50 likewise skips unknown types); **unreadable directories are skipped silently** (also matches `os.walk`'s ignored-error default).
+- The final file list is **deduplicated** (a directory and a file inside it may both be named) and **sorted** for deterministic output, applied identically to check and `--fix`. `run()` prints rendered output for every processed file to stdout (stdout stays pure diff/JSON), then writes each error to stderr as `error: <path>: <message>`. Formatter-level failures (e.g. missing clang-format) are therefore per-file skips, not whole-run bails.
 
 ## In-place fix
 
@@ -143,7 +153,7 @@ clang-format >= 14 is required; when a formatter binary is missing the engine er
 
 ### Not yet implemented (present in the original; future work)
 
-- `--ignore`, `--clang-format-style` (custom style override).
+- `--ignore` (the mechanism for excluding directories such as `node_modules` from the directory walk), `--clang-format-style` (custom style override).
 - `score` and `html` output modes (style50 v2 features).
 - comment-count hints (style50's "But consider adding more comments!" suggestion).
 

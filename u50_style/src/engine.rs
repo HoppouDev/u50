@@ -1,6 +1,7 @@
 //! Style-check driver: reads files, formats, and builds the report.
 
-use std::path::Path;
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
 
 use crate::formatter::{Cs50Formatter, Formatter};
 use crate::language::detect_language;
@@ -55,6 +56,10 @@ pub fn normalize_source(source: &str) -> String {
     normalized
 }
 
+/// Directory arguments are expanded recursively before processing (see
+/// [`expand_paths`]): every supported file inside a directory is checked,
+/// deduplicated against the other arguments, and processed in sorted order.
+///
 /// Like [`run`], but injects the formatter so tests can run without the
 /// external formatter binaries installed. Builds no output for the caller;
 /// rendering lives on the [`FileResult`]s.
@@ -67,9 +72,10 @@ pub fn normalize_source(source: &str) -> String {
 /// shared with [`fix_with`] via [`process_file`]; [`FileResult::formatted`]
 /// carries the styled content for every successfully processed file.
 pub fn run_with(req: &Request, formatter: &dyn Formatter) -> Report {
-    let mut results = Vec::with_capacity(req.files.len());
+    let files = expand_paths(&req.files);
+    let mut results = Vec::with_capacity(files.len());
     let mut errors = Vec::new();
-    for path in &req.files {
+    for path in &files {
         match process_file(path, formatter, req.output, req.color) {
             Ok(result) => results.push(result),
             Err(e) => errors.push((path.clone(), e.to_string())),
@@ -143,12 +149,17 @@ fn process_file(
 /// nothing is written at all; the report then reflects what *would* be
 /// fixed (dirty files appear as `clean == false` results).
 ///
+/// Directory arguments are expanded recursively before processing (see
+/// [`expand_paths`]): every supported file inside a directory is fixed,
+/// deduplicated against the other arguments, and processed in sorted order.
+///
 /// No printing happens here (see [`fix`] for the printing entry point), and
 /// fix mode otherwise ignores the per-file diff rendering.
 pub fn fix_with(req: &Request, formatter: &dyn Formatter, dry_run: bool) -> Report {
-    let mut results = Vec::with_capacity(req.files.len());
+    let files = expand_paths(&req.files);
+    let mut results = Vec::with_capacity(files.len());
     let mut errors = Vec::new();
-    for path in &req.files {
+    for path in &files {
         match process_file(path, formatter, req.output, req.color) {
             Ok(result) => {
                 let written = if result.clean || dry_run {
@@ -177,6 +188,65 @@ pub fn fix_with(req: &Request, formatter: &dyn Formatter, dry_run: bool) -> Repo
         }
     }
     Report { results, errors }
+}
+
+/// Expands the request's file arguments before processing, matching
+/// style50 3.0.0's directory handling (an `os.walk` expansion with
+/// `followlinks=false`):
+///
+/// - a **directory** argument is walked recursively; only regular files
+///   whose [`detect_language`] is `Some` are collected (the same
+///   extension filtering style50 applies while walking), and hidden
+///   directories are included (style50's `--ignore` is the exclusion
+///   mechanism, which u50 does not implement yet);
+/// - a **symlinked directory is not followed** (`symlink_metadata` says
+///   it is a link, not a directory — matches `os.walk` defaults);
+/// - anything else (a file, a symlink to a file, a missing path) is kept
+///   unchanged, so explicit file arguments preserve their existing
+///   per-file error semantics (unsupported extension, could not read);
+/// - a directory containing zero supported files contributes nothing
+///   (no error — style50 likewise skips unknown file types);
+/// - **unreadable directories are skipped silently** (there is no error
+///   channel here; this also matches `os.walk`'s ignored-error default);
+/// - the final list is deduplicated (a directory and a file inside it can
+///   both be named) and returned in sorted order for deterministic output.
+pub(crate) fn expand_paths(paths: &[PathBuf]) -> Vec<PathBuf> {
+    let mut files: BTreeSet<PathBuf> = BTreeSet::new();
+    for path in paths {
+        match std::fs::symlink_metadata(path) {
+            // `symlink_metadata` never follows the link: a symlinked
+            // directory reads as a link, not a directory, so it is kept
+            // (and later errors per-file) instead of being walked.
+            Ok(meta) if meta.is_dir() => walk_dir(path, &mut files),
+            _ => {
+                files.insert(path.clone());
+            }
+        }
+    }
+    files.into_iter().collect()
+}
+
+/// Recursively collects the supported regular files under `dir` into
+/// `files`. Entries are visited in file-name order at each level, and an
+/// unreadable directory is skipped silently (see [`expand_paths`]).
+fn walk_dir(dir: &Path, files: &mut BTreeSet<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut entries: Vec<_> = entries.filter_map(Result::ok).collect();
+    entries.sort_by_key(std::fs::DirEntry::file_name);
+    for entry in entries {
+        let path = entry.path();
+        match std::fs::symlink_metadata(&path) {
+            Ok(meta) if meta.is_dir() => walk_dir(&path, files),
+            Ok(_) => {
+                if detect_language(&path).is_some() {
+                    files.insert(path);
+                }
+            }
+            Err(_) => {}
+        }
+    }
 }
 
 /// Runs the in-place fix for `req` using the CS50 formatter stack
