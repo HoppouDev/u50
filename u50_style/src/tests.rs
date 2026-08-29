@@ -914,9 +914,9 @@ fn resolve_tool_passes_through_explicit_paths() {
         resolve_tool("/nonexistent/u50-probe-xyz").as_deref(),
         Some(std::path::Path::new("/nonexistent/u50-probe-xyz"))
     );
-    // Bare names that exist on this machine resolve to a path whose file
-    // name matches the tool (PATH or cache hit — either is fine here);
-    // a name that exists nowhere must resolve to None.
+    // Bare names resolve only from the u50 style cache (never from PATH);
+    // on machines without u50-installed tools this branch is simply not
+    // taken. A name that exists nowhere must resolve to None.
     if let Some(path) = resolve_tool("sh") {
         assert_eq!(path.file_name().and_then(|n| n.to_str()), Some("sh"));
     }
