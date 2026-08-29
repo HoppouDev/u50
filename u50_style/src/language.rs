@@ -26,10 +26,6 @@ pub enum Language {
 impl Language {
     /// Every supported language, in listing order (C, C++, Java, Python,
     /// JavaScript, HTML, CSS, SQL — the style50 3.0.0 set).
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "consumed by listing.rs/tests, next commit")
-    )]
     pub(crate) const ALL: [Language; 8] = [
         Self::C,
         Self::Cpp,
@@ -87,10 +83,6 @@ impl Language {
 
     /// Human-readable name used in listings.
     #[must_use]
-    #[expect(
-        dead_code,
-        reason = "consumed by listing.rs, introduced in the next commit"
-    )]
     pub(crate) fn display_name(self) -> &'static str {
         match self {
             Self::C => "C",
@@ -106,10 +98,6 @@ impl Language {
 
     /// File extensions this language is detected from.
     #[must_use]
-    #[expect(
-        dead_code,
-        reason = "consumed by listing.rs, introduced in the next commit"
-    )]
     pub(crate) fn extensions(self) -> &'static [&'static str] {
         match self {
             Self::C => &["c", "h"],
