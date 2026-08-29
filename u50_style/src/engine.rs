@@ -30,6 +30,29 @@ pub fn run(req: &Request) -> Report {
     report
 }
 
+/// Normalizes `source` exactly as style50 3.0.0's `_api.py` does before
+/// formatting and comparison:
+///
+/// 1. rstrip every line (trailing whitespace, including `\r`, removed),
+/// 2. join with `\n`,
+/// 3. ensure a trailing `\n` (unless the result is empty).
+///
+/// Both the formatter and the clean/dirty comparison operate on the
+/// normalized text, so trailing whitespace, CRLF line endings, and a
+/// missing final newline are never flagged.
+#[must_use]
+pub fn normalize_source(source: &str) -> String {
+    let mut normalized = source
+        .lines()
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n");
+    if !normalized.is_empty() && !normalized.ends_with('\n') {
+        normalized.push('\n');
+    }
+    normalized
+}
+
 /// Like [`run`], but injects the formatter so tests can run without the
 /// external formatter binaries installed. Builds no output for the caller; rendering lives
 /// on the [`FileResult`]s.
@@ -51,20 +74,12 @@ pub fn run_with(req: &Request, formatter: &dyn Formatter) -> Report {
                     path.display()
                 );
             };
-            // style50 3.0.0 input normalization (`_api.py`): rstrip every
-            // line, join with `\n`, and ensure a trailing `\n` before
-            // formatting and comparison. Empty/whitespace-only files
-            // normalize to "" and are a per-file error ("file is empty").
-            let mut normalized = source
-                .lines()
-                .map(str::trim_end)
-                .collect::<Vec<_>>()
-                .join("\n");
+            // style50 3.0.0 input normalization (`_api.py`); see
+            // [`normalize_source`]. Empty/whitespace-only files normalize
+            // to "" and are a per-file error ("file is empty").
+            let normalized = normalize_source(&source);
             if normalized.trim().is_empty() {
                 anyhow::bail!("file is empty");
-            }
-            if !normalized.ends_with('\n') {
-                normalized.push('\n');
             }
             let expected = formatter.format(&normalized, language)?;
             let clean = normalized == expected;
