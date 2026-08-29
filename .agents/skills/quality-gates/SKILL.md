@@ -58,12 +58,20 @@ Any change to tool provisioning or cache resolution must be smoke-tested in
 isolation so a warm cache or a hostile `PATH` cannot mask a bug:
 
 ```sh
-export XDG_CACHE_HOME=$(mktemp -d)          # empty cache
-env -i HOME="$HOME" PATH=/usr/bin:/bin sh   # minimal environment
-u50 style --list                            # every backend must read "missing"
-u50 style some-file.c                       # auto-provisions on first use, then formats
-u50 style --list                            # now "found (cache)"
+CACHE=$(mktemp -d)                        # empty cache
+mkdir -p /tmp/u50smokebin && ln -sf "$(command -v u50)" /tmp/u50smokebin/u50
+env -i HOME="$HOME" XDG_CACHE_HOME="$CACHE" PATH=/tmp/u50smokebin \\
+  /tmp/u50smokebin/u50 style --list       # every backend must read "missing"
+env -i HOME="$HOME" XDG_CACHE_HOME="$CACHE" PATH=/tmp/u50smokebin \\
+  /tmp/u50smokebin/u50 style some-file.c  # auto-provisions on first use, then formats
+env -i HOME="$HOME" XDG_CACHE_HOME="$CACHE" PATH=/tmp/u50smokebin \\
+  /tmp/u50smokebin/u50 style --list       # now "found (cache)"
 ```
+
+Each line is a single `env -i` invocation: there is no subshell that could
+escape the minimal environment, the bare restricted `PATH` carries only the
+`u50` symlink, and `$CACHE` pins the empty cache across invocations.
+
 
 Verified property: a fake same-named binary planted on `PATH` is never used —
 resolution is cache-only, and an empty cache auto-provisions exactly the

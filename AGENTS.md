@@ -48,6 +48,10 @@ u50_submit/           # library crate (submit50 equivalent)
 - Async runtime: **tokio** (full features). Errors: **anyhow**. Logging: **tracing** / **tracing-subscriber**.
 - Every crate starts with `#![warn(clippy::pedantic)]`.
 
+## Agent guardrails
+
+Agent guardrails live in `.claude/`: a PreToolUse hook (`.claude/hooks/gate-destructive.sh`) denies clearly destructive shell commands (fail-open by design) and a PostToolUse hook (`.claude/hooks/format-rust.sh`) runs rustfmt on edited `src/**.rs` files — never on the byte-pinned goldens under `tests/fixtures/` or `examples/`.
+
 ## CI / quality gates
 
 GitHub Actions workflow `.github/workflows/rust.yml` (name: `Rust`) runs on push/PR to `main`:
