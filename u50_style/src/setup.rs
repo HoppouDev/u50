@@ -13,7 +13,7 @@ use serde_json::Value;
 use tokio::runtime::Runtime;
 use uv_cache::Cache;
 use uv_cache_info::CacheInfo;
-use uv_client::BaseClientBuilder;
+use uv_client::{BaseClient, BaseClientBuilder};
 use uv_distribution_filename::WheelFilename;
 use uv_distribution_types::{CachedDirectUrlDist, CachedDist};
 use uv_installer::Installer;
@@ -262,6 +262,21 @@ async fn provision_backends(
     cache_root: &Path,
     missing: &[(String, String)],
 ) -> Result<Vec<BackendOutcome>> {
+    // One client builder for the whole run. `BaseClientBuilder::build()`
+    // returns a middleware-wrapped client that already applies uv's
+    // retry policy (3 retries, exponential backoff), a 10s connect
+    // timeout, a 30s per-request read timeout, and a uv user agent.
+    let client_builder = BaseClientBuilder::default();
+    // The retry-enabled client backs the PyPI JSON and wheel GETs.
+    let client = client_builder.build().context("http client build")?;
+    // Python distribution downloads retry internally (`fetch_with_retry`),
+    // so their client disables middleware retries to avoid double-retrying
+    // — mirroring uv's own `installation.rs`.
+    let download_client = client_builder
+        .clone()
+        .retries(0)
+        .build()
+        .context("download client build")?;
     // Persistent uv cache (NOT a temp dir): wheel archives persist across
     // runs, and the installer rejects symlink link-mode against temp
     // caches.
@@ -269,7 +284,7 @@ async fn provision_backends(
         .init()
         .await
         .context("uv cache init")?;
-    let venv = ensure_venv(cache_root, &uv_cache).await?;
+    let venv = ensure_venv(cache_root, &uv_cache, &client_builder, &download_client).await?;
 
     let specs = wheel_specs(missing);
 
@@ -287,9 +302,10 @@ async fn provision_backends(
             pb.set_style(style.clone());
             pb.set_message(format!("fetching {name}"));
             let wheels_dir = wheels_dir.clone();
+            let client = client.clone();
             let pb = pb.clone();
             tokio::spawn(async move {
-                let result = fetch_wheel(&name, version.as_deref(), &wheels_dir).await;
+                let result = fetch_wheel(&client, &name, version.as_deref(), &wheels_dir).await;
                 match &result {
                     Ok(_) => pb.finish_with_message(format!("{name}: done")),
                     Err(_) => pb.finish_with_message(format!("{name}: FAILED")),
@@ -368,7 +384,12 @@ async fn provision_backends(
 /// fresh managed `CPython` ([`PINNED_PYTHON`]) + venv are provisioned.
 /// Reopening via [`PythonEnvironment::from_root`] keeps the happy path
 /// cheap and reuses one interpreter query.
-async fn ensure_venv(cache_root: &Path, uv_cache: &Cache) -> Result<PythonEnvironment> {
+async fn ensure_venv(
+    cache_root: &Path,
+    uv_cache: &Cache,
+    client_builder: &BaseClientBuilder<'_>,
+    client: &BaseClient,
+) -> Result<PythonEnvironment> {
     let venv_path = cache_root.join("venv");
     let python = venv_path.join("bin").join("python");
     let python3 = venv_path.join("bin").join("python3");
@@ -377,7 +398,7 @@ async fn ensure_venv(cache_root: &Path, uv_cache: &Cache) -> Result<PythonEnviro
             // A venv dir without interpreters is broken; recreate it.
             fs_err::remove_dir_all(&venv_path).context("remove broken venv")?;
         }
-        let interpreter = provision_python(uv_cache).await?;
+        let interpreter = provision_python(client_builder, client, uv_cache).await?;
         create_venv(
             &venv_path,
             interpreter,
@@ -395,14 +416,17 @@ async fn ensure_venv(cache_root: &Path, uv_cache: &Cache) -> Result<PythonEnviro
 
 /// Downloads and installs a managed `CPython` ([`PINNED_PYTHON`]) into
 /// uv's install root and queries its interpreter.
-async fn provision_python(uv_cache: &Cache) -> Result<Interpreter> {
-    let client_builder = BaseClientBuilder::default();
+async fn provision_python(
+    client_builder: &BaseClientBuilder<'_>,
+    client: &BaseClient,
+    uv_cache: &Cache,
+) -> Result<Interpreter> {
     let retry_policy = client_builder.retry_policy();
-    let download_list = ManagedPythonDownloadList::new(&client_builder, uv_cache, None)
+    let download_list = ManagedPythonDownloadList::new(client_builder, uv_cache, None)
         .await
         .context("download list")?;
-    // uv disables its own retries here because downloads retry internally.
-    let client = client_builder.retries(0).build().context("client build")?;
+    // `client` was built with `retries(0)`: uv's download path retries
+    // internally (`fetch_with_retry`), so middleware retries stay disabled.
     let request = PythonDownloadRequest::default()
         .with_version(VersionRequest::from_str(PINNED_PYTHON).context("version request")?)
         .fill()
@@ -424,7 +448,7 @@ async fn provision_python(uv_cache: &Cache) -> Result<Interpreter> {
 
     let fetched = download
         .fetch_with_retry(
-            &client,
+            client,
             &retry_policy,
             &installation_dir,
             &scratch_dir,
@@ -449,23 +473,42 @@ async fn provision_python(uv_cache: &Cache) -> Result<Interpreter> {
     Ok(interpreter)
 }
 
+/// GETs a `PyPI` JSON API endpoint through uv's middleware client: the
+/// retry policy (3 attempts, exponential backoff), the 10s connect and
+/// 30s per-request read timeouts, and the user agent all come from
+/// [`BaseClientBuilder::build`].
+async fn pypi_json(client: &BaseClient, url: &DisplaySafeUrl, context: &str) -> Result<Value> {
+    let json: Value = client
+        .for_host(url)
+        .get(url.as_str())
+        .send()
+        .await
+        .with_context(|| format!("{context}: request failed"))?
+        .error_for_status()
+        .with_context(|| format!("{context}: unexpected HTTP status"))?
+        .json()
+        .await
+        .with_context(|| format!("{context}: invalid JSON body"))?;
+    Ok(json)
+}
+
 /// Resolves `package`'s wheel version: the pin from [`PINNED_VERSIONS`]
 /// when present, otherwise the latest release via the `PyPI` JSON API.
-async fn resolve_version(package: &str, version: Option<&str>) -> Result<String> {
+async fn resolve_version(
+    client: &BaseClient,
+    package: &str,
+    version: Option<&str>,
+) -> Result<String> {
     if let Some(version) = version {
-        Ok(version.to_owned())
-    } else {
-        let json: Value = reqwest::get(format!("https://pypi.org/pypi/{package}/json"))
-            .await?
-            .error_for_status()?
-            .json()
-            .await
-            .with_context(|| format!("pypi json for {package}"))?;
-        json.pointer("/info/version")
-            .and_then(Value::as_str)
-            .map(str::to_owned)
-            .with_context(|| format!("pypi json for {package}: no info.version"))
+        return Ok(version.to_owned());
     }
+    let url = DisplaySafeUrl::parse(&format!("https://pypi.org/pypi/{package}/json"))
+        .with_context(|| format!("pypi url for {package}"))?;
+    let json = pypi_json(client, &url, &format!("pypi json for {package}")).await?;
+    json.pointer("/info/version")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .with_context(|| format!("pypi json for {package}: no info.version"))
 }
 
 /// Resolves, downloads, and unpacks the best wheel for
@@ -473,21 +516,31 @@ async fn resolve_version(package: &str, version: Option<&str>) -> Result<String>
 /// via the `PyPI` JSON API, and wraps it as a [`CachedDist`] that
 /// `uv-installer` accepts. Wheels land in `wheels_dir` (the `.whl` file
 /// plus an unzipped `<name>-<ver>` archive dir).
+///
+/// Previously fetched wheels are reused: when the unzipped archive dir
+/// for the exact wheel filename already exists (the archive name embeds
+/// the package version, so a version bump invalidates it) and contains
+/// its `<name>-<version>.dist-info` directory, the download and unzip
+/// steps are skipped.
 #[allow(clippy::too_many_lines)]
 async fn fetch_wheel(
+    client: &BaseClient,
     package: &str,
     version: Option<&str>,
     wheels_dir: &PathBuf,
 ) -> Result<CachedDist> {
-    let version = resolve_version(package, version)
+    let version = resolve_version(client, package, version)
         .await
         .with_context(|| format!("resolve {package} version"))?;
-    let json: Value = reqwest::get(format!("https://pypi.org/pypi/{package}/{version}/json"))
-        .await?
-        .error_for_status()?
-        .json()
-        .await
-        .context("pypi json")?;
+    let json_url =
+        DisplaySafeUrl::parse(&format!("https://pypi.org/pypi/{package}/{version}/json"))
+            .with_context(|| format!("pypi url for {package}=={version}"))?;
+    let json = pypi_json(
+        client,
+        &json_url,
+        &format!("pypi json for {package}=={version}"),
+    )
+    .await?;
 
     let urls = json
         .get("urls")
@@ -525,20 +578,38 @@ async fn fetch_wheel(
         .context("no sha256")?
         .to_string();
 
+    let display_url = DisplaySafeUrl::parse(&wheel_url).context("wheel url")?;
+    let archive = wheels_dir.join(filename.trim_end_matches(".whl"));
+
+    // Reuse a previously fetched wheel: the archive dir name embeds the
+    // package version, so a version bump invalidates it naturally.
+    if dist_info_dir(&filename).is_some_and(|dir| archive.join(dir).is_dir()) {
+        return wheel_dist(&filename, display_url, &sha256, archive);
+    }
+
     // Download the wheel, then unzip it into a cache archive dir: the
     // installer installs from an *unzipped* wheel tree (it reads
     // `<prefix>.dist-info/WHEEL` from `dist.path()`), mirroring uv's own
     // `archive-v0` layout.
     tokio::fs::create_dir_all(wheels_dir).await?;
     let wheel_path = wheels_dir.join(&filename);
-    let bytes = reqwest::get(&wheel_url)
-        .await?
-        .error_for_status()?
+    let bytes = client
+        .for_host(&display_url)
+        .get(&wheel_url)
+        .send()
+        .await
+        .with_context(|| format!("wheel download request for {package}=={version}"))?
+        .error_for_status()
+        .with_context(|| format!("wheel download for {package}=={version}"))?
         .bytes()
-        .await?;
+        .await
+        .with_context(|| format!("wheel download body for {package}=={version}"))?;
     tokio::fs::write(&wheel_path, &bytes).await?;
-    let archive = wheels_dir.join(filename.trim_end_matches(".whl"));
-    tokio::fs::remove_dir_all(&archive).await.ok();
+    if archive.exists() {
+        tokio::fs::remove_dir_all(&archive)
+            .await
+            .with_context(|| format!("remove stale wheel archive {}", archive.display()))?;
+    }
     tokio::fs::create_dir_all(&archive).await?;
     uv_extract::unzip(
         fs_err::File::open(&wheel_path).context("open wheel")?,
@@ -546,9 +617,30 @@ async fn fetch_wheel(
     )
     .context("unzip wheel")?;
 
-    let display_url = DisplaySafeUrl::parse(&wheel_url).context("wheel url")?;
+    wheel_dist(&filename, display_url, &sha256, archive)
+}
+
+/// The `<name>-<version>.dist-info` directory a wheel archive contains:
+/// the first two dash-separated components of the wheel filename stem
+/// (wheel filenames carry no dashes in either part). Best-effort: even a
+/// malformed stem yields a name (e.g. `just-a` from `just-a-name`), which
+/// simply never matches a real dist-info dir, so reuse fails harmlessly.
+fn dist_info_dir(wheel_stem: &str) -> Option<String> {
+    let (name, rest) = wheel_stem.split_once('-')?;
+    let (version, _) = rest.split_once('-')?;
+    Some(format!("{name}-{version}.dist-info"))
+}
+
+/// Wraps a fetched (or reused) wheel as a [`CachedDist`] that
+/// `uv-installer` accepts, pointing at the unzipped `archive` dir.
+fn wheel_dist(
+    filename: &str,
+    display_url: DisplaySafeUrl,
+    sha256: &str,
+    archive: PathBuf,
+) -> Result<CachedDist> {
     Ok(CachedDist::Url(CachedDirectUrlDist {
-        filename: WheelFilename::from_str(&filename).context("wheel filename")?,
+        filename: WheelFilename::from_str(filename).context("wheel filename")?,
         url: VerbatimParsedUrl {
             parsed_url: ParsedUrl::try_from(display_url.clone()).context("parsed url")?,
             verbatim: VerbatimUrl::from_url(display_url),
@@ -565,8 +657,8 @@ async fn fetch_wheel(
 #[cfg(test)]
 mod tests {
     use super::{
-        Role, WHEEL_RANK_REJECT, missing_backends, pip_spec, transitive_deps, wheel_rank,
-        wheel_specs,
+        Role, WHEEL_RANK_REJECT, dist_info_dir, missing_backends, pip_spec, transitive_deps,
+        wheel_rank, wheel_specs,
     };
 
     #[test]
@@ -631,6 +723,27 @@ mod tests {
         assert_eq!(pip_spec("autopep8"), "autopep8==2.3.2");
         assert_eq!(pip_spec("clang-format"), "clang-format==22.1.8");
         assert_eq!(pip_spec("not-a-pinned-package"), "not-a-pinned-package");
+    }
+
+    #[test]
+    fn dist_info_dir_is_best_effort_for_malformed_stems() {
+        assert_eq!(
+            dist_info_dir("autopep8-2.3.2-py2.py3-none-any"),
+            Some("autopep8-2.3.2.dist-info".to_owned())
+        );
+        assert_eq!(
+            dist_info_dir(
+                "clang_format-22.1.8-py2.py3-none-manylinux_2_27_x86_64.manylinux_2_28_x86_64"
+            ),
+            Some("clang_format-22.1.8.dist-info".to_owned())
+        );
+        // Malformed stems still yield a best-effort name; a wrong name
+        // never matches a real dist-info dir, so reuse fails harmlessly.
+        assert_eq!(
+            dist_info_dir("just-a-name"),
+            Some("just-a.dist-info".to_owned())
+        );
+        assert_eq!(dist_info_dir("nodashes"), None);
     }
 
     #[test]

@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 anyhow = { workspace = true }
+reqwest = { workspace = true }
 similar = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
@@ -23,5 +24,4 @@ uv-pep508 = { workspace = true }
 uv-pypi-types = { workspace = true }
 uv-preview = { workspace = true }
 uv-redacted = { workspace = true }
-reqwest = { workspace = true }
 tokio = { workspace = true }
