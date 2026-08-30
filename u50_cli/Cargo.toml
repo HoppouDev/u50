@@ -8,11 +8,11 @@ name = "u50"
 path = "src/main.rs"
 
 [dependencies]
-u50_check = { path = "../u50_check" }
-u50_style = { path = "../u50_style" }
-u50_submit = { path = "../u50_submit" }
 anyhow = { workspace = true }
 clap = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+u50_check = { path = "../u50_check" }
+u50_style = { path = "../u50_style" }
+u50_submit = { path = "../u50_submit" }
