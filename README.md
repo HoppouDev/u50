@@ -66,10 +66,6 @@ Example output (`-o unified`):
 + }
 ```
 
-> [!TIP]
-> Any language's formatter can be swapped per invocation via `U50_STYLE_<LANG>` —
-> for example: `U50_STYLE_PYTHON="ruff format -" u50 style foo.py`
-
 ## Exit codes
 
 | Code | Meaning |
@@ -101,7 +97,6 @@ CI (GitHub Actions, workflow name `Rust`) runs build, tests, format check, clipp
 - [x] Cache-only tool resolution (system `PATH` never consulted)
 - [x] In-place fix (`--fix`) with dry-run preview
 - [x] Output modes: `character`, `split`, `unified`, `json`
-- [x] Per-language formatter overrides (`U50_STYLE_<LANG>`)
 - [ ] `--ignore` — exclude directories (e.g. `node_modules`) from directory walks
 - [ ] `--clang-format-style` — custom clang-format style override
 - [ ] `score` and `html` output modes (style50 v2 features)

@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use super::*;
@@ -14,7 +13,7 @@ fn numbered_lines(prefix: &str, n: usize) -> String {
     }
     out
 }
-use crate::formatter::{cache_bin_dir, cache_dir, locate_tool, overrides_from_env, run_tool};
+use crate::formatter::{cache_bin_dir, cache_dir, locate_tool, run_tool};
 use crate::render::{
     BOLD, GREEN, RED, RESET, json_document, render_character, render_split, render_unified,
     select_algorithm,
@@ -126,65 +125,6 @@ fn required_tool_maps_every_language() {
     for (language, tool) in cases {
         assert_eq!(language.required_tool(), tool, "for {language:?}");
     }
-}
-
-#[test]
-fn overrides_from_env_parses_lang_keys_and_splits_whitespace() {
-    let vars = |name: &str| match name {
-        "U50_STYLE_PYTHON" => Some("ruff format -".to_owned()),
-        "U50_STYLE_JAVA" => Some("google-java-format -".to_owned()),
-        _ => None,
-    };
-    let overrides = overrides_from_env(vars);
-    assert_eq!(overrides.len(), 2);
-    assert_eq!(
-        overrides.get(&Language::Python).expect("python override"),
-        &["ruff".to_owned(), "format".to_owned(), "-".to_owned()]
-    );
-    assert_eq!(
-        overrides.get(&Language::Java).expect("java override"),
-        &["google-java-format".to_owned(), "-".to_owned()]
-    );
-}
-
-#[test]
-fn overrides_from_env_ignores_empty_and_unknown_vars() {
-    let vars = |name: &str| match name {
-        "U50_STYLE_CPP" => Some("   ".to_owned()),
-        "U50_STYLE_JAVASCRIPT" => Some(String::new()),
-        "U50_STYLE_RUBY" => Some("rubocop -".to_owned()),
-        _ => None,
-    };
-    assert!(overrides_from_env(vars).is_empty());
-}
-
-#[test]
-fn override_routes_to_custom_tool_via_stdin() {
-    let mut overrides = HashMap::new();
-    overrides.insert(Language::Python, vec!["cat".to_owned()]);
-    let formatter = Cs50Formatter::with_overrides(overrides);
-    assert_eq!(
-        formatter
-            .format("x = 1\n", Language::Python)
-            .expect("cat succeeds"),
-        "x = 1\n"
-    );
-}
-
-#[test]
-fn override_spawn_failure_names_var_and_binary() {
-    let mut overrides = HashMap::new();
-    overrides.insert(
-        Language::Python,
-        vec!["definitely-not-a-real-u50-tool".to_owned()],
-    );
-    let formatter = Cs50Formatter::with_overrides(overrides);
-    let err = formatter
-        .format("x = 1\n", Language::Python)
-        .expect_err("errors");
-    let msg = err.to_string();
-    assert!(msg.contains("U50_STYLE_PYTHON"), "got: {msg}");
-    assert!(msg.contains("definitely-not-a-real-u50-tool"), "got: {msg}");
 }
 
 #[test]
@@ -320,16 +260,8 @@ fn json_document_multi_file_mixed_clean_and_dirty() {
 #[test]
 fn formatter_short_circuits_on_empty_and_whitespace_only_source() {
     for language in [Language::JavaScript, Language::Python] {
-        assert_eq!(
-            Cs50Formatter::default().format("", language).expect("ok"),
-            ""
-        );
-        assert_eq!(
-            Cs50Formatter::default()
-                .format("\n  ", language)
-                .expect("ok"),
-            "\n  "
-        );
+        assert_eq!(Cs50Formatter.format("", language).expect("ok"), "");
+        assert_eq!(Cs50Formatter.format("\n  ", language).expect("ok"), "\n  ");
     }
 }
 
@@ -903,7 +835,7 @@ fn cache_dirs_are_nested_under_the_cache_root() {
 
 #[test]
 fn locate_tool_passes_through_explicit_paths() {
-    // A tool name containing '/' is used as-is (override semantics).
+    // A tool name containing '/' is used as-is (explicit-path semantics).
     assert_eq!(
         locate_tool("/bin/sh").map(|(path, _)| path).as_deref(),
         Some(std::path::Path::new("/bin/sh"))

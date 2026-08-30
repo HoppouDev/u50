@@ -1,24 +1,90 @@
 //! Integration tests for the `u50 style` subcommand's printing, exit
-//! codes, and `U50_STYLE_<LANG>` override handling (including the in-place
-//! `--fix` path). Each test spawns the real binary with the Python
-//! override set to universally available coreutils tools (`cat`, `tr`),
-//! so no external formatter is needed and the tests are deterministic.
+//! codes, and backend spawning (including the in-place `--fix` path).
+//! Each test spawns the real binary against a scratch cache whose
+//! `venv/bin/autopep8` stub is a universally available coreutils tool
+//! (`cat`, `tr`), so no external formatter is needed and the tests are
+//! deterministic and hermetic (`U50_STYLE_NO_PROVISION=1`).
 
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 
 const EXE: &str = env!("CARGO_BIN_EXE_u50");
 
-/// Identity override (`cat`): the engine compares the *normalized* source
-/// against the formatter's output, and `cat` echoes the normalized source
-/// back unchanged — every non-empty file is clean under it.
-const CAT: (&str, &str) = ("U50_STYLE_PYTHON", "cat");
+/// Identity backend stub (`cat`): the engine compares the *normalized*
+/// source against the formatter's output, and `cat` echoes the normalized
+/// source back unchanged — every non-empty file is clean under it.
+const CAT: &str = "#!/bin/sh\ncat\n";
 
-/// Byte-changing override (`tr a-z A-Z`; no quoting needed, the argv is
-/// split on whitespace): lower-case files are dirty under it, upper-case
-/// files are clean.
-const UPPER: (&str, &str) = ("U50_STYLE_PYTHON", "tr a-z A-Z");
+/// Byte-changing backend stub (`tr a-z A-Z`): lower-case files are dirty
+/// under it, upper-case files are clean.
+const UPPER: &str = "#!/bin/sh\nexec tr a-z A-Z\n";
+
+/// Per-test-instance counter, so parallel tests in one process never
+/// share a scratch cache directory.
+static STUB_SEQ: AtomicUsize = AtomicUsize::new(0);
+
+/// A scratch cache whose `venv/bin/autopep8` stub is `script` (mirroring
+/// the uv-managed venv layout `<cache>/u50/style50/venv/bin`). Removed on
+/// drop; every run is hermetic (`U50_STYLE_NO_PROVISION=1`).
+struct StubCache {
+    root: PathBuf,
+}
+
+impl StubCache {
+    fn new(script: &str) -> Self {
+        use std::os::unix::fs::PermissionsExt;
+        let n = STUB_SEQ.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "u50_style_output_stub_{}_{}",
+            std::process::id(),
+            n
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let bin = root.join("cache/u50/style50/venv/bin");
+        std::fs::create_dir_all(&bin).expect("create cache bin");
+        let stub = bin.join("autopep8");
+        std::fs::write(&stub, script).expect("write stub");
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod stub executable");
+        Self { root }
+    }
+
+    /// Runs `u50 style <args> --color never` against this scratch cache
+    /// with `extra_env` set in the child's environment only (per-process,
+    /// so parallel tests cannot race) and returns `(exit, stdout, stderr)`.
+    fn run(&self, args: &[&str], extra_env: &[(&str, &str)]) -> (i32, String, String) {
+        let mut cmd = Command::new(EXE);
+        cmd.args(["style"])
+            .args(args)
+            .args(["--color", "never"])
+            .env("XDG_CACHE_HOME", self.root.join("cache"))
+            .env("U50_STYLE_NO_PROVISION", "1");
+        for (var, value) in extra_env {
+            cmd.env(var, value);
+        }
+        let output = cmd.output().expect("spawn u50");
+        (
+            output.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        )
+    }
+}
+
+impl Drop for StubCache {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
+/// Runs `u50 style <args> --color never` with a scratch cache stubbing the
+/// Python backend with `stub_script`.
+fn style(args: &[&str], stub_script: &str) -> (i32, String, String) {
+    StubCache::new(stub_script).run(args, &[])
+}
 
 /// Writes `contents` to a fresh `.py` temp file named after the test
 /// (plus the pid, so parallel test binaries never collide).
@@ -41,24 +107,6 @@ fn missing_py(test: &str) -> PathBuf {
     ));
     let _ = std::fs::remove_file(&path);
     path
-}
-
-/// Runs `u50 style <args> --color never` with `(var, value)` set in the
-/// child's environment only (per-process, so parallel tests cannot race)
-/// and returns `(exit code, stdout, stderr)`.
-fn style(args: &[&str], (var, value): (&str, &str)) -> (i32, String, String) {
-    let output = Command::new(EXE)
-        .args(["style"])
-        .args(args)
-        .args(["--color", "never"])
-        .env(var, value)
-        .output()
-        .expect("spawn u50");
-    (
-        output.status.code().unwrap_or(-1),
-        String::from_utf8_lossy(&output.stdout).into_owned(),
-        String::from_utf8_lossy(&output.stderr).into_owned(),
-    )
 }
 
 fn read_back(path: &Path) -> String {
@@ -163,28 +211,29 @@ fn fix_dry_run_prints_status_lines_and_leaves_files_untouched() {
 }
 
 #[test]
-fn fix_honors_override_instead_of_builtin_formatter() {
-    // `x=1` is clean under `cat` (the normalized source echoes back
-    // unchanged) but NOT under the built-in autopep8, which rewrites it to
-    // `x = 1` — so if `fix()` used `default()` instead of `from_env()`,
-    // this dry run would exit 1 with a diff. Regression test for the
-    // override contract: must exit 0 with NO diff on stdout.
-    let path = temp_py("fix_override", "x=1\n");
+fn override_env_var_is_ignored() {
+    // The `U50_STYLE_<LANG>` override feature was removed: the program
+    // provisions and resolves its own formatters cache-only. Regression
+    // guard: a hostile override command in the environment must never be
+    // read, let alone spawned — `x=1` is clean under the cached `cat`
+    // stub (but NOT under the real autopep8), so the run must exit 0 via
+    // the stub, with `FAKE` never appearing anywhere.
+    let path = temp_py("override_ignored", "x=1\n");
     let p = path.to_str().expect("utf-8 temp path");
     let args = ["--fix", "--dry-run", p];
-    let (code, stdout, stderr) = style(&args, CAT);
+    let cache = StubCache::new(CAT);
+    let (code, stdout, stderr) = cache.run(&args, &[("U50_STYLE_PYTHON", "echo FAKE")]);
     assert_eq!(
         code, 0,
-        "clean-under-override must exit 0 (stdout: {stdout}, stderr: {stderr})"
+        "file clean under the cached stub must exit 0 (stdout: {stdout}, stderr: {stderr})"
     );
-    // Status lines are printed in dry-run text mode too, but no diff.
     assert!(
         stdout.contains(&format!("already clean: {}", path.display())),
         "expected `already clean:` line: {stdout}"
     );
     assert!(
-        !stdout.contains("-x=1") && !stdout.contains('+'),
-        "no diff may be printed: {stdout}"
+        !stdout.contains("FAKE") && !stderr.contains("FAKE"),
+        "the hostile override command must never be spawned: {stdout} / {stderr}"
     );
     assert_eq!(read_back(&path), "x=1\n");
     cleanup(&path);
@@ -240,7 +289,6 @@ fn cache_backends_spawn_when_path_lacks_the_formatter() {
             .env("XDG_CACHE_HOME", cache)
             .env("PATH", &bins)
             .env("U50_STYLE_NO_PROVISION", "1")
-            .env_remove("U50_STYLE_PYTHON")
             .output()
             .expect("spawn u50");
         (
@@ -317,7 +365,6 @@ fn path_fake_is_never_used_for_formatter_tools() {
         .env("XDG_CACHE_HOME", &scratch_cache)
         .env("PATH", &bins)
         .env("U50_STYLE_NO_PROVISION", "1")
-        .env_remove("U50_STYLE_PYTHON")
         .output()
         .expect("spawn u50");
     let code = out.status.code().unwrap_or(-1);

@@ -6,9 +6,9 @@ Rust rewrite of [style50](https://github.com/cs50/style50): checks code style an
 
 ## Status
 
-Engine implemented, supporting all 8 languages of style50 3.0.0. Directory arguments are expanded recursively (`expand_paths`, style50 3.0.0's `os.walk` expansion): `run(&Request) -> Result<Report>` uses `Cs50Formatter::from_env()` (impl of the `Formatter` trait, injectable via `run_with` for tests without the formatters installed), renders per-file diffs (`character` with inline char emphasis / `split` / `unified` / `json`) and prints them; the CLI maps `Report::clean()` to exit 0/1. Every language can be redirected to a custom formatter via `U50_STYLE_<LANG>` environment variables (see 'Formatter overrides', below).
+Engine implemented, supporting all 8 languages of style50 3.0.0. Directory arguments are expanded recursively (`expand_paths`, style50 3.0.0's `os.walk` expansion): `run(&Request) -> Result<Report>` uses `Cs50Formatter::default()` (impl of the `Formatter` trait, injectable via `run_with` for tests without the formatters installed), renders per-file diffs (`character` with inline char emphasis / `split` / `unified` / `json`) and prints them; the CLI maps `Report::clean()` to exit 0/1.
 
-API: `Language` (`detect_language` by extension for all supported languages; `Language::required_tool() -> Option<&'static str>` names the backing binary; `Language::env_var_key()` gives the override variable suffix), `Formatter` trait, `Cs50Formatter` (`Default` = built-in tools with no overrides; `with_overrides(HashMap<Language, Vec<String>>)`; `from_env()`), `Request { files, output, color }`, `FileResult { path, clean, rendered, formatted }`, `Report { results, errors }` with `clean()` and `has_errors()`. Pure renderers (`render_character`/`render_split`/`render_unified`/`json_document`) take `(source, formatted, ...)` and are unit-testable without the tools.
+API: `Language` (`detect_language` by extension for all supported languages; `Language::required_tool() -> Option<&'static str>` names the backing binary), `Formatter` trait, `Cs50Formatter` (`Default` = built-in tools resolved cache-only), `Request { files, output, color }`, `FileResult { path, clean, rendered, formatted }`, `Report { results, errors }` with `clean()` and `has_errors()`. Pure renderers (`render_character`/`render_split`/`render_unified`/`json_document`) take `(source, formatted, ...)` and are unit-testable without the tools.
 
 Per-file errors never abort the run: an unreadable file, unsupported extension, or formatter failure for one file records `(path, message)` in `Report.errors` and processing continues with the remaining files, so earlier results are preserved.
 
@@ -31,7 +31,6 @@ Both `run_with` and `fix_with` call `expand_paths(&req.files)` before processing
 - Printing policy (in `fix`, engine-side like `run()`): plain fix prints per file `fixed: <path>` or `already clean: <path>` to stdout; dry run prints `would fix: <path>` or `already clean: <path>` instead (nothing is written, no diff is rendered, and the exit code 1 signals what would have changed). Errors always go to stderr as `error: <path>: <message>`.
 - Exit-code contract (implemented in u50_cli): **0** — plain fix succeeded (every file fixed or already clean); **1** — dry run with at least one would-fix (check-style convention); **3** — any per-file error (unreadable/unsupported/empty/formatter/write failure), taking precedence.
 - The CLI exposes this as `u50 style --fix [--dry-run]`; `--dry-run` requires `--fix`, and `--fix` conflicts with `-o/--output` (fix output is the fixed/already-clean lines or the dry-run diff, not a chosen render mode).
-- Both `fix()` and `run()` honor `U50_STYLE_<LANG>` overrides (`Cs50Formatter::from_env()`); `--fix` rewrites files with the overridden formatter's output.
 - **Adaptive diff strategy** (`render::select_algorithm`): diff rendering defaults to Myers but engages the Lcs algorithm for large, low-overlap pairs — inputs where the larger side has ≥ 1024 lines **and** the distinct shared lines number fewer than `max_lines / 1000` (a `HashSet` intersection probe, linear). Measured (release, unified render, `examples/bench_diff.rs`):
 
   | input | Myers | Lcs |
@@ -160,15 +159,9 @@ never spawned by name (which would let `Command::new` fall back to the OS
 `PATH`): the call sites check `locate_tool` once and emit the standard
 missing-tool error instead of spawning. Cache hits spawn by resolved path.
 
-User override commands (`U50_STYLE_<LANG>`) are the exception: they are
-spawned **verbatim** — argv[0] exactly as the user wrote it, resolved by
-the OS — and never go through the cache lookup or its rewriting, so an
-unrelated same-named cache binary can never shadow an override.
-
 ### Lazy auto-provisioning
 
-When a language's backend is missing from the cache at format time (and no
-`U50_STYLE_<LANG>` override applies to that language), u50 auto-provisions
+When a language's backend is missing from the cache at format time, u50 auto-provisions
 it on first use: the tool is mapped to its pip package and installed via
 the same install core as `--setup` (uv library path — managed CPython 3.14
 if needed, venv, pinned wheel + transitive deps), deduplicated per process
@@ -201,39 +194,6 @@ Formatting and the clean/dirty comparison both operate on the normalized text, s
 
 An empty or whitespace-only file normalizes to `""` and is reported as a **per-file error** `file is empty` (style50 3.0.0 raises the same error when `count_lines` is 0; its default `count_lines` ignores blank lines). This replaces the earlier behavior of reporting such files clean.
 
-## Formatter overrides
-
-Any language's formatter can be replaced per invocation via an environment variable — overriding only affects that language; all others keep their built-in tools.
-
-| Variable | Language |
-| --- | --- |
-| `U50_STYLE_C` | C |
-| `U50_STYLE_CPP` | C++ |
-| `U50_STYLE_JAVA` | Java |
-| `U50_STYLE_PYTHON` | Python |
-| `U50_STYLE_JAVASCRIPT` | JavaScript |
-| `U50_STYLE_HTML` | HTML |
-| `U50_STYLE_CSS` | CSS |
-| `U50_STYLE_SQL` | SQL |
-
-Semantics:
-
-- The variable value is the command line of the replacement formatter, **split on plain whitespace** (no quoting support — arguments cannot contain spaces). The file's source is **piped to the tool via stdin**; its stdout becomes the expected formatting.
-- Empty or whitespace-only values are ignored; unknown `U50_STYLE_*` variables are ignored.
-- Empty/whitespace-only source is a per-file error ("file is empty") before any formatter — built-in or override — is invoked (style50 3.0.0 semantics).
-- Exit handling for overrides is **strict**: exit 0 is the only success.
-- Errors name the variable and the binary: spawn failure → "could not run `<binary>` (set via U50_STYLE_<LANG>): ..."; non-zero exit → "formatter `<command line>` failed: <stderr>".
-- Overrides change what "clean" means for that language: a file is clean iff the override tool reproduces its bytes exactly.
-
-Examples:
-
-```sh
-U50_STYLE_PYTHON="ruff format -" u50 style foo.py
-U50_STYLE_JAVASCRIPT="biome format --stdin-file-path=stdin.js" u50 style foo.js
-```
-
-Programmatic use (no process env reads): `Cs50Formatter::with_overrides(HashMap<Language, Vec<String>>)` builds a formatter with explicit overrides; `Cs50Formatter::from_env()` reads the variables. The env parsing itself is a pure function over a lookup closure, so tests pass fake maps and never touch the real environment.
-
 ## Behavior notes
 
 Findings recorded from the official docs: <https://cs50.readthedocs.io/style50/>
@@ -242,7 +202,7 @@ Findings recorded from the official docs: <https://cs50.readthedocs.io/style50/>
 
 - Usage: `style50 <file>` — checks file(s) against CS50's style guide.
 - Languages: C, C++, Java, Python, JavaScript, HTML, CSS, SQL (style50 3.0.0; see 'Language support').
-- Under the hood it shells out to per-language external formatters (see 'Language support' below; clang-format >= 14 required for C/C++/Java); any language can be redirected via `U50_STYLE_<LANG>` (see 'Formatter overrides').
+- Under the hood it shells out to per-language external formatters (see 'Language support' below; clang-format >= 14 required for C/C++/Java); 
 
 ### Output
 
@@ -276,7 +236,7 @@ clang-format >= 14 is required; when a formatter binary is missing the engine er
 
 - 0 — all files clean.
 - 1 — style violations found in the processed files (CLI maps `!Report::clean()` to 1).
-- 3 — any per-file error: unreadable file, unsupported extension, or formatter missing/failing (built-in or override). Files before the error are still checked and rendered (stdout); error lines go to stderr. Takes precedence: any error → 3 even if violations were also found.
+- 3 — any per-file error: unreadable file, unsupported extension, or formatter missing/failing. Files before the error are still checked and rendered (stdout); error lines go to stderr. Takes precedence: any error → 3 even if violations were also found.
 
 ### Not yet implemented (present in the original; future work)
 

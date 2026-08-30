@@ -110,22 +110,6 @@ impl Language {
             Self::Sql => &["sql"],
         }
     }
-
-    /// Environment-variable key (after the `U50_STYLE_` prefix) that can
-    /// override this language's formatter command line.
-    #[must_use]
-    pub fn env_var_key(self) -> &'static str {
-        match self {
-            Self::C => "C",
-            Self::Cpp => "CPP",
-            Self::Java => "JAVA",
-            Self::Python => "PYTHON",
-            Self::JavaScript => "JAVASCRIPT",
-            Self::Html => "HTML",
-            Self::Css => "CSS",
-            Self::Sql => "SQL",
-        }
-    }
 }
 
 /// Detects the language of `path` from its file extension

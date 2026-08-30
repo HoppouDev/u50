@@ -75,7 +75,7 @@ fn run_golden(dir: &str, ext: &str, language: Language, tool: &str) {
     let dirty = std::fs::read_to_string(fixture(dir, &format!("dirty.{ext}")))
         .unwrap_or_else(|e| panic!("read dirty fixture {dir}: {e}"));
     let normalized = normalize_source(&dirty);
-    let formatted = Cs50Formatter::default()
+    let formatted = Cs50Formatter
         .format(&normalized, language)
         .unwrap_or_else(|e| panic!("format {dir}: {e}"));
     let expected = std::fs::read_to_string(fixture(dir, &format!("expected.{ext}")))
@@ -124,7 +124,7 @@ fn expected_files_are_clean() {
             output: Output::Json,
             color: false,
         };
-        let report = run_with(&req, &Cs50Formatter::default());
+        let report = run_with(&req, &Cs50Formatter);
         assert!(
             report.errors.is_empty(),
             "{}: errors {:?}",
