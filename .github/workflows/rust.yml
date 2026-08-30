@@ -57,16 +57,27 @@ jobs:
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         shell: bash
         run: |
-          # Stash the freshly generated badge before switching branches:
-          # if `badges` already tracks harness-badge.svg, the checkout
-          # below would refuse to clobber the untracked workspace copy.
+          # Stash the freshly generated badge to $RUNNER_TEMP, then REMOVE the
+          # workspace copy: `git checkout -B badges` refuses to overwrite
+          # untracked files, so a leftover workspace harness-badge.svg would
+          # make the checkout fail.
           cp "$GITHUB_WORKSPACE/harness-badge.svg" "$RUNNER_TEMP/harness-badge.svg"
+          rm -f "$GITHUB_WORKSPACE/harness-badge.svg"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git fetch origin badges || true
-          git checkout -B badges origin/badges 2>/dev/null || git checkout --orphan badges
-          git rm -rf --quiet . 2>/dev/null || true
+          # Explicit refspec: a shallow single-branch clone does not create
+          # refs/remotes/origin/badges from a bare `git fetch origin badges`.
+          git fetch origin +refs/heads/badges:refs/remotes/origin/badges || true
+          if git rev-parse -q --verify refs/remotes/origin/badges >/dev/null; then
+            git checkout -B badges refs/remotes/origin/badges
+          else
+            git checkout --orphan badges
+            git rm -rf --quiet . 2>/dev/null || true
+          fi
           cp "$RUNNER_TEMP/harness-badge.svg" harness-badge.svg
           git add harness-badge.svg
           git commit -m "chore: update harness badge [skip ci]" || echo "badge unchanged"
-          git push -u origin badges
+          # Force: the badges branch is bot-owned and badge-only, so a force
+          # push is safe and makes the step idempotent (no non-fast-forward
+          # rejection from the orphan fallback or concurrent runs).
+          git push --force -u origin badges

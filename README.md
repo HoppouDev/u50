@@ -88,7 +88,7 @@ cargo clippy --workspace --all-targets -- -Dwarnings       # zero warnings (peda
 cargo fmt --all -- --check
 ```
 
-CI (GitHub Actions, workflow name `Rust`) runs build, tests, format check, clippy, and a harness-score ratchet on every push/PR to `main`, on both `ubuntu-latest` and `windows-latest` runners; the golden suite runs on ubuntu runners only (Windows byte-drift in the djhtml/sql backends).
+CI (GitHub Actions, workflow name `Rust`) runs on every push/PR to `main`: build, tests, format check, and clippy on both `ubuntu-latest` and `windows-latest`; the golden suite and the harness-score ratchet (dedicated job) run on ubuntu runners only (Windows byte-drift in the djhtml/sql backends).
 
 ## Roadmap
 
