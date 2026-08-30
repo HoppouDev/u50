@@ -677,18 +677,20 @@ fn expand_paths_does_not_follow_symlinked_dirs() {
     let root = temp_dir("symlink");
     let other = temp_dir("symlink_target");
     write_in(&other, "other.js", "x = 1;\n");
-    let link = root.join("link");
     #[cfg(unix)]
-    if std::os::unix::fs::symlink(&other, &link).is_ok() {
-        // Inside a walked tree the symlinked dir is neither descended
-        // into (os.walk followlinks=false) nor collected as a file.
-        assert!(expand_paths(std::slice::from_ref(&root)).is_empty());
-        // A symlinked dir passed directly is a non-dir argument: kept
-        // unchanged (its per-file error happens downstream).
-        assert_eq!(
-            expand_paths(std::slice::from_ref(&link)),
-            vec![link.clone()]
-        );
+    {
+        let link = root.join("link");
+        if std::os::unix::fs::symlink(&other, &link).is_ok() {
+            // Inside a walked tree the symlinked dir is neither descended
+            // into (os.walk followlinks=false) nor collected as a file.
+            assert!(expand_paths(std::slice::from_ref(&root)).is_empty());
+            // A symlinked dir passed directly is a non-dir argument: kept
+            // unchanged (its per-file error happens downstream).
+            assert_eq!(
+                expand_paths(std::slice::from_ref(&link)),
+                vec![link.clone()]
+            );
+        }
     }
     let _ = std::fs::remove_dir_all(&root);
     let _ = std::fs::remove_dir_all(&other);

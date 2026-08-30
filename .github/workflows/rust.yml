@@ -36,8 +36,31 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Clippy
         run: cargo clippy --verbose --all-targets -- -Dwarnings
-      # Harness gate intentionally runs on both OSes: harness-score is pure JS
-      # (fs/path/os only, explicit win32 handling, no child_process, no native
-      # binaries) and npx is preinstalled on windows-latest runners.
-      - name: Harness gate
-        run: npx -y harness-score --min-level 3
+
+  harness:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: paladini/harness-score@v1
+        with:
+          min-level: '4'
+          badge: 'harness-badge.svg'
+      - name: Publish badge (badges branch)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: bash
+        run: |
+          # Stash the freshly generated badge before switching branches:
+          # if `badges` already tracks harness-badge.svg, the checkout
+          # below would refuse to clobber the untracked workspace copy.
+          cp "$GITHUB_WORKSPACE/harness-badge.svg" "$RUNNER_TEMP/harness-badge.svg"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin badges || true
+          git checkout -B badges origin/badges 2>/dev/null || git checkout --orphan badges
+          git rm -rf --quiet . 2>/dev/null || true
+          cp "$RUNNER_TEMP/harness-badge.svg" harness-badge.svg
+          git add harness-badge.svg
+          git commit -m "chore: update harness badge [skip ci]" || echo "badge unchanged"
+          git push -u origin badges

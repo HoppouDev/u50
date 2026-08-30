@@ -46,9 +46,9 @@ cache_dir(): keep XDG_CACHE_HOME override; Windows uses LOCALAPPDATA-based base 
 
 ### Phase 2 - CI (item 7) — complete
 
-`strategy.matrix.os: [ubuntu-latest, windows-latest]` added; `U50_STYLE_GOLDEN=1` moved into the step `env:` block (pwsh-safe); harness gate kept on both OSes (harness-score is pure JS). A green dual-OS CI run is pending.
+`strategy.matrix.os: [ubuntu-latest, windows-latest]` added; `U50_STYLE_GOLDEN=1` moved into the step `env:` block (pwsh-safe); harness gate moved to a dedicated ubuntu-only `harness` job. A green dual-OS CI run is pending.
 
-Status: implemented-pending-CI-verification (.github/workflows/rust.yml). Added strategy.matrix.os [ubuntu-latest, windows-latest] with runs-on: ${{ matrix.os }}; moved U50_STYLE_GOLDEN=1 into the golden step's env: block (an inline `VAR=1 cmd` prefix is bash-only and breaks under pwsh). Golden policy: run goldens on both OSes (CRLF normalized in-engine, engine.rs:44). Harness gate runs on both OSes: harness-score is pure JS (fs/path/os, explicit win32 handling, no child_process/native binaries) and npx is preinstalled on Windows runners.
+Status: implemented-pending-CI-verification (.github/workflows/rust.yml). Added strategy.matrix.os [ubuntu-latest, windows-latest] with runs-on: ${{ matrix.os }}; moved U50_STYLE_GOLDEN=1 into the golden step's env: block (an inline `VAR=1 cmd` prefix is bash-only and breaks under pwsh). Golden policy: run goldens on both OSes (CRLF normalized in-engine, engine.rs:44). The harness gate is now a dedicated ubuntu-only `harness` job using `paladini/harness-score@v1` with `min-level: '4'` and a self-updating badge published to the `badges` branch (replacing the `npx` step that ran in the matrix).
 
 If golden drift appears on Windows (backend tool output differing per platform), relax the golden step to ubuntu-only by adding `if: runner.os == 'Linux'` to the golden tests step - do not flip tool-versions.txt per OS. Gate: workflow green on both OSes.
 

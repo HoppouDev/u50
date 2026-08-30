@@ -7,6 +7,7 @@
 _One binary for CS50; check, style, and submit._
 
 [![CI](https://github.com/HoppouDev/u50/actions/workflows/rust.yml/badge.svg)](https://github.com/HoppouDev/u50/actions/workflows/rust.yml)
+[![Harness Score](https://raw.githubusercontent.com/HoppouDev/u50/badges/harness-badge.svg)](https://github.com/HoppouDev/u50/actions/workflows/rust.yml)
 [![License: GPLv3](https://img.shields.io/badge/license-GPLv3-blue.svg)](LICENSE.md)
 
 [Features](#features) • [Quick start](#quick-start) • [Usage](#usage) • [Exit codes](#exit-codes) • [Development](#development) • [Roadmap](#roadmap)
