@@ -1,10 +1,10 @@
 <div align="center">
 
-<img src="assets/logo.png" alt="u50 logo" width="128">
+<img src="assets/logo.png" alt="µ50 logo" width="128">
 
-# u50
+# µ50
 
-_One binary for CS50 — check, style, and submit._
+_One binary for CS50; check, style, and submit._
 
 [![CI](https://github.com/HoppouDev/u50/actions/workflows/rust.yml/badge.svg)](https://github.com/HoppouDev/u50/actions/workflows/rust.yml)
 [![License: GPLv3](https://img.shields.io/badge/license-GPLv3-blue.svg)](LICENSE.md)
@@ -13,13 +13,13 @@ _One binary for CS50 — check, style, and submit._
 
 </div>
 
-u50 unifies Harvard CS50's three command-line tools ([check50](https://github.com/cs50/check50), [style50](https://github.com/cs50/style50), and [submit50](https://github.com/cs50/submit50)) into a single Rust binary. The `style` engine is fully implemented and verified byte-identical against style50 3.0.0; `check` and `submit` are on the roadmap.
+µ50 unifies Harvard CS50's three command-line tools ([check50](https://github.com/cs50/check50), [style50](https://github.com/cs50/style50), and [submit50](https://github.com/cs50/submit50)) into a single Rust binary. The `style` engine is fully implemented and verified byte-identical against style50 3.0.0; `check` and `submit` are on the roadmap.
 
 ## Features
 
 - **Self-provisioning** — missing formatter backends are downloaded and cached on first use. No system `python3`, `pip`, or `uv` required.
 - **8 languages** — C, C++, Java, Python, JavaScript, HTML, CSS, SQL: the full style50 3.0.0 language set.
-- **Cache-only resolution** — tools are resolved strictly from u50's own cache; nothing on your `PATH` can shadow or hijack them.
+- **Cache-only resolution** — tools are resolved strictly from µ50's own cache; nothing on your `PATH` can shadow or hijack them.
 - **In-place fix** — `--fix` rewrites files with style50 formatting; `--dry-run` previews what would change.
 - **Four output modes** — character (default), split, unified, and JSON for tooling.
 - **Reproducible** — backend versions are pinned, and CI verifies output byte-identical to the original tool.
