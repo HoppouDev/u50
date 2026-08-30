@@ -34,9 +34,11 @@ pub struct FileResult {
     pub path: PathBuf,
     /// Whether the file already conforms to CS50 style.
     pub clean: bool,
-    /// Human-readable per-file output for text modes (or the unified patch
-    /// in JSON mode); `None` when the file is clean.
-    pub rendered: Option<String>,
+    /// The normalized input the style check ran on (see
+    /// [`crate::engine::normalize_source`]); always `Some` for successfully
+    /// processed files. Diff renderers diff this against
+    /// [`FileResult::formatted`].
+    pub source: Option<String>,
     /// The style50-styled content for successfully processed files (the
     /// normalized input when the file is clean); `None` when the file could
     /// not be processed. In-place fix mode writes this back to the file.

@@ -196,6 +196,20 @@ pub(crate) fn render_unified(source: &str, formatted: &str, path: &Path) -> Stri
         .to_string()
 }
 
+/// The `patch` field for one file in [`json_document`]: `null` for clean
+/// files (legacy schema), otherwise the unified diff of the normalized
+/// source against the styled content.
+fn patch(result: &crate::request::FileResult) -> Option<String> {
+    if result.clean {
+        return None;
+    }
+    result
+        .source
+        .as_ref()
+        .zip(result.formatted.as_ref())
+        .map(|(source, formatted)| render_unified(source, formatted, &result.path))
+}
+
 /// Builds the single JSON document printed in JSON mode.
 pub(crate) fn json_document(report: &Report) -> serde_json::Value {
     serde_json::json!({
@@ -207,7 +221,10 @@ pub(crate) fn json_document(report: &Report) -> serde_json::Value {
                 serde_json::json!({
                     "path": r.path.display().to_string(),
                     "clean": r.clean,
-                    "patch": r.rendered,
+                    // Clean files carry no patch (null), matching the legacy
+                    // schema; dirty files render the unified diff of source
+                    // against formatted.
+                    "patch": patch(r),
                 })
             })
             .collect::<Vec<serde_json::Value>>(),

@@ -5,32 +5,23 @@ use std::path::{Path, PathBuf};
 
 use crate::formatter::{Cs50Formatter, Formatter};
 use crate::language::detect_language;
-use crate::render::{json_document, render_character, render_split, render_unified};
+use crate::render::json_document;
+use crate::renderer::{Renderer, builtin_renderer};
 use crate::request::{FileResult, Output, Report, Request};
 
 /// Runs the style check for `req` using the CS50 formatter stack,
 /// printing results (the only place this crate prints) and returning the
 /// report so the caller can decide the exit code.
 ///
-/// Rendered results for every successfully processed file go to stdout
-/// (kept pure diff/JSON output); per-file errors are written to stderr as
+/// Rendering is delegated to [`run_with_renderer`] with the built-in
+/// renderer for `req.output` ([`builtin_renderer`]): rendered results for
+/// every successfully processed file go to stdout (kept pure diff/JSON
+/// output); per-file errors are written to stderr as
 /// `error: <path>: <message>` lines after the results.
 pub fn run(req: &Request) -> Report {
     tracing::debug!(?req, "u50_style::run");
-    let report = run_with(req, &Cs50Formatter);
-    if req.output == Output::Json {
-        println!("{}", json_document(&report));
-    } else {
-        for result in &report.results {
-            if let Some(rendered) = &result.rendered {
-                print!("{rendered}");
-            }
-        }
-    }
-    for (path, message) in &report.errors {
-        eprintln!("error: {}: {message}", path.display());
-    }
-    report
+    let mut renderer = builtin_renderer(req.output, req.color, Box::new(std::io::stdout().lock()));
+    run_with_renderer(req, &Cs50Formatter, renderer.as_mut())
 }
 
 /// Normalizes `source` exactly as style50 3.0.0's `_api.py` does before
@@ -62,21 +53,22 @@ pub fn normalize_source(source: &str) -> String {
 ///
 /// Like [`run`], but injects the formatter so tests can run without the
 /// external formatter binaries installed. Builds no output for the caller;
-/// rendering lives on the [`FileResult`]s.
+/// rendering is decoupled — drive a [`Renderer`] over the returned report
+/// with [`run_with_renderer`].
 ///
 /// Per-file problems (unreadable file, unsupported extension, formatter
 /// failure) are recorded in [`Report::errors`] and processing continues
 /// with the remaining files, so earlier results are never discarded.
 ///
-/// The per-file machinery (read, normalize, format, compare, render) is
-/// shared with [`fix_with`] via [`process_file`]; [`FileResult::formatted`]
-/// carries the styled content for every successfully processed file.
+/// The per-file machinery (read, normalize, format, compare) is shared with
+/// [`fix_with`] via [`process_file`]; [`FileResult::formatted`] carries the
+/// styled content for every successfully processed file.
 pub fn run_with(req: &Request, formatter: &dyn Formatter) -> Report {
     let files = expand_paths(&req.files);
     let mut results = Vec::with_capacity(files.len());
     let mut errors = Vec::new();
     for path in &files {
-        match process_file(path, formatter, req.output, req.color) {
+        match process_file(path, formatter) {
             Ok(result) => results.push(result),
             Err(e) => errors.push((path.clone(), e.to_string())),
         }
@@ -84,22 +76,45 @@ pub fn run_with(req: &Request, formatter: &dyn Formatter) -> Report {
     Report { results, errors }
 }
 
-/// Formats, compares, and renders a single file: reads it, normalizes the
-/// source (see [`normalize_source`]), formats it, and builds the
-/// [`FileResult`] (styled content in [`FileResult::formatted`], diff in
-/// [`FileResult::rendered`] when the file is dirty). Shared verbatim by
+/// Runs the style check like [`run_with`], then drives `renderer` over the
+/// outcome as a stream of [`Renderer`] events — the extension point for
+/// custom output sinks (HTML, SARIF, an editor panel, ...): implement the
+/// trait and pass it here, no engine changes needed.
+///
+/// Event order (see [`Renderer`]): `begin(req)` once, then one
+/// `file(result)` per successfully processed file in report order, then one
+/// `file_error(path, message)` per per-file error in report order, then
+/// `finish(&report)` once. The built-in renderers write the legacy
+/// console/JSON output byte for byte ([`run`] uses [`builtin_renderer`]).
+pub fn run_with_renderer(
+    req: &Request,
+    formatter: &dyn Formatter,
+    renderer: &mut dyn Renderer,
+) -> Report {
+    let report = run_with(req, formatter);
+    renderer.begin(req);
+    for result in &report.results {
+        renderer.file(result);
+    }
+    for (path, message) in &report.errors {
+        renderer.file_error(path, message);
+    }
+    renderer.finish(&report);
+    report
+}
+
+/// Reads, normalizes (see [`normalize_source`]), formats, and compares a
+/// single file, building the [`FileResult`]: the normalized input is kept
+/// in [`FileResult::source`], the styled content in
+/// [`FileResult::formatted`] — rendering (the diff/JSON presentation) is
+/// the renderer's job, not this function's. Shared verbatim by
 /// [`run_with`] (style check) and [`fix_with`] (in-place fix) so both see
 /// identical clean/dirty semantics.
 ///
 /// # Errors
 /// Returns an error when the file cannot be read, has an unsupported
 /// extension, is empty after normalization, or the formatter fails.
-fn process_file(
-    path: &Path,
-    formatter: &dyn Formatter,
-    output: Output,
-    color: bool,
-) -> anyhow::Result<FileResult> {
+fn process_file(path: &Path, formatter: &dyn Formatter) -> anyhow::Result<FileResult> {
     let source = std::fs::read_to_string(path)
         .map_err(|e| anyhow::anyhow!("could not read `{}`: {e}", path.display()))?;
     let Some(language) = detect_language(path) else {
@@ -118,19 +133,10 @@ fn process_file(
     }
     let styled = formatter.format(&normalized, language)?;
     let clean = normalized == styled;
-    let rendered = if clean {
-        None
-    } else {
-        Some(match output {
-            Output::Character => render_character(&normalized, &styled, color),
-            Output::Split => render_split(&normalized, &styled, color),
-            Output::Unified | Output::Json => render_unified(&normalized, &styled, path),
-        })
-    };
     Ok(FileResult {
         path: path.to_path_buf(),
         clean,
-        rendered,
+        source: Some(normalized),
         formatted: Some(styled),
     })
 }
@@ -160,7 +166,7 @@ pub fn fix_with(req: &Request, formatter: &dyn Formatter, dry_run: bool) -> Repo
     let mut results = Vec::with_capacity(files.len());
     let mut errors = Vec::new();
     for path in &files {
-        match process_file(path, formatter, req.output, req.color) {
+        match process_file(path, formatter) {
             Ok(result) => {
                 let written = if result.clean || dry_run {
                     true
