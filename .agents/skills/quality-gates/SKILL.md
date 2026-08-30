@@ -49,7 +49,7 @@ What each gate catches:
   precedence over 1.
 
 A golden or provisioning test failing with exit 3 usually means the cache is
-empty or stale — check `u50 style --list` (reports `found (cache)` or
+empty or stale — check `u50 --status` (reports `found (cache)` or
 `missing`; it never provisions).
 
 ## Smoke-testing provisioning changes
@@ -61,11 +61,11 @@ isolation so a warm cache or a hostile `PATH` cannot mask a bug:
 CACHE=$(mktemp -d)                        # empty cache
 mkdir -p /tmp/u50smokebin && ln -sf "$(command -v u50)" /tmp/u50smokebin/u50
 env -i HOME="$HOME" XDG_CACHE_HOME="$CACHE" PATH=/tmp/u50smokebin \\
-  /tmp/u50smokebin/u50 style --list       # every backend must read "missing"
+  /tmp/u50smokebin/u50 --status           # every backend must read "missing"
 env -i HOME="$HOME" XDG_CACHE_HOME="$CACHE" PATH=/tmp/u50smokebin \\
   /tmp/u50smokebin/u50 style some-file.c  # auto-provisions on first use, then formats
 env -i HOME="$HOME" XDG_CACHE_HOME="$CACHE" PATH=/tmp/u50smokebin \\
-  /tmp/u50smokebin/u50 style --list       # now "found (cache)"
+  /tmp/u50smokebin/u50 --status           # now "found (cache)"
 ```
 
 Each line is a single `env -i` invocation: there is no subshell that could

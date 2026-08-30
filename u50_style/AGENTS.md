@@ -70,7 +70,7 @@ Per-tool options (mirroring the original's `languages.py` option values; flag na
 
 The original calls the Python libraries (`autopep8`, `jsbeautifier`, `cssbeautifier`, `sqlparse`) directly; u50 shells out to the pip CLIs, which apply the same defaults. All backends are auto-provisioned by u50 into its cache on first use (see 'Tool management'); a system-wide `pip install` still works but is not required. When provisioning fails (or is disabled via `U50_STYLE_NO_PROVISION=1`) and the binary is absent, a per-language error is produced, e.g. "`autopep8` is required to check Python style (pip install autopep8)".
 
-## Tool management (`--list` / `--setup`)
+## Tool management (`--status` / `--setup`)
 
 The 6 backing formatters are all pip-installable: `clang-format` (standalone
 binary wheel), `autopep8`, `jsbeautifier` (bin `js-beautify`), `djhtml`,
@@ -87,12 +87,16 @@ the cache, and such backends are auto-provisioned lazily on first use (see
 **bulk/explicit** path — for pre-downloading everything up front (CI,
 ahead of offline runs) — but never a prerequisite for formatting.
 
-### `u50 style --list`
+### `u50 --status`
+
+Exposed as a **root-level** flag (`u50 --status`), not a style subcommand
+flag; the library entry point stays `list_languages()` (see
+`u50_cli/AGENTS.md`).
 
 Prints an aligned table of languages, extensions, backing binary, and
 status. Because bare tool names resolve cache-only, the status is
 `found (cache)` when the binary is in the u50 cache and `missing` when it
-is not — the system `PATH` is never consulted and never reported. `--list`
+is not — the system `PATH` is never consulted and never reported. `--status`
 **never provisions**; it purely reports:
 
 ```text
@@ -108,9 +112,9 @@ CSS         css         css-beautify  found (cache)
 SQL         sql         sqlformat     found (cache)
 ```
 
-File operands and the other style flags are ignored; always exits 0. Clap
-makes `--list` conflict with `--fix`, `--dry-run`, and `-o/--output`
-(usage error, exit 2).
+Always exits 0. Combined with `--setup` or a subcommand it is a usage
+error (exit 2) — enforced by the dispatcher, like `--setup` (see
+`u50_cli/AGENTS.md`).
 
 ### `u50 --setup` (root flag)
 
@@ -143,7 +147,7 @@ per-package outcomes:
    call.
 6. Prints per-package `installed: <pkg> (<tool>)` or `failed: <pkg>: <reason>`
    (a package counts as installed only when its tool is resolvable from the
-   cache bin dir afterwards), then prints the `--list` table. Any failure
+   cache bin dir afterwards), then prints the status table. Any failure
    exits 3.
 
 ### Cache-only tool resolution
@@ -177,7 +181,7 @@ disable auto-provisioning entirely (hermetic tests / CI).
 Verified end-to-end: a fake same-named binary planted on `PATH` is never
 used (cache-only resolution ignores `PATH` entirely), and on an empty cache
 u50 auto-provisions the needed backend on first format and then formats
-correctly via the cache (`found (cache)` in `--list`), exercising both the
+correctly via the cache (`found (cache)` in `--status`), exercising both the
 managed CPython + venv provisioning and the standalone `clang-format`
 binary wheel.
 
@@ -290,7 +294,7 @@ Run:
 U50_STYLE_GOLDEN=1 cargo test --test golden
 ```
 
-**Gating/skip behavior**: each language's golden test runs only when `U50_STYLE_GOLDEN=1` is set AND the language's backing tool is found in the u50 style cache (cache-only resolution — the system `PATH` is never consulted); otherwise the test prints a `skip` line and returns. The ground truth is only byte-stable for a given set of tool versions, so backend versions are pinned in [`tests/tool-versions.txt`](tests/tool-versions.txt) (a pip constraints file — the single source of truth). CI provisions exactly those versions via `u50 --setup` (dogfooding u50's own installer) and runs the golden suite as a dedicated step; locally, run `u50 --setup` once, then `U50_STYLE_GOLDEN=1 cargo test --test golden` (`u50 style --list` shows what is in your cache). When a backend is upgraded, refresh this file, `tool-versions.txt`, and the goldens together.
+**Gating/skip behavior**: each language's golden test runs only when `U50_STYLE_GOLDEN=1` is set AND the language's backing tool is found in the u50 style cache (cache-only resolution — the system `PATH` is never consulted); otherwise the test prints a `skip` line and returns. The ground truth is only byte-stable for a given set of tool versions, so backend versions are pinned in [`tests/tool-versions.txt`](tests/tool-versions.txt) (a pip constraints file — the single source of truth). CI provisions exactly those versions via `u50 --setup` (dogfooding u50's own installer) and runs the golden suite as a dedicated step; locally, run `u50 --setup` once, then `U50_STYLE_GOLDEN=1 cargo test --test golden` (`u50 --status` shows what is in your cache). When a backend is upgraded, refresh this file, `tool-versions.txt`, and the goldens together.
 
 ### Large real-world fixtures and provenance
 

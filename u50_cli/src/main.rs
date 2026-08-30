@@ -19,6 +19,10 @@ struct Cli {
     #[arg(long)]
     setup: bool,
 
+    /// Show the per-language formatter backend table (which backends are cached or missing)
+    #[arg(long)]
+    status: bool,
+
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -79,15 +83,14 @@ struct CheckArgs {
     output_file: Option<std::path::PathBuf>,
 }
 
-// The bool fields mirror the CLI's `--fix`/`--dry-run`/`--list` mode flags
+// The bool fields mirror the CLI's `--fix`/`--dry-run` mode flags
 // one-to-one, so the bool count is inherent to the interface.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Args, Debug)]
 struct StyleArgs {
-    /// Files to style-check. At least one operand is required unless
-    /// `--list` is given (it ignores FILE operands and works without
-    /// them); zero operands otherwise is a usage error (exit 2)
-    /// (enforced by the dispatcher, not clap).
+    /// Files to style-check. At least one operand is required; zero
+    /// operands is a usage error (exit 2) (enforced by the dispatcher,
+    /// not clap).
     files: Vec<std::path::PathBuf>,
 
     /// Diff output format
@@ -101,10 +104,6 @@ struct StyleArgs {
     /// Show what would change without writing (requires --fix)
     #[arg(long, requires = "fix")]
     dry_run: bool,
-
-    /// List supported languages and their required binaries
-    #[arg(long, conflicts_with_all = ["output", "fix", "dry_run"])]
-    list: bool,
 }
 
 // The bool fields mirror the CLI's `--yes`/`--ssh`/`--dry-run`/`--logout`
@@ -194,6 +193,19 @@ fn main() -> ExitCode {
 /// generic handler.
 fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     let no_color = std::env::var_os("NO_COLOR").is_some();
+    if cli.status {
+        if cli.setup {
+            eprintln!("error: --status cannot be combined with --setup");
+            return Ok(ExitCode::from(2));
+        }
+        if cli.command.is_some() {
+            eprintln!("error: --status cannot be combined with a subcommand");
+            return Ok(ExitCode::from(2));
+        }
+        // A listing is purely a report: it never provisions.
+        u50_style::list_languages();
+        return Ok(ExitCode::SUCCESS);
+    }
     if cli.setup {
         if cli.command.is_some() {
             eprintln!("error: --setup cannot be combined with a subcommand");
@@ -208,7 +220,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     }
     match cli.command {
         None => {
-            eprintln!("error: expected a subcommand (check, style, submit) or --setup");
+            eprintln!("error: expected a subcommand (check, style, submit) or --setup/--status");
             Ok(ExitCode::from(2))
         }
         Some(Command::Check(args)) => {
@@ -223,13 +235,8 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             .map(|()| ExitCode::SUCCESS)
         }
         Some(Command::Style(args)) => {
-            if args.list {
-                // File operands and other style flags are ignored; the
-                // table alone is the output.
-                u50_style::list_languages();
-                Ok(ExitCode::SUCCESS)
-            } else if args.files.is_empty() {
-                eprintln!("error: at least one FILE operand is required (or use --list)");
+            if args.files.is_empty() {
+                eprintln!("error: at least one FILE operand is required");
                 Ok(ExitCode::from(2))
             } else {
                 let request = u50_style::Request {

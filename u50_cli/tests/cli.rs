@@ -3,12 +3,12 @@
 use std::process::Command;
 
 #[test]
-fn style_list_prints_language_table() {
+fn status_prints_language_table() {
     let output = Command::new(env!("CARGO_BIN_EXE_u50"))
-        .args(["style", "--list"])
+        .args(["--status"])
         .output()
         .expect("failed to spawn u50");
-    assert!(output.status.success(), "--list must exit 0");
+    assert!(output.status.success(), "--status must exit 0");
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     // Header and separator structure.

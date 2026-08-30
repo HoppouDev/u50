@@ -85,20 +85,10 @@ fn style_dry_run_requires_fix() {
 }
 
 #[test]
-fn style_list_parses_alone_and_with_files() {
-    let cli = Cli::try_parse_from(["u50", "style", "--list"]).expect("valid arguments");
-    let Some(Command::Style(args)) = cli.command else {
-        panic!("expected style subcommand");
-    };
-    assert!(args.list);
-
-    let cli =
-        Cli::try_parse_from(["u50", "style", "--list", "a.c", "b/"]).expect("valid arguments");
-    let Some(Command::Style(args)) = cli.command else {
-        panic!("expected style subcommand");
-    };
-    assert!(args.list);
-    assert_eq!(args.files.len(), 2);
+fn root_status_parses_without_subcommand() {
+    let cli = Cli::try_parse_from(["u50", "--status"]).expect("valid arguments");
+    assert!(cli.status);
+    assert!(cli.command.is_none());
 }
 
 #[test]
@@ -117,9 +107,11 @@ fn style_setup_is_unknown_argument() {
 }
 
 #[test]
-fn style_list_conflicts_with_output() {
-    let result = Cli::try_parse_from(["u50", "style", "--list", "-o", "json"]);
-    assert!(result.is_err(), "--list must conflict with -o/--output");
+fn style_list_is_unknown_argument() {
+    // `--list` moved to the root command as `--status`; on `style` it is
+    // an unknown-argument error.
+    let result = Cli::try_parse_from(["u50", "style", "--list"]);
+    assert!(result.is_err(), "style --list must be rejected by clap");
 }
 
 #[test]
@@ -131,6 +123,18 @@ fn setup_with_subcommand_is_usage_error() {
 }
 
 #[test]
+fn status_with_setup_is_usage_error() {
+    let cli = Cli::try_parse_from(["u50", "--status", "--setup"]).expect("parses");
+    assert_eq!(run(cli).expect("usage errors return Ok"), ExitCode::from(2));
+}
+
+#[test]
+fn status_with_subcommand_is_usage_error() {
+    let cli = Cli::try_parse_from(["u50", "--status", "style", "foo.c"]).expect("parses");
+    assert_eq!(run(cli).expect("usage errors return Ok"), ExitCode::from(2));
+}
+
+#[test]
 fn bare_invocation_is_usage_error() {
     let cli = Cli::try_parse_from(["u50"]).expect("parses");
     assert!(cli.command.is_none());
@@ -138,7 +142,7 @@ fn bare_invocation_is_usage_error() {
 }
 
 #[test]
-fn style_without_files_or_list_is_usage_error() {
+fn style_without_files_is_usage_error() {
     let cli = Cli::try_parse_from(["u50", "style"]).expect("parses");
     assert_eq!(run(cli).expect("usage errors return Ok"), ExitCode::from(2));
 }

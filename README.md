@@ -52,7 +52,7 @@ u50 style --fix src/
 u50 --setup
 
 # Show what's installed, per language
-u50 style --list
+u50 --status
 ```
 
 Example output (`-o unified`):

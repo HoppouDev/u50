@@ -1,6 +1,8 @@
-//! `--list` support: a table of supported languages, their backing
-//! binaries, and whether each binary was found in u50's cache (bare tool
-//! names are resolved cache-only — the system `PATH` is never consulted).
+//! `--status` support (exposed as the root-level `u50 --status` flag; the
+//! library entry point stays `list_languages`): a table of supported
+//! languages, their backing binaries, and whether each binary was found in
+//! u50's cache (bare tool names are resolved cache-only — the system
+//! `PATH` is never consulted).
 
 use std::fmt::Write as _;
 

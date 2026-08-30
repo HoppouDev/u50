@@ -429,7 +429,7 @@ fn setup_succeeds_when_every_backend_is_already_cached() {
 
 #[test]
 fn list_reports_missing_for_every_backend_when_cache_is_empty() {
-    // `--list` with a scratch EMPTY cache, provisioning disabled, and a
+    // `--status` with a scratch EMPTY cache, provisioning disabled, and a
     // formatter-free PATH: every language row must report `missing` (a
     // listing is not an error, so exit 0), and no row may claim a cache
     // hit. Deterministic regardless of the host's installed formatters.
@@ -445,7 +445,7 @@ fn list_reports_missing_for_every_backend_when_cache_is_empty() {
     assert!(!BACKEND_TOOLS.iter().any(|tool| bins.join(tool).exists()));
 
     let out = Command::new(EXE)
-        .args(["style", "--list"])
+        .args(["--status"])
         .args(["--color", "never"])
         .env("XDG_CACHE_HOME", &cache)
         .env("PATH", &bins)
@@ -455,7 +455,7 @@ fn list_reports_missing_for_every_backend_when_cache_is_empty() {
     let code = out.status.code().unwrap_or(-1);
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
 
-    assert_eq!(code, 0, "--list must exit 0");
+    assert_eq!(code, 0, "--status must exit 0");
     assert!(
         stdout.contains("missing"),
         "rows must show the missing status: {stdout}"
