@@ -65,6 +65,16 @@ impl Formatter for Rstrip {
     }
 }
 
+/// Formatter that fixes only the `retrun` typo (models a tool whose
+/// output differs from its input on exactly one line).
+struct FixTy;
+
+impl Formatter for FixTy {
+    fn format(&self, source: &str, _language: Language) -> anyhow::Result<String> {
+        Ok(source.replace("retrun", "return"))
+    }
+}
+
 /// Formatter that always fails (models a broken external tool).
 struct Failing;
 
@@ -98,6 +108,23 @@ fn render_result(result: &FileResult, output: Output, color: bool) -> String {
     let mut renderer = builtin_renderer(output, color, Box::new(sink.clone()));
     renderer.file(result);
     String::from_utf8(sink.0.borrow().clone()).expect("utf8 rendered output")
+}
+
+/// Drives `builtin_renderer(Output::Score, ...)` over the given results
+/// and errors and returns the rendered bytes (score-mode test helper).
+fn score_output(results: Vec<FileResult>, errors: Vec<(PathBuf, String)>, color: bool) -> String {
+    let sink = SharedBuf::default();
+    {
+        let mut renderer = builtin_renderer(Output::Score, color, Box::new(sink.clone()));
+        for result in &results {
+            renderer.file(result);
+        }
+        for (path, message) in &errors {
+            renderer.file_error(path, message);
+        }
+        renderer.finish(&Report { results, errors });
+    }
+    String::from_utf8(sink.0.borrow().clone()).expect("utf8")
 }
 
 fn fix_request(files: Vec<PathBuf>) -> Request {
@@ -1039,4 +1066,153 @@ fn json_renderer_write_target_is_used_not_stdout() {
     let doc: serde_json::Value =
         serde_json::from_str(text.trim_end()).expect("renderer wrote valid json");
     assert_eq!(doc["files"][0]["patch"], serde_json::Value::Null);
+}
+
+#[test]
+fn py_str_f64_matches_python_str() {
+    use crate::renderer::py_str_f64;
+
+    assert_eq!(py_str_f64(1.0), "1.0");
+    assert_eq!(py_str_f64(0.0), "0.0");
+    assert_eq!(py_str_f64(0.5), "0.5");
+    // Python: str(1 - 3/26) == '0.8846153846153846'.
+    assert_eq!(py_str_f64(1.0 - 3.0 / 26.0), "0.8846153846153846");
+}
+
+#[test]
+fn score_renderer_clean_file_is_1() {
+    let source = "int main(void)\n{\n    return 0;\n}\n";
+    assert_eq!(
+        score_output(
+            vec![FileResult {
+                path: PathBuf::from("a.c"),
+                clean: true,
+                source: Some(source.to_owned()),
+                formatted: Some(source.to_owned()),
+            }],
+            Vec::new(),
+            false
+        ),
+        "1.0\n"
+    );
+}
+
+#[test]
+fn score_renderer_formula_one_changed_line() {
+    // Mirrors the original's formula: one changed line -> one '-' and one
+    // '+' ndiff line -> diffs = 2/2 = 1.0; the styled text has 3 non-blank
+    // lines; score = 1 - 1/3 = 0.6666666666666667 (Python str). Blank
+    // lines in the styled text never count toward `lines`.
+    assert_eq!(
+        score_output(
+            vec![FileResult {
+                path: PathBuf::from("a.c"),
+                clean: false,
+                source: Some("int a;\nint b;\nint c;\n".to_owned()),
+                formatted: Some("int a;\nint b;\nint d;\n".to_owned()),
+            }],
+            Vec::new(),
+            false
+        ),
+        "0.6666666666666667\n"
+    );
+}
+
+#[test]
+fn score_renderer_half_insert_and_blank_lines() {
+    // A single inserted blank line: diffs = 1/2 = 0.5; the styled text has
+    // 2 non-blank lines; score = 1 - 0.5/2 = 0.75.
+    assert_eq!(
+        score_output(
+            vec![FileResult {
+                path: PathBuf::from("a.c"),
+                clean: false,
+                source: Some("a\nb\n".to_owned()),
+                formatted: Some("a\nb\n\n".to_owned()),
+            }],
+            Vec::new(),
+            false
+        ),
+        "0.75\n"
+    );
+}
+
+#[test]
+fn score_renderer_errors_only_is_zero_and_yellow() {
+    assert_eq!(
+        score_output(
+            Vec::new(),
+            vec![(PathBuf::from("gone.c"), "file is empty".to_owned())],
+            true
+        ),
+        "\u{1b}[33mfile is empty\u{1b}[0m\n0.0\n"
+    );
+}
+
+#[test]
+fn score_renderer_mixed_error_then_score_plain() {
+    // Errors print first (file order, uncolored when color is off), then
+    // the score over the successful files only.
+    assert_eq!(
+        score_output(
+            vec![FileResult {
+                path: PathBuf::from("a.c"),
+                clean: true,
+                source: Some("ok\n".to_owned()),
+                formatted: Some("ok\n".to_owned()),
+            }],
+            vec![(
+                PathBuf::from("b.c"),
+                "could not read `b.c`: nope".to_owned()
+            )],
+            false
+        ),
+        "could not read `b.c`: nope\n1.0\n"
+    );
+}
+
+#[test]
+fn score_renderer_empty_styled_text_errors_not_summed() {
+    // A formatter emptying a non-empty file: the original raises a
+    // per-file `Error("file is empty")`; the file contributes nothing to
+    // the sums, so with no other files the score is 0.0.
+    assert_eq!(
+        score_output(
+            vec![FileResult {
+                path: PathBuf::from("a.c"),
+                clean: false,
+                source: Some("stuff\n".to_owned()),
+                formatted: Some(String::new()),
+            }],
+            Vec::new(),
+            false
+        ),
+        "file is empty\n0.0\n"
+    );
+}
+
+#[test]
+fn score_end_to_end_via_run_with_renderer() {
+    let clean = temp_file("score_clean.c", "int main(void)\n{\nreturn 0;\n}\n");
+    let dirty = temp_file("score_dirty.c", "int main(void)\n{\nretrun 0;\n}\n");
+    let req = Request {
+        files: vec![clean.clone(), dirty.clone()],
+        output: Output::Score,
+        color: false,
+    };
+    let sink = SharedBuf::default();
+    {
+        let mut renderer = builtin_renderer(req.output, req.color, Box::new(sink.clone()));
+        let report = run_with_renderer(&req, &FixTy, renderer.as_mut());
+        assert_eq!(report.results.len(), 2);
+        assert!(report.errors.is_empty());
+    }
+    // Clean file -> no diffs; dirty file: one changed line ->
+    // diffs = 2/2 = 1.0; lines = 4 + 4 = 8 -> score = 1 - 1/8 = 0.875.
+    assert_eq!(
+        String::from_utf8(sink.0.borrow().clone()).expect("utf8"),
+        "0.875\n"
+    );
+    std::fs::remove_file(&clean).expect("cleanup");
+    std::fs::remove_file(&dirty).expect("cleanup");
 }

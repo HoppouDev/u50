@@ -5,34 +5,39 @@ members = ["u50_check", "u50_cli", "u50_style", "u50_submit"]
 [workspace.dependencies]
 anyhow = "1"
 clap = { version = "4.6", features = ["derive"] }
+fs-err = "3"
 git2 = { version = "0.21", features = ["ssh"] }
+indicatif = "0.17"
+leptos = "0.8"
+reqwest = {
+  version = "0.13.4",
+  default-features = false,
+  features = [
+    "gzip",
+    "json",
+    "rustls",
+    "system-proxy",
+  ]
+}
+serde_json = "1"
+sha2 = "0.10"
+similar = { version = "2", features = ["inline"] }
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = "0.3"
-similar = { version = "2", features = ["inline"] }
-serde_json = "1"
-sha2 = "0.10"
-indicatif = "0.17"
-reqwest = { version = "0.13.4", default-features = false, features = [
-    "json",
-    "gzip",
-    "rustls",
-    "system-proxy",
-] }
-uv-python = "=0.0.74"
-uv-virtualenv = "=0.0.74"
-uv-installer = "=0.0.74"
 uv-cache = "=0.0.74"
 uv-cache-info = "=0.0.74"
 uv-client = "=0.0.74"
 uv-distribution-filename = "=0.0.74"
 uv-distribution-types = "=0.0.74"
 uv-extract = "=0.0.74"
-fs-err = "3"
+uv-installer = "=0.0.74"
 uv-pep508 = "=0.0.74"
-uv-pypi-types = "=0.0.74"
 uv-preview = "=0.0.74"
+uv-pypi-types = "=0.0.74"
+uv-python = "=0.0.74"
 uv-redacted = "=0.0.74"
+uv-virtualenv = "=0.0.74"
 
 [profile.release]
 opt-level = "z"

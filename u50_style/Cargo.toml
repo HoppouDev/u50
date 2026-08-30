@@ -5,26 +5,27 @@ edition = "2024"
 
 [dependencies]
 anyhow = { workspace = true }
-similar = { workspace = true }
+fs-err = { workspace = true }
+indicatif = { workspace = true }
+leptos = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
+similar = { workspace = true }
+tokio = { workspace = true }
 tracing = { workspace = true }
-indicatif = { workspace = true }
-uv-python = { workspace = true }
-uv-virtualenv = { workspace = true }
-uv-installer = { workspace = true }
 uv-cache = { workspace = true }
 uv-cache-info = { workspace = true }
 uv-client = { workspace = true }
 uv-distribution-filename = { workspace = true }
-fs-err = { workspace = true }
-uv-extract = { workspace = true }
 uv-distribution-types = { workspace = true }
+uv-extract = { workspace = true }
+uv-installer = { workspace = true }
 uv-pep508 = { workspace = true }
-uv-pypi-types = { workspace = true }
 uv-preview = { workspace = true }
+uv-pypi-types = { workspace = true }
+uv-python = { workspace = true }
 uv-redacted = { workspace = true }
-tokio = { workspace = true }
+uv-virtualenv = { workspace = true }
 
 [dev-dependencies]
 reqwest = { workspace = true }

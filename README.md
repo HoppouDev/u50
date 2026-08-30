@@ -22,7 +22,7 @@ _One binary for CS50; check, style, and submit._
 - **8 languages** — C, C++, Java, Python, JavaScript, HTML, CSS, SQL: the full style50 3.0.0 language set.
 - **Cache-only resolution** — tools are resolved strictly from µ50's own cache; nothing on your `PATH` can shadow or hijack them.
 - **In-place fix** — `--fix` rewrites files with style50 formatting; `--dry-run` previews what would change.
-- **Four output modes** — character (default), split, unified, and JSON for tooling.
+- **Five output modes** — character (default), split, unified, JSON for tooling, and score for grading (style50-compatible aggregate, e.g. `0.85`).
 - **Reproducible** — backend versions are pinned, and CI verifies output byte-identical to the original tool.
 
 ## Quick start
@@ -98,10 +98,10 @@ CI (GitHub Actions, workflow name `Rust`) runs on every push/PR to `main`: build
 - [x] Self-provisioning backends via uv library crates (managed CPython, venv, pinned wheels)
 - [x] Cache-only tool resolution (system `PATH` never consulted)
 - [x] In-place fix (`--fix`) with dry-run preview
-- [x] Output modes: `character`, `split`, `unified`, `json`
+- [x] Output modes: `character`, `split`, `unified`, `json`, `score`
 - [ ] `--ignore` — exclude directories (e.g. `node_modules`) from directory walks
 - [ ] `--clang-format-style` — custom clang-format style override
-- [ ] `score` and `html` output modes (style50 v2 features)
+- [ ] `html` output mode (style50 v2 feature)
 - [ ] Comment-count hints ("But consider adding more comments!")
 - [x] Windows support (uv console-script `.exe` shims, `%LOCALAPPDATA%` cache)
 

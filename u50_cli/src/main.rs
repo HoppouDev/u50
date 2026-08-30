@@ -168,6 +168,8 @@ enum StyleOutput {
     Split,
     Unified,
     Json,
+    /// Style50-compatible aggregate score (e.g. 0.85)
+    Score,
 }
 
 fn main() -> ExitCode {
@@ -306,6 +308,7 @@ fn map_style_output(output: StyleOutput) -> u50_style::Output {
         StyleOutput::Split => u50_style::Output::Split,
         StyleOutput::Unified => u50_style::Output::Unified,
         StyleOutput::Json => u50_style::Output::Json,
+        StyleOutput::Score => u50_style::Output::Score,
     }
 }
 
