@@ -13,6 +13,9 @@ pub enum Output {
     Unified,
     /// Machine-readable JSON (also present in the original via `-o json`).
     Json,
+    /// Style50-compatible aggregate score, one line (see
+    /// [`crate::renderer::ScoreRenderer`]).
+    Score,
 }
 
 /// Parameters for a `u50 style` invocation.

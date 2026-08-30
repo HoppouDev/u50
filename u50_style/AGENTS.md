@@ -67,6 +67,8 @@ impl Renderer for HtmlRenderer {
 }
 ```
 
+`ScoreRenderer` (`Output::Score`) reproduces the original style50's score mode: per successfully processed file it accumulates half the inserted/deleted line count of the source-vs-styled line diff (the same `line_diff` machinery the display modes use) into `diffs`, and the styled text's non-blank line count into `lines`; `finish` prints one error line per errored file in order (bare message — no `error: ` prefix — yellow ANSI 33 when color is on, mirroring the original's unconditional termcolor), then the uncolored score `max(1 - diffs/lines, 0)` (`0.0` when nothing was checked successfully, i.e. only successful files contribute). A styled text with no non-blank lines contributes a `file is empty` error line instead of touching the sums (the original raises a per-file `Error` there). The score prints with Python `str(float)` formatting via `py_str_f64` (Rust `f64` `Debug` = same shortest-round-trip representation, always with a decimal point: `1.0`, `0.5`, `0.8846153846153846`); no diff text is produced. Deliberate divergence: u50 keeps its own exit codes in score mode (the original style50 always exits 0).
+
 The pure render functions (`render_character`/`render_split`/`render_unified`/`json_document`) are unchanged and remain the single source of diff bytes; the built-in renderers just route `FileResult.source`/`formatted` through them. In JSON, `patch` stays `null` for clean files (legacy schema); dirty files render the unified diff of source against formatted.
 
 ## Language support

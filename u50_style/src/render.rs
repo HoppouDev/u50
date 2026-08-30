@@ -10,6 +10,7 @@ use crate::request::Report;
 pub(crate) const RED: &str = "\u{1b}[31m";
 pub(crate) const GREEN: &str = "\u{1b}[32m";
 pub(crate) const BOLD: &str = "\u{1b}[1m";
+pub(crate) const YELLOW: &str = "\u{1b}[33m";
 pub(crate) const RESET: &str = "\u{1b}[0m";
 
 /// Context radius passed to `TextDiff::grouped_ops` to keep every change in
@@ -68,7 +69,7 @@ pub(crate) fn select_algorithm(source: &str, formatted: &str) -> Algorithm {
 }
 
 /// Diffs the two texts line-wise with the measured algorithm strategy.
-fn line_diff<'a>(source: &'a str, formatted: &'a str) -> TextDiff<'a, 'a, 'a, str> {
+pub(crate) fn line_diff<'a>(source: &'a str, formatted: &'a str) -> TextDiff<'a, 'a, 'a, str> {
     TextDiff::configure()
         .algorithm(select_algorithm(source, formatted))
         .diff_lines(source, formatted)
