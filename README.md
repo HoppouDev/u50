@@ -49,7 +49,7 @@ u50 style --fix --dry-run src/
 u50 style --fix src/
 
 # Pre-download all six backends up front (CI, offline use)
-u50 style --setup
+u50 --setup
 
 # Show what's installed, per language
 u50 style --list

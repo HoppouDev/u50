@@ -63,6 +63,6 @@ fixture's upstream source, license, or minification must be reflected in
 U50_STYLE_GOLDEN=1 cargo test -p u50_style --test golden
 ```
 
-All languages must PASS (no `skip` — run `u50 style --setup` if the cache is
+All languages must PASS (no `skip` — run `u50 --setup` if the cache is
 missing the upgraded backend). Then run the full gate ladder
 (`.agents/workflows/quality-gates.md`) before committing.

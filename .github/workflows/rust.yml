@@ -21,9 +21,9 @@ jobs:
       run: cargo build --verbose
     - name: Run tests
       run: cargo test --verbose
-    - name: Golden tests (dogfood `u50 style --setup`; byte-compare against style50 3.0.0 ground truth)
+    - name: Golden tests (dogfood `u50 --setup`; byte-compare against style50 3.0.0 ground truth)
       run: |
-        cargo run -q --bin u50 -- style --setup
+        cargo run -q --bin u50 -- --setup
         U50_STYLE_GOLDEN=1 cargo test -p u50_style --test golden --release
     - name: Format
       run: cargo fmt --all -- --check

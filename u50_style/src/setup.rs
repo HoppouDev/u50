@@ -231,7 +231,7 @@ pub fn setup_missing() -> Result<()> {
     install_backends(&missing)
 }
 
-/// The shared install core, used by `u50 style --setup` and by the
+/// The shared install core, used by `u50 --setup` and by the
 /// formatter's lazy auto-provisioning: initializes uv's preview state,
 /// drives the async provisioning pipeline ([`provision_backends`]) on a
 /// local runtime, prints the per-package summary lines (`installed:` /
@@ -272,7 +272,7 @@ fn install_backends(missing: &[(String, String)]) -> Result<()> {
 /// first use: a no-op when `tool` already resolves from the cache,
 /// otherwise maps the tool to its pip package via [`Language::ALL`] and
 /// installs it (plus its transitive dependencies) through the same uv
-/// library path as `u50 style --setup`. Called from the formatter hook —
+/// library path as `u50 --setup`. Called from the formatter hook —
 /// never from the provisioning path itself — so it cannot recurse.
 ///
 /// # Errors

@@ -24,7 +24,7 @@ stage, never commit, and never push.
 
 2. Do not skip a gate and do not weaken one to make it pass. If the golden
    run reports a language as `skip`, note it verbatim in the report (the
-   parent decides whether to run `u50 style --setup`).
+   parent decides whether to run `u50 --setup`).
 
 3. Report, for every gate: the exact command, its **verbatim exit code**, and
    enough verbatim output (first failure and summary lines) for the parent to

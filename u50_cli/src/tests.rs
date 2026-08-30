@@ -14,7 +14,7 @@ fn check_parses_full_form() {
         "foo",
     ])
     .expect("valid arguments");
-    let Command::Check(args) = cli.command else {
+    let Some(Command::Check(args)) = cli.command else {
         panic!("expected check subcommand");
     };
     assert_eq!(args.slug, "cs50/problems/2018/x/caesar");
@@ -27,7 +27,7 @@ fn check_parses_full_form() {
 #[test]
 fn check_defaults() {
     let cli = Cli::try_parse_from(["u50", "check", "some/slug"]).expect("valid arguments");
-    let Command::Check(args) = cli.command else {
+    let Some(Command::Check(args)) = cli.command else {
         panic!("expected check subcommand");
     };
     assert!(matches!(args.mode, Mode::Online));
@@ -39,7 +39,7 @@ fn check_defaults() {
 fn style_parses_files_and_output() {
     let cli = Cli::try_parse_from(["u50", "style", "a.c", "b.c", "-o", "unified"])
         .expect("valid arguments");
-    let Command::Style(args) = cli.command else {
+    let Some(Command::Style(args)) = cli.command else {
         panic!("expected style subcommand");
     };
     assert_eq!(
@@ -55,7 +55,7 @@ fn style_parses_files_and_output() {
 #[test]
 fn style_fix_parses() {
     let cli = Cli::try_parse_from(["u50", "style", "a.c", "--fix"]).expect("valid arguments");
-    let Command::Style(args) = cli.command else {
+    let Some(Command::Style(args)) = cli.command else {
         panic!("expected style subcommand");
     };
     assert!(args.fix);
@@ -65,7 +65,7 @@ fn style_fix_parses() {
 #[test]
 fn style_fix_dry_run_parses() {
     let cli = Cli::try_parse_from(["u50", "style", "a.c", "--fix", "--dry-run"]).expect("valid");
-    let Command::Style(args) = cli.command else {
+    let Some(Command::Style(args)) = cli.command else {
         panic!("expected style subcommand");
     };
     assert!(args.fix);
@@ -87,15 +87,14 @@ fn style_dry_run_requires_fix() {
 #[test]
 fn style_list_parses_alone_and_with_files() {
     let cli = Cli::try_parse_from(["u50", "style", "--list"]).expect("valid arguments");
-    let Command::Style(args) = cli.command else {
+    let Some(Command::Style(args)) = cli.command else {
         panic!("expected style subcommand");
     };
     assert!(args.list);
-    assert!(!args.setup);
 
     let cli =
         Cli::try_parse_from(["u50", "style", "--list", "a.c", "b/"]).expect("valid arguments");
-    let Command::Style(args) = cli.command else {
+    let Some(Command::Style(args)) = cli.command else {
         panic!("expected style subcommand");
     };
     assert!(args.list);
@@ -103,19 +102,18 @@ fn style_list_parses_alone_and_with_files() {
 }
 
 #[test]
-fn style_setup_parses() {
-    let cli = Cli::try_parse_from(["u50", "style", "--setup"]).expect("valid arguments");
-    let Command::Style(args) = cli.command else {
-        panic!("expected style subcommand");
-    };
-    assert!(args.setup);
-    assert!(!args.list);
+fn root_setup_parses_without_subcommand() {
+    let cli = Cli::try_parse_from(["u50", "--setup"]).expect("valid arguments");
+    assert!(cli.setup);
+    assert!(cli.command.is_none());
 }
 
 #[test]
-fn style_list_conflicts_with_setup() {
-    let result = Cli::try_parse_from(["u50", "style", "--list", "--setup"]);
-    assert!(result.is_err(), "--list must conflict with --setup");
+fn style_setup_is_unknown_argument() {
+    // `--setup` moved to the root command; on `style` it is an
+    // unknown-argument error.
+    let result = Cli::try_parse_from(["u50", "style", "--setup"]);
+    assert!(result.is_err(), "style --setup must be rejected by clap");
 }
 
 #[test]
@@ -125,16 +123,31 @@ fn style_list_conflicts_with_output() {
 }
 
 #[test]
-fn style_setup_conflicts_with_fix() {
-    let result = Cli::try_parse_from(["u50", "style", "--setup", "--fix"]);
-    assert!(result.is_err(), "--setup must conflict with --fix");
+fn setup_with_subcommand_is_usage_error() {
+    let cli = Cli::try_parse_from(["u50", "--setup", "style", "foo.c"]).expect("parses");
+    assert!(cli.setup);
+    assert!(cli.command.is_some());
+    assert_eq!(run(cli).expect("usage errors return Ok"), ExitCode::from(2));
+}
+
+#[test]
+fn bare_invocation_is_usage_error() {
+    let cli = Cli::try_parse_from(["u50"]).expect("parses");
+    assert!(cli.command.is_none());
+    assert_eq!(run(cli).expect("usage errors return Ok"), ExitCode::from(2));
+}
+
+#[test]
+fn style_without_files_or_list_is_usage_error() {
+    let cli = Cli::try_parse_from(["u50", "style"]).expect("parses");
+    assert_eq!(run(cli).expect("usage errors return Ok"), ExitCode::from(2));
 }
 
 #[test]
 fn submit_parses_flags() {
     let cli = Cli::try_parse_from(["u50", "submit", "pset1", "--yes", "--dry-run"])
         .expect("valid arguments");
-    let Command::Submit(args) = cli.command else {
+    let Some(Command::Submit(args)) = cli.command else {
         panic!("expected submit subcommand");
     };
     assert_eq!(args.slug, "pset1");
@@ -157,7 +170,7 @@ fn global_flag_after_subcommand() {
 fn check_output_file_parses() {
     let cli = Cli::try_parse_from(["u50", "check", "slug", "--output-file", "/tmp/u50x.out"])
         .expect("valid arguments");
-    let Command::Check(args) = cli.command else {
+    let Some(Command::Check(args)) = cli.command else {
         panic!("expected check subcommand");
     };
     assert_eq!(

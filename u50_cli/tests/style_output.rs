@@ -381,7 +381,8 @@ const BACKEND_TOOLS: [&str; 6] = [
 fn setup_succeeds_when_every_backend_is_already_cached() {
     use std::os::unix::fs::PermissionsExt;
 
-    // The `--setup` success path, hermetically: a scratch XDG_CACHE_HOME
+    // The root-level `--setup` success path, hermetically: a scratch
+    // XDG_CACHE_HOME
     // pre-seeded with the six fake backend scripts in the venv bin dir
     // (same stub pattern as the cache-spawn test) makes every backend
     // resolve from the cache, so `--setup` must be a no-op that prints
@@ -400,7 +401,7 @@ fn setup_succeeds_when_every_backend_is_already_cached() {
     }
 
     let out = Command::new(EXE)
-        .args(["style", "--setup"])
+        .args(["--setup"])
         .args(["--color", "never"])
         .env("XDG_CACHE_HOME", &cache)
         .env("U50_STYLE_NO_PROVISION", "1")

@@ -40,7 +40,7 @@ const LANGUAGES: &[(&str, &str, Language, &str)] = &[
 
 /// Whether the engine can resolve `<tool>` — the same cache-only
 /// resolution the formatter uses (the u50 style cache installed by
-/// `u50 style --setup`; the system `PATH` is never consulted), so the
+/// `u50 --setup`; the system `PATH` is never consulted), so the
 /// gate never skips a language the engine itself would check.
 fn tool_available(tool: &str) -> bool {
     u50_style::locate_tool(tool).is_some()

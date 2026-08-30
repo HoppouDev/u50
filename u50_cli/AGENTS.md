@@ -21,8 +21,12 @@ The original tools are clunky by modern CLI standards: inconsistent flags, tool-
 #[derive(Parser)]
 #[command(name = "u50", version, about)]
 struct Cli {
+    /// root-level `--setup` flag (see 'Root-level `u50 --setup`')
+    #[arg(long)]
+    setup: bool,
+
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 enum Command {
@@ -31,6 +35,10 @@ enum Command {
     Submit(SubmitArgs),
 }
 ```
+
+## Root-level `u50 --setup`
+
+- `--setup` is a **root flag**, not a style flag: `u50 --setup` installs missing formatter backends into `~/.cache/u50/style50` in-process (see `u50_style/AGENTS.md`, 'Tool management'), then prints the `--list` language table. Exit 0 on success, 3 when provisioning or any package failed (generic error handler). `u50 --setup <subcommand> ...` is a usage error (exit 2) — enforced by the dispatcher, since clap cannot express a root-flag/subcommand conflict. A bare `u50` (neither subcommand nor `--setup`) is likewise a usage error (exit 2).
 
 ## Subcommands
 
@@ -43,13 +51,12 @@ enum Command {
 
 ### `u50 style <FILES>... [flags]` → `u50_style`
 
-- **At least one FILE operand is required** unless `--list` or `--setup` is used; `u50 style` with no operands (and neither mode flag) is a usage error (exit 2), matching the original's `nargs='+'` — so an empty-glob mistake cannot silently exit 0.
+- **At least one FILE operand is required** unless `--list` is used; `u50 style` with no operands (and no `--list`) is a usage error (exit 2), matching the original's `nargs='+'` — so an empty-glob mistake cannot silently exit 0. The rule is enforced by the dispatcher, not clap: the old `required_unless_present_any` leaned on the subcommand-local `--setup` flag, which has moved to the root command — and a root flag cannot satisfy a subcommand-arg requirement.
 - FILE operands may be **directories**: each is expanded recursively like style50 3.0.0 (`os.walk`, symlinked dirs not followed) — only supported extensions are collected, hidden dirs included, results deduplicated and sorted; explicit file args keep per-file error semantics.
 - `-o/--output <character|split|unified|json>` — default `character`; `json` also exists in the original (its README documents it; readthedocs was stale). Exit codes: 0 clean, 1 violations, 3 any per-file error (unreadable file, unsupported type, formatter failure) — other files are still checked and their output streamed.
 - `--fix` — rewrite files in place with style50 formatting (mirrors the original's `-i`/`--in-place`; conflicts with `-o/--output`). Exit codes: 0 all files fixed or already clean, 3 any per-file error (incl. write failures). No exit 1: a plain fix either fixes or errors.
 - `--dry-run` — report what would change without writing (requires `--fix`); prints `would fix: <path>` / `already clean: <path>` status lines, with no diff. Exit codes: 1 when at least one file would change (check-style convention), 0 when everything is already clean, 3 on errors.
-- `--list` — print the language/extensions/binary/status table (see `u50_style/AGENTS.md`, 'Tool management'); statuses are `found (cache)` (backing binary present in u50's cache) or `missing` — the system `PATH` is never consulted, and `--list` never provisions. Ignores FILE operands and the other style flags; exits 0. Conflicts with `--setup`, `--fix`, `--dry-run`, `-o/--output`. `--list` and `--setup` are the only style invocations that may omit FILE operands.
-- `--setup` — bulk pre-download: install missing formatter backends into `~/.cache/u50/style50` in-process via the uv library (managed CPython 3.14 + venv; parallel wheel fetches, one spinner per package), then print the `--list` table. Exit 0 on success, 3 when provisioning or any package failed. Individual backends are also provisioned lazily on first use (no `--setup` needed before formatting); `--setup` exists to fetch everything up front. Conflicts with `--list`, `--fix`, `--dry-run`, `-o/--output`.
+- `--list` — print the language/extensions/binary/status table (see `u50_style/AGENTS.md`, 'Tool management'); statuses are `found (cache)` (backing binary present in u50's cache) or `missing` — the system `PATH` is never consulted, and `--list` never provisions. Ignores FILE operands and the other style flags; exits 0. Conflicts with `--fix`, `--dry-run`, `-o/--output`. `--list` is the only style invocation that may omit FILE operands.
 
 ### `u50 submit <SLUG> [flags]` → `u50_submit`
 
@@ -80,4 +87,4 @@ enum Command {
 | 0 | success (all checks passed / style clean / submitted / style fixed or already clean) |
 | 1 | checks failed or style violations found; `style --fix --dry-run` with at least one would-fix |
 | 2 | usage error |
-| 3 | any per-file error (unreadable file, unsupported type, formatter/write failure) |
+| 3 | any per-file error (unreadable file, unsupported type, formatter/write failure); provisioning failure (`u50 --setup`) |

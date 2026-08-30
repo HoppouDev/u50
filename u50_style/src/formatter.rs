@@ -27,7 +27,7 @@ pub trait Formatter {
 }
 
 /// Where a tool command came from: an explicit path, or u50's cache
-/// (installed by `u50 style --setup` or auto-provisioned on first use).
+/// (installed by `u50 --setup` or auto-provisioned on first use).
 ///
 /// u50 NEVER resolves its BUILT-IN formatter tools through the system
 /// `PATH`: bare tool names are looked up in the cache only, and missing
@@ -61,7 +61,7 @@ pub(crate) fn cache_dir() -> PathBuf {
     base.join("u50").join("style50")
 }
 
-/// The directory holding binaries installed by `u50 style --setup`
+/// The directory holding binaries installed by `u50 --setup`
 /// (the uv-managed venv `<cache>/venv` puts console scripts in `bin/`).
 #[must_use]
 pub(crate) fn cache_bin_dir() -> PathBuf {
@@ -80,7 +80,7 @@ fn is_executable_file(path: &Path) -> bool {
 /// Resolves `tool` to its location, cache-only: a path containing `/` is
 /// an explicit override and is used as-is ([`ToolOrigin::Path`]); a bare
 /// tool name is looked up ONLY in the u50 style cache bin dir (the
-/// `u50 style --setup` / lazy auto-provision install location) — the
+/// `u50 --setup` / lazy auto-provision install location) — the
 /// system `PATH` is never consulted, so a hostile or unrelated
 /// same-named binary on `PATH` can never be picked up. Returns `None`
 /// when the tool is not in the cache (the caller may then auto-provision
@@ -231,7 +231,7 @@ static PROVISION_ATTEMPTED: LazyLock<Mutex<HashSet<String>>> =
 
 /// Attempts to lazily auto-provision `tool` into the u50 style cache
 /// exactly once per process: downloads it via the same uv library path
-/// `u50 style --setup` uses (never through the formatter, so there is no
+/// `u50 --setup` uses (never through the formatter, so there is no
 /// recursion) and lets the caller's subsequent spawn fail naturally when
 /// provisioning did not help. Set `U50_STYLE_NO_PROVISION` in the
 /// environment to disable (used by hermetic tests).

@@ -9,14 +9,18 @@ use tracing_subscriber::filter::LevelFilter;
 #[command(
     name = "u50",
     version,
-    about = "unified CS50 tooling: check, style, submit"
+    about = "unified CS50 tooling: check, style, submit; --setup pre-installs style backends"
 )]
 struct Cli {
     #[command(flatten)]
     globals: Globals,
 
+    /// Download and install missing formatter backends into the cache, then show the language table
+    #[arg(long)]
+    setup: bool,
+
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Args, Debug)]
@@ -75,15 +79,15 @@ struct CheckArgs {
     output_file: Option<std::path::PathBuf>,
 }
 
-// The bool fields mirror the CLI's `--fix`/`--dry-run`/`--list`/`--setup`
-// mode flags one-to-one, so the bool count is inherent to the interface.
+// The bool fields mirror the CLI's `--fix`/`--dry-run`/`--list` mode flags
+// one-to-one, so the bool count is inherent to the interface.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Args, Debug)]
 struct StyleArgs {
     /// Files to style-check. At least one operand is required unless
-    /// `--list` or `--setup` is given (both ignore FILE operands and work
-    /// without them); zero operands otherwise is a usage error (exit 2).
-    #[arg(required_unless_present_any = ["list", "setup"], num_args = 1..)]
+    /// `--list` is given (it ignores FILE operands and works without
+    /// them); zero operands otherwise is a usage error (exit 2)
+    /// (enforced by the dispatcher, not clap).
     files: Vec<std::path::PathBuf>,
 
     /// Diff output format
@@ -99,18 +103,8 @@ struct StyleArgs {
     dry_run: bool,
 
     /// List supported languages and their required binaries
-    #[arg(
-        long,
-        conflicts_with_all = ["output", "fix", "dry_run", "setup"]
-    )]
+    #[arg(long, conflicts_with_all = ["output", "fix", "dry_run"])]
     list: bool,
-
-    /// Download and install missing formatter backends into the cache
-    #[arg(
-        long,
-        conflicts_with_all = ["output", "fix", "dry_run", "list"]
-    )]
-    setup: bool,
 }
 
 // The bool fields mirror the CLI's `--yes`/`--ssh`/`--dry-run`/`--logout`
@@ -181,8 +175,43 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     let no_color = std::env::var_os("NO_COLOR").is_some();
     init_tracing(&cli, no_color);
-    let result = match cli.command {
-        Command::Check(args) => {
+    let result = run(cli);
+    match result {
+        Ok(code) => code,
+        Err(e) => {
+            eprintln!("error: {e:#}");
+            // Style violations exit 1 and per-file style errors exit 3 (both
+            // mapped from the Report above); check failures are still TODO;
+            // 3 remains the infrastructure-error code.
+            ExitCode::from(3)
+        }
+    }
+}
+
+/// Dispatches a parsed invocation to the library crates. Usage-level
+/// errors (exit 2) come back as `Ok(ExitCode::from(2))` with a message on
+/// stderr; only runtime failures map to `Err` and exit 3 via `main`'s
+/// generic handler.
+fn run(cli: Cli) -> anyhow::Result<ExitCode> {
+    let no_color = std::env::var_os("NO_COLOR").is_some();
+    if cli.setup {
+        if cli.command.is_some() {
+            eprintln!("error: --setup cannot be combined with a subcommand");
+            return Ok(ExitCode::from(2));
+        }
+        // A setup failure maps to the unified exit-3 infrastructure-error
+        // code via the generic handler in `main`.
+        return u50_style::setup_missing().map(|()| {
+            u50_style::list_languages();
+            ExitCode::SUCCESS
+        });
+    }
+    match cli.command {
+        None => {
+            eprintln!("error: expected a subcommand (check, style, submit) or --setup");
+            Ok(ExitCode::from(2))
+        }
+        Some(Command::Check(args)) => {
             let outputs = args.outputs.iter().map(|o| map_output_format(*o)).collect();
             u50_check::run(&u50_check::Request {
                 slug: args.slug,
@@ -193,19 +222,15 @@ fn main() -> ExitCode {
             })
             .map(|()| ExitCode::SUCCESS)
         }
-        Command::Style(args) => {
+        Some(Command::Style(args)) => {
             if args.list {
                 // File operands and other style flags are ignored; the
                 // table alone is the output.
                 u50_style::list_languages();
                 Ok(ExitCode::SUCCESS)
-            } else if args.setup {
-                // A setup failure maps to the unified exit-3
-                // infrastructure-error code via the generic handler below.
-                u50_style::setup_missing().map(|()| {
-                    u50_style::list_languages();
-                    ExitCode::SUCCESS
-                })
+            } else if args.files.is_empty() {
+                eprintln!("error: at least one FILE operand is required (or use --list)");
+                Ok(ExitCode::from(2))
             } else {
                 let request = u50_style::Request {
                     files: args.files,
@@ -237,7 +262,7 @@ fn main() -> ExitCode {
                 }
             }
         }
-        Command::Submit(args) => u50_submit::run(&u50_submit::Request {
+        Some(Command::Submit(args)) => u50_submit::run(&u50_submit::Request {
             slug: args.slug,
             yes: args.yes,
             ssh: args.ssh,
@@ -245,16 +270,6 @@ fn main() -> ExitCode {
             logout: args.logout,
         })
         .map(|()| ExitCode::SUCCESS),
-    };
-    match result {
-        Ok(code) => code,
-        Err(e) => {
-            eprintln!("error: {e:#}");
-            // Style violations exit 1 and per-file style errors exit 3 (both
-            // mapped from the Report above); check failures are still TODO;
-            // 3 remains the infrastructure-error code.
-            ExitCode::from(3)
-        }
     }
 }
 

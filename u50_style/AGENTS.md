@@ -109,10 +109,14 @@ SQL         sql         sqlformat     found (cache)
 ```
 
 File operands and the other style flags are ignored; always exits 0. Clap
-makes `--list` conflict with `--setup`, `--fix`, `--dry-run`, and
-`-o/--output` (usage error, exit 2).
+makes `--list` conflict with `--fix`, `--dry-run`, and `-o/--output`
+(usage error, exit 2).
 
-### `u50 style --setup`
+### `u50 --setup` (root flag)
+
+Exposed as a **root-level** flag (`u50 --setup`), not a style subcommand
+flag; the library entry point stays `setup_missing()`. Combined with a
+subcommand it is a usage error (exit 2) — see `u50_cli/AGENTS.md`.
 
 Installs missing formatter backends into u50's cache in-process (uv library
 calls — no pip subprocesses, no system Python required). Same in-process
@@ -286,7 +290,7 @@ Run:
 U50_STYLE_GOLDEN=1 cargo test --test golden
 ```
 
-**Gating/skip behavior**: each language's golden test runs only when `U50_STYLE_GOLDEN=1` is set AND the language's backing tool is found in the u50 style cache (cache-only resolution — the system `PATH` is never consulted); otherwise the test prints a `skip` line and returns. The ground truth is only byte-stable for a given set of tool versions, so backend versions are pinned in [`tests/tool-versions.txt`](tests/tool-versions.txt) (a pip constraints file — the single source of truth). CI provisions exactly those versions via `u50 style --setup` (dogfooding u50's own installer) and runs the golden suite as a dedicated step; locally, run `u50 style --setup` once, then `U50_STYLE_GOLDEN=1 cargo test --test golden` (`u50 style --list` shows what is in your cache). When a backend is upgraded, refresh this file, `tool-versions.txt`, and the goldens together.
+**Gating/skip behavior**: each language's golden test runs only when `U50_STYLE_GOLDEN=1` is set AND the language's backing tool is found in the u50 style cache (cache-only resolution — the system `PATH` is never consulted); otherwise the test prints a `skip` line and returns. The ground truth is only byte-stable for a given set of tool versions, so backend versions are pinned in [`tests/tool-versions.txt`](tests/tool-versions.txt) (a pip constraints file — the single source of truth). CI provisions exactly those versions via `u50 --setup` (dogfooding u50's own installer) and runs the golden suite as a dedicated step; locally, run `u50 --setup` once, then `U50_STYLE_GOLDEN=1 cargo test --test golden` (`u50 style --list` shows what is in your cache). When a backend is upgraded, refresh this file, `tool-versions.txt`, and the goldens together.
 
 ### Large real-world fixtures and provenance
 
