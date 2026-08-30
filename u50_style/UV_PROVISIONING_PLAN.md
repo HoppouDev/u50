@@ -31,7 +31,7 @@
 - `setup.rs` `setup_missing()`: `python3 -m pip --version` probe →
   parallel `python3 -m pip download --dest <cache>/wheels <pkg==ver>` threads
   (indicatif spinners) → one `python3 -m pip install --no-index --find-links
-  <cache>/wheels --target <cache>/python <specs>` → per-package verification
+<cache>/wheels --target <cache>/python <specs>` → per-package verification
   via `locate_tool` → per-package summary lines. Exits 3 on failure.
 - `formatter.rs`: `locate_tool(tool)` = PATH first, then `<cache>/python/bin`;
   `run_process` adds `PYTHONPATH=<cache>/python` for cache-origin hits (pip
@@ -44,7 +44,7 @@
   pycodestyle, editorconfig, …).
 - CI (rust.yml): builds, then creates a **system-python venv**, pip-installs
   the pinned tools into it, puts it on PATH, runs `U50_STYLE_GOLDEN=1 cargo
-  test -p u50_style --test golden --release`. Golden gate:
+test -p u50_style --test golden --release`. Golden gate:
   `tool_available` = locate_tool (PATH→cache).
 
 ## Target state
@@ -74,8 +74,8 @@
   names resolve from `<cache>/venv/bin` only and `PATH` is never consulted —
   per user directive during implementation; see the Status log.)
 - CI: golden step dogfoods the new path — `cargo run -q --bin u50 -- style
-  --setup` provisions everything, then `U50_STYLE_GOLDEN=1 cargo test --test
-  golden` (the gate resolves tools from the cache via locate_tool).
+--setup` provisions everything, then `U50_STYLE_GOLDEN=1 cargo test --test
+golden` (the gate resolves tools from the cache via locate_tool).
 - `tests/tool-versions.txt` remains the record of pinned **tool** versions
   (cross-checked against `PINNED_VERSIONS` by the include_str! test); the
   pinned **interpreter** version lives in `setup.rs` as `PINNED_PYTHON`.
@@ -109,10 +109,10 @@
 - **Phase 0 — SPIKE (current)**: add the uv member deps `=0.0.74`; in a
   scratch example prove the three hard primitives:
   (a) uv-python downloads/installs a managed CPython 3.14 and reports its
-      location,
+  location,
   (b) uv-virtualenv creates a venv from that interpreter,
   (c) uv-installer installs a downloaded wheel into the venv and the console
-      script runs.
+  script runs.
   Record the exact API calls under "Phase 0 findings" below. The deps-only
   commit goes in FIRST (so the spike has something to build against); if the
   APIs prove unusable, revert the deps commit and re-evaluate (binary route
@@ -136,23 +136,23 @@
      `.retries(0).build()` (GOTCHA: builder methods consume self).
   2. `ManagedPythonDownloadList::new(&client_builder, &cache, None).await?`
      → `.find(&PythonDownloadRequest::default().with_version(
-     VersionRequest::from_str("3.14")?).fill()?)?` → clone.
+VersionRequest::from_str("3.14")?).fill()?)?` → clone.
   3. `ManagedPythonInstallations::from_settings(None)?.init()?` → root(),
      scratch(), `lock().await` held for fetch+unpack.
   4. `download.fetch_with_retry(&client, &retry_policy, &root, &scratch,
-     false, None, None, None).await?` → `DownloadResult::Fetched(path)`.
+false, None, None, None).await?` → `DownloadResult::Fetched(path)`.
   5. `ManagedPythonInstallation::new(path, &download).executable(false)` →
      `Interpreter::query(&exe, &cache)?`.
-  Result: `cpython-3.14.7-linux-x86_64-gnu` provisioned into
-  `~/.local/share/uv/python/`, queryable.
+     Result: `cpython-3.14.7-linux-x86_64-gnu` provisioned into
+     `~/.local/share/uv/python/`, queryable.
 - **(b) `uv_virtualenv::create_venv(location, interpreter, Prompt::Static(..),
-  system_site_packages, OnExisting::Allow, relocatable, Seed::Disabled,
-  upgradeable)`** (bool order verified against vendored lib.rs:80) →
+system_site_packages, OnExisting::Allow, relocatable, Seed::Disabled,
+upgradeable)`** (bool order verified against vendored lib.rs:80) →
   `PythonEnvironment` (`.root()`, `.python_executable()`, `.scripts()`).
-- **(c) `uv_installer::Installer::new(&PythonEnvironment, Preview::default())
-  .with_cache(&cache).with_installer_metadata(false).install_blocking(dists)`
+- \*\*(c) `uv_installer::Installer::new(&PythonEnvironment, Preview::default())
+.with_cache(&cache).with_installer_metadata(false).install_blocking(dists)`
   with `CachedDist::Url(CachedDirectUrlDist { filename, url: VerbatimParsedUrl,
-  path, hashes: HashDigests, cache_info, build_info })` built from the PyPI
+path, hashes: HashDigests, cache_info, build_info })` built from the PyPI
   JSON API wheel entry (reqwest direct GET — uv-client exposes no plain-GET).
 - Managed pythons present after the run: 3.14.7, 3.12.13, 3.8.20.
 
@@ -162,7 +162,7 @@ All call sites live in `u50_style/examples/uv_spike.rs` (the reference
 implementation for Phase 1's setup.rs rewrite):
 
 - `uv_python::downloads::{ManagedPythonDownloadList, PythonDownloadRequest,
-  DownloadResult}` — `new(&BaseClientBuilder, &Cache, None)`, `.find()`,
+DownloadResult}` — `new(&BaseClientBuilder, &Cache, None)`, `.find()`,
   `fetch_with_retry(...)`.
 - `uv_python::managed::{ManagedPythonInstallations, ManagedPythonInstallation}`
   — `from_settings`, `init`, `lock`, `root`, `scratch`, `new`, `executable`.
@@ -218,7 +218,7 @@ Phase 1's setup.rs rewrite.
   dropped two stale `#[allow(clippy::too_many_lines)]` attributes in
   `setup.rs` (clippy -Dwarnings green without them); corrected the stale
   "parallel pip installer … PATH→cache tool resolution" description in the
-  root `AGENTS.md`. Dependency audit: all uv-*/fs-err/reqwest/indicatif/
+  root `AGENTS.md`. Dependency audit: all uv-\*/fs-err/reqwest/indicatif/
   tokio deps confirmed in use (reqwest only by `examples/uv_spike.rs`).
   Remnant grep for `python/bin` / `PYTHONPATH` / `python3 -m pip` /
   `pip download` / PATH-first / pip `--target`: clean in src and current

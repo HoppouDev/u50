@@ -42,7 +42,7 @@ What each gate catches:
 - **0** — clean: no violations; or plain `--fix` succeeded; or a check that
   found nothing to do.
 - **1** — violations found; or a `--fix --dry-run` that would fix at least
-  one file (this is the *success* signal for dry runs).
+  one file (this is the _success_ signal for dry runs).
 - **2** — usage error (clap flag conflicts, unknown flags).
 - **3** — per-file or infrastructure error (unreadable file, unsupported
   extension, missing/failing formatter, provisioning failure). Takes
@@ -71,7 +71,6 @@ env -i HOME="$HOME" XDG_CACHE_HOME="$CACHE" PATH=/tmp/u50smokebin \\
 Each line is a single `env -i` invocation: there is no subshell that could
 escape the minimal environment, the bare restricted `PATH` carries only the
 `u50` symlink, and `$CACHE` pins the empty cache across invocations.
-
 
 Verified property: a fake same-named binary planted on `PATH` is never used —
 resolution is cache-only, and an empty cache auto-provisions exactly the

@@ -3,20 +3,20 @@
 The golden fixtures under `u50_style/tests/fixtures/<lang>/` are derived from
 real-world open-source projects. Each `dirty.<ext>` was produced by minifying
 (compacting) the upstream source; each `expected.<ext>` is the fixed point of
-`style50 -o format` (see the *Golden fixture tests* section in
+`style50 -o format` (see the _Golden fixture tests_ section in
 `u50_style/AGENTS.md` for the generation procedure). Upstream licenses are
 reproduced verbatim below the per-fixture details.
 
-| Fixture | Upstream project | Upstream source | License | Minification |
-|---|---|---|---|---|
-| `c/dirty.c` | [cJSON](https://github.com/DaveGamble/cJSON) | `cJSON.c` | MIT (SPDX: `MIT`) — Copyright (c) 2009-2017 Dave Gamble and cJSON contributors | `/* */` comments stripped, whitespace-only lines removed, non-preprocessor lines joined |
-| `cpp/dirty.cpp` | [JsonCpp](https://github.com/open-source-parsers/jsoncpp) | `src/lib_json/json_reader.cpp` | MIT (SPDX: `MIT`) — Baptiste Lepilleur and The JsonCpp Authors | `//` and `/* */` comments stripped, leading license header preserved, lines joined |
-| `java/dirty.java` | [Guava](https://github.com/google/guava) | `guava/src/com/google/common/collect/ImmutableList.java` | Apache-2.0 (SPDX: `Apache-2.0`) — Copyright (C) 2007 The Guava Authors | comments stripped, Apache license header preserved, lines joined |
-| `py/dirty.py` | [Werkzeug](https://github.com/pallets/werkzeug) | `src/werkzeug/routing/map.py` at tag `3.0.3` | BSD-3-Clause (SPDX: `BSD-3-Clause`) — Copyright 2007 Pallets | comment lines and blank lines removed (AST-validated output) |
-| `js/dirty.js` | [jQuery](https://github.com/jquery/jquery) | official `jquery.min.js` v3.7.1 | MIT (SPDX: `MIT`) — Copyright OpenJS Foundation and other contributors | upstream-published minified build used as-is |
-| `css/dirty.css` | [normalize.css](https://github.com/necolas/normalize.css) | `normalize.css` | MIT (SPDX: `MIT`) — Copyright © Nicolas Gallagher and Jonathan Neal | comments stripped, whitespace collapsed to single spaces |
-| `html/dirty.html` | [Bootstrap](https://github.com/twbs/bootstrap) | Astro-built `docs/5.3/examples/dashboard/` page | MIT (SPDX: `MIT`) — Copyright (c) 2011-2026 The Bootstrap Authors | leading indentation stripped from alternating lines (djhtml restores it) |
-| `sql/dirty.sql` | [Supabase](https://github.com/supabase/supabase) | migrations for the `nimbus`/`page` tables | Apache-2.0 (SPDX: `Apache-2.0`) — Supabase, Inc. | `--` comments stripped, whitespace collapsed to single spaces |
+| Fixture           | Upstream project                                          | Upstream source                                          | License                                                                        | Minification                                                                            |
+| ----------------- | --------------------------------------------------------- | -------------------------------------------------------- | ------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------- |
+| `c/dirty.c`       | [cJSON](https://github.com/DaveGamble/cJSON)              | `cJSON.c`                                                | MIT (SPDX: `MIT`) — Copyright (c) 2009-2017 Dave Gamble and cJSON contributors | `/* */` comments stripped, whitespace-only lines removed, non-preprocessor lines joined |
+| `cpp/dirty.cpp`   | [JsonCpp](https://github.com/open-source-parsers/jsoncpp) | `src/lib_json/json_reader.cpp`                           | MIT (SPDX: `MIT`) — Baptiste Lepilleur and The JsonCpp Authors                 | `//` and `/* */` comments stripped, leading license header preserved, lines joined      |
+| `java/dirty.java` | [Guava](https://github.com/google/guava)                  | `guava/src/com/google/common/collect/ImmutableList.java` | Apache-2.0 (SPDX: `Apache-2.0`) — Copyright (C) 2007 The Guava Authors         | comments stripped, Apache license header preserved, lines joined                        |
+| `py/dirty.py`     | [Werkzeug](https://github.com/pallets/werkzeug)           | `src/werkzeug/routing/map.py` at tag `3.0.3`             | BSD-3-Clause (SPDX: `BSD-3-Clause`) — Copyright 2007 Pallets                   | comment lines and blank lines removed (AST-validated output)                            |
+| `js/dirty.js`     | [jQuery](https://github.com/jquery/jquery)                | official `jquery.min.js` v3.7.1                          | MIT (SPDX: `MIT`) — Copyright OpenJS Foundation and other contributors         | upstream-published minified build used as-is                                            |
+| `css/dirty.css`   | [normalize.css](https://github.com/necolas/normalize.css) | `normalize.css`                                          | MIT (SPDX: `MIT`) — Copyright © Nicolas Gallagher and Jonathan Neal            | comments stripped, whitespace collapsed to single spaces                                |
+| `html/dirty.html` | [Bootstrap](https://github.com/twbs/bootstrap)            | Astro-built `docs/5.3/examples/dashboard/` page          | MIT (SPDX: `MIT`) — Copyright (c) 2011-2026 The Bootstrap Authors              | leading indentation stripped from alternating lines (djhtml restores it)                |
+| `sql/dirty.sql`   | [Supabase](https://github.com/supabase/supabase)          | migrations for the `nimbus`/`page` tables                | Apache-2.0 (SPDX: `Apache-2.0`) — Supabase, Inc.                               | `--` comments stripped, whitespace collapsed to single spaces                           |
 
 The minification is deterministic whitespace/comment removal only; no code
 semantics were altered. All fixture content remains subject to the upstream

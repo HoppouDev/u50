@@ -91,9 +91,9 @@ enum Command {
 
 ## Exit codes (unified)
 
-| Code | Meaning |
-| ---- | ------- |
-| 0 | success (all checks passed / style clean / submitted / style fixed or already clean) |
-| 1 | checks failed or style violations found; `style --fix --dry-run` with at least one would-fix |
-| 2 | usage error |
-| 3 | any per-file error (unreadable file, unsupported type, formatter/write failure); provisioning failure (`u50 --setup`) |
+| Code | Meaning                                                                                                               |
+| ---- | --------------------------------------------------------------------------------------------------------------------- |
+| 0    | success (all checks passed / style clean / submitted / style fixed or already clean)                                  |
+| 1    | checks failed or style violations found; `style --fix --dry-run` with at least one would-fix                          |
+| 2    | usage error                                                                                                           |
+| 3    | any per-file error (unreadable file, unsupported type, formatter/write failure); provisioning failure (`u50 --setup`) |

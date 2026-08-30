@@ -6,45 +6,46 @@
 
 ## 1. Current state
 
-| Dimension | Score | Status |
-|---|---|---|
-| Context & Guides | 19/20 (95%) | One gap: CTX-07 |
-| Skills & Commands | 0/17 (0%) | All four checks failing |
-| Hooks & Guardrails | 0/14 (0%) | All five checks failing |
-| Sensors & Feedback | 15/20 (75%) | One gap: SNS-02 |
-| CI Feedback | 11/14 (79%) | One gap: CI-04 |
-| Hygiene & Safety | 20/23 (87%) | One gap: HYG-08 (bonus) |
+| Dimension          | Score       | Status                  |
+| ------------------ | ----------- | ----------------------- |
+| Context & Guides   | 19/20 (95%) | One gap: CTX-07         |
+| Skills & Commands  | 0/17 (0%)   | All four checks failing |
+| Hooks & Guardrails | 0/14 (0%)   | All five checks failing |
+| Sensors & Feedback | 15/20 (75%) | One gap: SNS-02         |
+| CI Feedback        | 11/14 (79%) | One gap: CI-04          |
+| Hygiene & Safety   | 20/23 (87%) | One gap: HYG-08 (bonus) |
 
 **L2 gate:** skills ≥ 30% (of 17) or hooks ≥ 30% (of 14).
+
 - Skills: need ≥ 5.1 pts → e.g. SKL-01 (4) + SKL-04 (2) = 6 pts crosses the gate.
 - Hooks: need ≥ 4.2 pts → HKS-01 (4) alone is 28.6% (not enough); HKS-01 + HKS-02 (6) crosses it.
 
 ## 2. Failing checks (43 pts available)
 
-| Check | Pts | Fix (per guide) |
-|---|---|---|
-| CTX-07 README present | 1 | Add a root `README.md` — first orientation doc for humans and agents. |
-| SKL-01 at least one skill | 4 | `SKILL.md` under `.cursor/skills/<name>/`, `.claude/skills/<name>/`, or `.agents/skills/<name>/`. |
-| SKL-02 skill name + description | 3 | Frontmatter with `name:` and `description:` on every skill. |
-| SKL-03 explicit workflows/commands | 3 | Files under `.cursor/commands/`, `.agents/workflows/`, `.claude/commands/`, etc. |
-| SKL-04 trigger-worthy descriptions | 2 | Descriptions ≥ 40 chars, written as trigger conditions ("Use when…"). |
-| AGT-01 custom subagent | 3 | Subagent file under `.cursor/agents/`, `.claude/agents/`, or `.opencode/agents/`. |
-| AGT-02 subagent name + description | 2 | `name:` and `description:` frontmatter on every subagent. |
-| HKS-01 hooks config valid JSON | 4 | `.cursor/hooks.json` or `.claude/settings.json` (`hooks` key), parses, non-empty. |
-| HKS-02 structurally valid events | 2 | Non-empty event map, valid handlers, required vendor metadata (e.g. Cursor `version`). |
-| HKS-03 gate hook | 4 | `PreToolUse` (Claude Code) or `beforeShellExecution`/`beforeMCPExecution`/`preToolUse` (Cursor) returning allow/deny/ask for destructive ops. |
-| HKS-04 feedback hook | 2 | `PostToolUse` (Claude Code) or `afterFileEdit`/`postToolUse` (Cursor) — e.g. format-and-lint on edit. |
-| HKS-05 hook scripts committed | 2 | Every repo-local path in command handlers resolves to a committed file. |
-| SNS-02 linter configured | 5 | eslint/biome, ruff, golangci-lint, rubocop, **clippy.toml**, or equivalent. |
-| CI-04 pre-commit checks | 3 | husky + lint-staged, `pre-commit`, or lefthook. |
-| HYG-08 MCP env interpolation | 3 | Bonus check; needs a valid MCP config with `${ENV_VAR}` for credentials. No MCP setup → earns nothing (same as now). |
+| Check                              | Pts | Fix (per guide)                                                                                                                               |
+| ---------------------------------- | --- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| CTX-07 README present              | 1   | Add a root `README.md` — first orientation doc for humans and agents.                                                                         |
+| SKL-01 at least one skill          | 4   | `SKILL.md` under `.cursor/skills/<name>/`, `.claude/skills/<name>/`, or `.agents/skills/<name>/`.                                             |
+| SKL-02 skill name + description    | 3   | Frontmatter with `name:` and `description:` on every skill.                                                                                   |
+| SKL-03 explicit workflows/commands | 3   | Files under `.cursor/commands/`, `.agents/workflows/`, `.claude/commands/`, etc.                                                              |
+| SKL-04 trigger-worthy descriptions | 2   | Descriptions ≥ 40 chars, written as trigger conditions ("Use when…").                                                                         |
+| AGT-01 custom subagent             | 3   | Subagent file under `.cursor/agents/`, `.claude/agents/`, or `.opencode/agents/`.                                                             |
+| AGT-02 subagent name + description | 2   | `name:` and `description:` frontmatter on every subagent.                                                                                     |
+| HKS-01 hooks config valid JSON     | 4   | `.cursor/hooks.json` or `.claude/settings.json` (`hooks` key), parses, non-empty.                                                             |
+| HKS-02 structurally valid events   | 2   | Non-empty event map, valid handlers, required vendor metadata (e.g. Cursor `version`).                                                        |
+| HKS-03 gate hook                   | 4   | `PreToolUse` (Claude Code) or `beforeShellExecution`/`beforeMCPExecution`/`preToolUse` (Cursor) returning allow/deny/ask for destructive ops. |
+| HKS-04 feedback hook               | 2   | `PostToolUse` (Claude Code) or `afterFileEdit`/`postToolUse` (Cursor) — e.g. format-and-lint on edit.                                         |
+| HKS-05 hook scripts committed      | 2   | Every repo-local path in command handlers resolves to a committed file.                                                                       |
+| SNS-02 linter configured           | 5   | eslint/biome, ruff, golangci-lint, rubocop, **clippy.toml**, or equivalent.                                                                   |
+| CI-04 pre-commit checks            | 3   | husky + lint-staged, `pre-commit`, or lefthook.                                                                                               |
+| HYG-08 MCP env interpolation       | 3   | Bonus check; needs a valid MCP config with `${ENV_VAR}` for credentials. No MCP setup → earns nothing (same as now).                          |
 
 ## 3. Phased plan
 
 ### Phase 1 — Quick wins (6 pts, ~1 h)
 
 1. **CTX-07 (1):** root `README.md` — project purpose, build/test/lint commands, pointer to `AGENTS.md` and the per-crate docs.
-2. **SNS-02 (5):** root `clippy.toml` capturing the workspace's pedantic lint policy. CI already runs `cargo clippy -Dwarnings` (CI-03 ✅); this makes the linter *configuration* discoverable. [I] The report lists `clippy.toml` as a recognized linter config; verify by re-running the scanner.
+2. **SNS-02 (5):** root `clippy.toml` capturing the workspace's pedantic lint policy. CI already runs `cargo clippy -Dwarnings` (CI-03 ✅); this makes the linter _configuration_ discoverable. [I] The report lists `clippy.toml` as a recognized linter config; verify by re-running the scanner.
 
 ### Phase 2 — Skills & workflows (12 pts, ~½ day) → **L2 gate crossed**
 

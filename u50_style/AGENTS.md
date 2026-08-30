@@ -33,13 +33,13 @@ Both `run_with` and `fix_with` call `expand_paths(&req.files)` before processing
 - The CLI exposes this as `u50 style --fix [--dry-run]`; `--dry-run` requires `--fix`, and `--fix` conflicts with `-o/--output` (fix output is the fixed/already-clean lines or the dry-run diff, not a chosen render mode).
 - **Adaptive diff strategy** (`render::select_algorithm`): diff rendering defaults to Myers but engages the Lcs algorithm for large, low-overlap pairs — inputs where the larger side has ≥ 1024 lines **and** the distinct shared lines number fewer than `max_lines / 1000` (a `HashSet` intersection probe, linear). Measured (release, unified render, `examples/bench_diff.rs`):
 
-  | input | Myers | Lcs |
-  | --- | --- | --- |
-  | golden 2.5k real dirty→expected (26 distinct common) | 11.5ms | 0.57ms |
-  | 7.5k wholly-dirty (0 common) | 509.6ms | 205.7ms |
-  | 60k wholly-dirty (0 common) | 32.21s | 13.14s |
-  | 60k, 28 distinct common (earlier build) | 32.5s | 12.9s |
-  | 7.5k, 8 distinct common (earlier build) | ~1s | ~3s (collapse) |
+  | input                                                | Myers   | Lcs            |
+  | ---------------------------------------------------- | ------- | -------------- |
+  | golden 2.5k real dirty→expected (26 distinct common) | 11.5ms  | 0.57ms         |
+  | 7.5k wholly-dirty (0 common)                         | 509.6ms | 205.7ms        |
+  | 60k wholly-dirty (0 common)                          | 32.21s  | 13.14s         |
+  | 60k, 28 distinct common (earlier build)              | 32.5s   | 12.9s          |
+  | 7.5k, 8 distinct common (earlier build)              | ~1s     | ~3s (collapse) |
 
   The 1000x density multiplier is a **measured heuristic**, not a constant with first-principles meaning: the Lcs→Myers crossover lies between the 8-common@7.5k collapse and the 28-common@60k win, and `cargo run --release -p u50_style --example bench_diff` records the full matrix behind it. Patience was also measured and is worse than both on wholly-dirty input (1.09s @7.5k, 69.2s @60k). Note: outputs of `bench_diff` revisions printed before this note had the `patience`/`lcs` header labels swapped relative to the measured cell order `[Myers, Lcs, Patience]` (fixed in the harness; the algorithm attribution above is verified by a one-off probe: 7.5k wholly-dirty → Myers 518ms / Lcs 186ms / Patience 1.35s). The strategy is **display-only**: formatter results and clean/dirty decisions are unaffected; student-scale files and the committed goldens render sub-second either way.
 
@@ -47,16 +47,16 @@ Both `run_with` and `fix_with` call `expand_paths(&req.files)` before processing
 
 All 8 languages of **style50 3.0.0** (per `style50 -E` → `[c, h, cpp, hpp, py, js, java, html, css, sql]`):
 
-| Language | Extensions | Backend tool | Install hint |
-| --- | --- | --- | --- |
-| C | c, h | `clang-format` (>= 14) | auto-provisioned by u50 on first use |
-| C++ | cpp, hpp | `clang-format` (>= 14) | auto-provisioned by u50 on first use |
-| Java | java | `clang-format` (>= 14) | auto-provisioned by u50 on first use |
-| Python | py | `autopep8` | auto-provisioned by u50 on first use |
-| JavaScript | js | `js-beautify` | auto-provisioned by u50 on first use |
-| HTML | html | `djhtml` | auto-provisioned by u50 on first use |
-| CSS | css | `css-beautify` | auto-provisioned by u50 on first use |
-| SQL | sql | `sqlformat` | auto-provisioned by u50 on first use |
+| Language   | Extensions | Backend tool           | Install hint                         |
+| ---------- | ---------- | ---------------------- | ------------------------------------ |
+| C          | c, h       | `clang-format` (>= 14) | auto-provisioned by u50 on first use |
+| C++        | cpp, hpp   | `clang-format` (>= 14) | auto-provisioned by u50 on first use |
+| Java       | java       | `clang-format` (>= 14) | auto-provisioned by u50 on first use |
+| Python     | py         | `autopep8`             | auto-provisioned by u50 on first use |
+| JavaScript | js         | `js-beautify`          | auto-provisioned by u50 on first use |
+| HTML       | html       | `djhtml`               | auto-provisioned by u50 on first use |
+| CSS        | css        | `css-beautify`         | auto-provisioned by u50 on first use |
+| SQL        | sql        | `sqlformat`            | auto-provisioned by u50 on first use |
 
 Per-tool options (mirroring the original's `languages.py` option values; flag names verified against the installed CLIs):
 
@@ -275,7 +275,7 @@ invariants **by construction**:
 
 1. Start from the minified upstream source `dirty0`.
 2. Iterate `X_{i+1} := style50 -o format X_i` (up to 25 passes) until `X_{i+1}
-   == X_i` byte-equal. The converged `F := X_i` becomes `expected` — a fixed
+== X_i` byte-equal. The converged `F := X_i` becomes `expected` — a fixed
    point, so `format(expected) == expected` holds by definition.
 3. Set `dirty := X_{n-1}`, the iterate immediately before convergence, so
    `format(dirty) == F == expected` holds by construction. For languages

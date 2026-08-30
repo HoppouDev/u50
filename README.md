@@ -4,7 +4,7 @@
 
 # u50
 
-*One binary for CS50 — check, style, and submit.*
+_One binary for CS50 — check, style, and submit._
 
 [![CI](https://github.com/HoppouDev/u50/actions/workflows/rust.yml/badge.svg)](https://github.com/HoppouDev/u50/actions/workflows/rust.yml)
 [![License: GPLv3](https://img.shields.io/badge/license-GPLv3-blue.svg)](LICENSE.md)
@@ -68,12 +68,12 @@ Example output (`-o unified`):
 
 ## Exit codes
 
-| Code | Meaning |
-| --- | --- |
-| 0 | Clean (no violations, fix succeeded) |
-| 1 | Violations found / dry run reported would-fix |
-| 2 | Usage error |
-| 3 | Per-file or infrastructure error (unreadable file, unsupported extension, missing or failing formatter, provisioning failure) |
+| Code | Meaning                                                                                                                       |
+| ---- | ----------------------------------------------------------------------------------------------------------------------------- |
+| 0    | Clean (no violations, fix succeeded)                                                                                          |
+| 1    | Violations found / dry run reported would-fix                                                                                 |
+| 2    | Usage error                                                                                                                   |
+| 3    | Per-file or infrastructure error (unreadable file, unsupported extension, missing or failing formatter, provisioning failure) |
 
 ## Development
 
