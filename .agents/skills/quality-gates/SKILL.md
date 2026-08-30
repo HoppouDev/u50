@@ -35,7 +35,7 @@ What each gate catches:
    style50-oracle fixtures. Runs only when `U50_STYLE_GOLDEN=1` is set AND
    the backing tool is found in the u50 style cache (cache-only resolution;
    the system `PATH` is never consulted). If a language prints `skip`, run
-   `cargo run --bin u50 -- style --setup` once and re-run.
+   `cargo run --bin u50 -- --setup` once and re-run.
 
 ## Exit-code semantics (u50 style)
 

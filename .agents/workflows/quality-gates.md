@@ -32,5 +32,5 @@ gh run watch                        # or the Actions page — CI must finish gre
 ```
 
 If gate 5 reports `skip` per language, the cache lacks the backend:
-`cargo run --bin u50 -- style --setup`, then re-run. Full details and the
+`cargo run --bin u50 -- --setup`, then re-run. Full details and the
 provisioning smoke-test: `.agents/skills/quality-gates/SKILL.md`.
