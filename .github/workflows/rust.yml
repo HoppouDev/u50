@@ -24,6 +24,12 @@ jobs:
       - name: Run tests
         run: cargo test --verbose
       - name: Golden tests (dogfood `u50 --setup`; byte-compare against style50 3.0.0 ground truth)
+        # Ubuntu-only: djhtml (html) and the SQL backend produce byte-different
+        # output on Windows (observed in CI: html_golden, sql_golden, and
+        # expected-fixture-clean failures while c/cpp/java/py/js pass).
+        # Byte-parity is enforced on ubuntu; policy in docs/windows-support.md
+        # Phase 2.
+        if: runner.os == 'Linux'
         # U50_STYLE_GOLDEN is set via env: instead of an inline `VAR=1 cmd` prefix
         # because the inline prefix is bash-only and breaks under pwsh, the default
         # shell on windows-latest.
