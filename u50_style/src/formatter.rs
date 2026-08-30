@@ -32,40 +32,106 @@ pub trait Formatter {
 /// u50 NEVER resolves its BUILT-IN formatter tools through the system
 /// `PATH`: bare tool names are looked up in the cache only, and missing
 /// backends are downloaded into it on first use. [`ToolOrigin::Path`]
-/// therefore only ever applies to commands that themselves contain a
-/// `/` — explicit user-provided paths.
+/// therefore only ever applies to explicit user-provided paths (see
+/// [`is_explicit_path`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolOrigin {
-    /// An explicit path command (contains `/`), used as-is.
+    /// An explicit path command (see [`is_explicit_path`]), used as-is.
     Path,
     /// Found in the u50 style cache (`~/.cache/u50/style50`).
     Cache,
 }
 
-/// The u50 style cache root: `$XDG_CACHE_HOME` or `~/.cache`, then
-/// `u50/style50`.
-#[must_use]
-pub(crate) fn cache_dir() -> PathBuf {
-    let base = std::env::var_os("XDG_CACHE_HOME")
+/// The u50 style cache root: the absolute `$XDG_CACHE_HOME` override
+/// when set (all platforms), else the platform cache base
+/// ([`cache_base`]), then `u50/style50`.
+///
+/// # Errors
+/// Returns an error when no cache base is determinable: no absolute
+/// `$XDG_CACHE_HOME`, and no `$HOME` on unix or `%LOCALAPPDATA%` /
+/// `%USERPROFILE%` on Windows. u50 never falls back to a relative
+/// `.cache`, which would silently scatter the cache across working
+/// directories.
+pub(crate) fn cache_dir() -> anyhow::Result<PathBuf> {
+    if let Some(xdg) = std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+    {
+        return Ok(xdg.join("u50").join("style50"));
+    }
+    let base = cache_base().ok_or_else(|| {
+        anyhow::anyhow!(if cfg!(windows) {
+            "cannot determine the u50 style cache directory: set \
+             %LOCALAPPDATA% or %USERPROFILE% (or an absolute \
+             $XDG_CACHE_HOME)"
+        } else {
+            "cannot determine the u50 style cache directory: set \
+             $HOME (or an absolute $XDG_CACHE_HOME)"
+        })
+    })?;
+    Ok(base.join("u50").join("style50"))
+}
+
+/// The platform cache base (after the `$XDG_CACHE_HOME` override):
+/// `$HOME/.cache` on unix, `%LOCALAPPDATA%` (or
+/// `%USERPROFILE%\AppData\Local`) on Windows.
+#[cfg(unix)]
+fn cache_base() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .map(|home| home.join(".cache"))
+}
+
+#[cfg(windows)]
+fn cache_base() -> Option<PathBuf> {
+    std::env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
         .or_else(|| {
-            std::env::var_os("HOME")
+            std::env::var_os("USERPROFILE")
                 .map(PathBuf::from)
-                .map(|h| h.join(".cache"))
+                .filter(|p| p.is_absolute())
+                .map(|profile| profile.join("AppData").join("Local"))
         })
-        .unwrap_or_else(|| PathBuf::from(".cache"));
-    base.join("u50").join("style50")
 }
 
-/// The directory holding binaries installed by `u50 --setup`
-/// (the uv-managed venv `<cache>/venv` puts console scripts in `bin/`).
+/// The `bin` directory of a uv-managed venv: `Scripts` on Windows
+/// (where console scripts are installed as `.exe` shims), `bin`
+/// elsewhere (POSIX shebang scripts).
 #[must_use]
-pub(crate) fn cache_bin_dir() -> PathBuf {
-    cache_dir().join("venv").join("bin")
+pub(crate) fn venv_bin_dir(venv: &Path) -> PathBuf {
+    if cfg!(windows) {
+        venv.join("Scripts")
+    } else {
+        venv.join("bin")
+    }
 }
 
-/// Whether `path` is an existing regular file with an execute bit.
+/// The file name the console script for `tool` is installed under in
+/// the venv bin dir: `tool.exe` on Windows, `tool` elsewhere.
+#[must_use]
+pub(crate) fn tool_file_name(tool: &str) -> String {
+    if cfg!(windows) {
+        format!("{tool}.exe")
+    } else {
+        tool.to_owned()
+    }
+}
+
+/// The directory holding binaries installed by `u50 --setup` (the
+/// uv-managed venv `<cache>/venv` puts console scripts in `bin/` —
+/// `Scripts\` with `.exe` shims on Windows; see [`venv_bin_dir`]).
+///
+/// # Errors
+/// Propagates [`cache_dir`] failures.
+pub(crate) fn cache_bin_dir() -> anyhow::Result<PathBuf> {
+    Ok(venv_bin_dir(&cache_dir()?.join("venv")))
+}
+
+/// Whether `path` is an existing regular file usable as a formatter
+/// tool: on unix it must carry an execute bit; Windows has no exec-bit
+/// model, so any existing regular file qualifies.
+#[cfg(unix)]
 fn is_executable_file(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     path.is_file()
@@ -74,20 +140,43 @@ fn is_executable_file(path: &Path) -> bool {
             .is_ok_and(|m| m.permissions().mode() & 0o111 != 0)
 }
 
-/// Resolves `tool` to its location, cache-only: a path containing `/` is
-/// an explicit path and is used as-is ([`ToolOrigin::Path`]); a bare
+#[cfg(windows)]
+fn is_executable_file(path: &Path) -> bool {
+    path.is_file()
+}
+
+/// Whether `tool` names an explicit path rather than a bare tool name:
+/// true when it contains either path separator, or parses as a path
+/// with a root or non-empty parent component (drive prefix, `..`, a
+/// subdirectory). Bare names (`clang-format`) stay cache-only on all
+/// platforms, so a hostile or unrelated same-named binary on `PATH`
+/// can never be picked up.
+fn is_explicit_path(tool: &str) -> bool {
+    if tool.contains('/') || tool.contains('\\') {
+        return true;
+    }
+    let path = Path::new(tool);
+    path.has_root()
+        || path
+            .parent()
+            .is_some_and(|parent| !parent.as_os_str().is_empty())
+}
+
+/// Resolves `tool` to its location, cache-only: an explicit path (see
+/// [`is_explicit_path`]) is used as-is ([`ToolOrigin::Path`]); a bare
 /// tool name is looked up ONLY in the u50 style cache bin dir (the
-/// `u50 --setup` / lazy auto-provision install location) — the
-/// system `PATH` is never consulted, so a hostile or unrelated
-/// same-named binary on `PATH` can never be picked up. Returns `None`
+/// `u50 --setup` / lazy auto-provision install location, with the
+/// platform console-script file name, see [`tool_file_name`]) — the
+/// system `PATH` is never consulted. Returns `None`
 /// when the tool is not in the cache (the caller may then auto-provision
-/// it; see [`Cs50Formatter::format`]).
+/// it; see [`Cs50Formatter::format`]) or when the cache directory
+/// cannot be determined ([`cache_dir`]).
 #[must_use]
 pub fn locate_tool(tool: &str) -> Option<(PathBuf, ToolOrigin)> {
-    if tool.contains('/') {
+    if is_explicit_path(tool) {
         return Some((PathBuf::from(tool), ToolOrigin::Path));
     }
-    let cached = cache_bin_dir().join(tool);
+    let cached = cache_bin_dir().ok()?.join(tool_file_name(tool));
     if is_executable_file(&cached) {
         return Some((cached, ToolOrigin::Cache));
     }

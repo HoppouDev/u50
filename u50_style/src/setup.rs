@@ -29,7 +29,7 @@ use uv_python::{Interpreter, PythonEnvironment, VersionRequest};
 use uv_redacted::DisplaySafeUrl;
 use uv_virtualenv::{OnExisting, Prompt, Seed, create_venv};
 
-use crate::formatter::{ToolOrigin, cache_dir, locate_tool};
+use crate::formatter::{ToolOrigin, cache_dir, locate_tool, tool_file_name, venv_bin_dir};
 use crate::language::Language;
 
 /// The managed `CPython` version provisioned by `--setup` for the cache
@@ -67,11 +67,15 @@ const TRANSITIVE_DEPS: &[(&str, &[&str])] = &[
     ("cssbeautifier", &["editorconfig", "six"]),
 ];
 
-/// Wheel platform-tag preference ranks: pure-Python beats manylinux
-/// (matching the target architecture), which beats a bare `linux_*` tag;
-/// anything else (musllinux, windows, macos, ...) is rejected.
+/// Wheel platform-tag preference ranks, per host: pure-Python (`any`)
+/// always wins. On unix hosts a matching-arch manylinux tag beats a bare
+/// `linux_*` tag; on Windows hosts the matching windows tag
+/// (`win_amd64`/`win_arm64` for the host arch, or `win32`) is the only
+/// installable platform rank. Foreign-platform tags are rejected on
+/// every host (musllinux, macos, linux-on-Windows, windows-on-unix, ...).
 const WHEEL_RANK_REJECT: u8 = 0;
 const WHEEL_RANK_LINUX: u8 = 1;
+const WHEEL_RANK_WINDOWS: u8 = 1;
 const WHEEL_RANK_MANYLINUX: u8 = 2;
 const WHEEL_RANK_PURE: u8 = 3;
 
@@ -139,8 +143,9 @@ fn wheel_specs(missing: &[(String, String)]) -> Vec<(String, Option<String>, Rol
     specs
 }
 
-/// Ranks a wheel filename by platform-tag preference ([`WHEEL_RANK_PURE`]
-/// is best, [`WHEEL_RANK_REJECT`] means not installable on this platform).
+/// Ranks a wheel filename by platform-tag preference for the host
+/// ([`WHEEL_RANK_PURE`] is best, [`WHEEL_RANK_REJECT`] means not
+/// installable on this platform).
 fn wheel_rank(filename: &str) -> u8 {
     let Some(platform_tag) = filename
         .rsplit_once('-')
@@ -150,6 +155,17 @@ fn wheel_rank(filename: &str) -> u8 {
     };
     if platform_tag == "any" {
         return WHEEL_RANK_PURE;
+    }
+    if std::env::consts::OS == "windows" {
+        let installable = matches!(
+            (std::env::consts::ARCH, platform_tag),
+            ("x86_64", "win_amd64") | ("aarch64", "win_arm64") | (_, "win32")
+        );
+        return if installable {
+            WHEEL_RANK_WINDOWS
+        } else {
+            WHEEL_RANK_REJECT
+        };
     }
     let arch = std::env::consts::ARCH;
     if platform_tag.starts_with("manylinux") && platform_tag.contains(arch) {
@@ -223,10 +239,11 @@ pub fn setup_missing() -> Result<()> {
         println!("all formatter backends are already available");
         return Ok(());
     }
+    let cache = cache_dir().context("resolve the u50 style cache directory")?;
     println!(
         "installing {} package(s) into {}",
         missing.len(),
-        cache_dir().display()
+        cache.display()
     );
     install_backends(&missing)
 }
@@ -249,7 +266,8 @@ fn install_backends(missing: &[(String, String)]) -> Result<()> {
     // synchronously); the uv provisioning path is async, so drive it on a
     // local runtime.
     let runtime = Runtime::new().context("tokio runtime")?;
-    let outcomes = runtime.block_on(provision_backends(&cache_dir(), missing))?;
+    let cache = cache_dir().context("resolve the u50 style cache directory")?;
+    let outcomes = runtime.block_on(provision_backends(&cache, missing))?;
 
     let mut any_failure = false;
     for outcome in &outcomes {
@@ -288,7 +306,8 @@ pub(crate) fn ensure_backend(tool: &str) -> Result<()> {
         .find(|&&language| language.required_tool() == Some(tool))
         .map(|language| language.pip_package())
         .with_context(|| format!("no known pip package provides tool `{tool}`"))?;
-    println!("installing 1 package(s) into {}", cache_dir().display());
+    let cache = cache_dir().context("resolve the u50 style cache directory")?;
+    println!("installing 1 package(s) into {}", cache.display());
     install_backends(&[(package.to_owned(), tool.to_owned())])
 }
 
@@ -452,8 +471,9 @@ async fn ensure_venv(
     client: &BaseClient,
 ) -> Result<PythonEnvironment> {
     let venv_path = cache_root.join("venv");
-    let python = venv_path.join("bin").join("python");
-    let python3 = venv_path.join("bin").join("python3");
+    let venv_bin = venv_bin_dir(&venv_path);
+    let python = venv_bin.join(tool_file_name("python"));
+    let python3 = venv_bin.join(tool_file_name("python3"));
     if !python.is_file() && !python3.is_file() {
         if venv_path.exists() {
             // A venv dir without interpreters is broken; recreate it.
@@ -937,17 +957,36 @@ mod tests {
     }
 
     #[test]
-    fn wheel_rank_prefers_pure_then_manylinux_then_linux_and_rejects_rest() {
+    fn wheel_rank_prefers_pure_then_the_host_platform_and_rejects_the_rest() {
         let arch = std::env::consts::ARCH;
+        let windows_host = std::env::consts::OS == "windows";
         let pure = "pkg-1.0-py3-none-any.whl".to_owned();
-        let manylinux = format!("pkg-1.0-cp314-cp314-manylinux_2_17_{arch}.whl");
+        let (host_platform, foreign) = if windows_host {
+            let tag = if arch == "aarch64" {
+                "win_arm64"
+            } else {
+                "win_amd64"
+            };
+            (
+                format!("pkg-1.0-cp314-cp314-{tag}.whl"),
+                format!("pkg-1.0-cp314-cp314-manylinux_2_17_{arch}.whl"),
+            )
+        } else {
+            (
+                format!("pkg-1.0-cp314-cp314-manylinux_2_17_{arch}.whl"),
+                "pkg-1.0-cp314-cp314-win_amd64.whl".to_owned(),
+            )
+        };
         let linux = format!("pkg-1.0-cp314-cp314-linux_{arch}.whl");
-        let win = "pkg-1.0-cp314-cp314-win_amd64.whl".to_owned();
         let musl = format!("pkg-1.0-cp314-cp314-musllinux_1_2_{arch}.whl");
-        assert!(wheel_rank(&pure) > wheel_rank(&manylinux));
-        assert!(wheel_rank(&manylinux) > wheel_rank(&linux));
-        assert!(wheel_rank(&linux) > WHEEL_RANK_REJECT);
-        assert_eq!(wheel_rank(&win), WHEEL_RANK_REJECT);
+        assert!(wheel_rank(&pure) > wheel_rank(&host_platform));
+        assert!(wheel_rank(&host_platform) > WHEEL_RANK_REJECT);
+        assert_eq!(wheel_rank(&foreign), WHEEL_RANK_REJECT);
+        if windows_host {
+            assert_eq!(wheel_rank(&linux), WHEEL_RANK_REJECT);
+        } else {
+            assert!(wheel_rank(&linux) > WHEEL_RANK_REJECT);
+        }
         assert_eq!(wheel_rank(&musl), WHEEL_RANK_REJECT);
     }
 

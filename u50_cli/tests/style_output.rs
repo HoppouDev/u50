@@ -5,34 +5,47 @@
 //! (`cat`, `tr`), so no external formatter is needed and the tests are
 //! deterministic and hermetic (`U50_STYLE_NO_PROVISION=1`).
 
-use std::path::Path;
-use std::path::PathBuf;
 use std::process::Command;
-use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering;
+
+#[cfg(unix)]
+use std::path::PathBuf;
+
+#[cfg(unix)]
+use std::path::Path;
+#[cfg(unix)]
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 const EXE: &str = env!("CARGO_BIN_EXE_u50");
+
+// The stub-backend tests below are Unix-only: their backend stubs are
+// `#!/bin/sh` scripts with exec bits (no Windows analogue; Windows spawn
+// coverage comes via the real provisioned venv).
 
 /// Identity backend stub (`cat`): the engine compares the *normalized*
 /// source against the formatter's output, and `cat` echoes the normalized
 /// source back unchanged — every non-empty file is clean under it.
+#[cfg(unix)]
 const CAT: &str = "#!/bin/sh\ncat\n";
 
 /// Byte-changing backend stub (`tr a-z A-Z`): lower-case files are dirty
 /// under it, upper-case files are clean.
+#[cfg(unix)]
 const UPPER: &str = "#!/bin/sh\nexec tr a-z A-Z\n";
 
 /// Per-test-instance counter, so parallel tests in one process never
 /// share a scratch cache directory.
+#[cfg(unix)]
 static STUB_SEQ: AtomicUsize = AtomicUsize::new(0);
 
 /// A scratch cache whose `venv/bin/autopep8` stub is `script` (mirroring
 /// the uv-managed venv layout `<cache>/u50/style50/venv/bin`). Removed on
 /// drop; every run is hermetic (`U50_STYLE_NO_PROVISION=1`).
+#[cfg(unix)]
 struct StubCache {
     root: PathBuf,
 }
 
+#[cfg(unix)]
 impl StubCache {
     fn new(script: &str) -> Self {
         use std::os::unix::fs::PermissionsExt;
@@ -74,6 +87,7 @@ impl StubCache {
     }
 }
 
+#[cfg(unix)]
 impl Drop for StubCache {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.root);
@@ -82,12 +96,14 @@ impl Drop for StubCache {
 
 /// Runs `u50 style <args> --color never` with a scratch cache stubbing the
 /// Python backend with `stub_script`.
+#[cfg(unix)]
 fn style(args: &[&str], stub_script: &str) -> (i32, String, String) {
     StubCache::new(stub_script).run(args, &[])
 }
 
 /// Writes `contents` to a fresh `.py` temp file named after the test
 /// (plus the pid, so parallel test binaries never collide).
+#[cfg(unix)]
 fn temp_py(test: &str, contents: &str) -> PathBuf {
     let path = std::env::temp_dir().join(format!(
         "u50_style_output_{}_{}.py",
@@ -99,6 +115,7 @@ fn temp_py(test: &str, contents: &str) -> PathBuf {
 }
 
 /// A `.py` temp path that does not exist (for the missing-file error path).
+#[cfg(unix)]
 fn missing_py(test: &str) -> PathBuf {
     let path = std::env::temp_dir().join(format!(
         "u50_style_output_missing_{}_{}.py",
@@ -109,15 +126,18 @@ fn missing_py(test: &str) -> PathBuf {
     path
 }
 
+#[cfg(unix)]
 fn read_back(path: &Path) -> String {
     std::fs::read_to_string(path).expect("read temp file back")
 }
 
+#[cfg(unix)]
 fn cleanup(path: &Path) {
     let _ = std::fs::remove_file(path);
 }
 
 #[test]
+#[cfg(unix)]
 fn run_mode_dirty_exits_1_and_prints_diff() {
     let path = temp_py("run_dirty", "x = 1\n");
     let args = [path.to_str().expect("utf-8 temp path")];
@@ -136,6 +156,7 @@ fn run_mode_dirty_exits_1_and_prints_diff() {
 }
 
 #[test]
+#[cfg(unix)]
 fn run_mode_clean_exits_0_and_prints_nothing() {
     let path = temp_py("run_clean", "x = 1\n");
     let args = [path.to_str().expect("utf-8 temp path")];
@@ -146,6 +167,7 @@ fn run_mode_clean_exits_0_and_prints_nothing() {
 }
 
 #[test]
+#[cfg(unix)]
 fn fix_rewrites_dirty_file_then_reports_already_clean() {
     let path = temp_py("fix", "x = 1\n");
     let p = path.to_str().expect("utf-8 temp path");
@@ -172,6 +194,7 @@ fn fix_rewrites_dirty_file_then_reports_already_clean() {
 }
 
 #[test]
+#[cfg(unix)]
 fn fix_dry_run_prints_status_lines_and_leaves_files_untouched() {
     let dirty = temp_py("fix_dry_run", "x = 1\n");
     let clean = temp_py("fix_dry_run_clean", "X = 1\n");
@@ -211,6 +234,7 @@ fn fix_dry_run_prints_status_lines_and_leaves_files_untouched() {
 }
 
 #[test]
+#[cfg(unix)]
 fn override_env_var_is_ignored() {
     // The `U50_STYLE_<LANG>` override feature was removed: the program
     // provisions and resolves its own formatters cache-only. Regression
@@ -240,6 +264,7 @@ fn override_env_var_is_ignored() {
 }
 
 #[test]
+#[cfg(unix)]
 fn cache_backends_spawn_when_path_lacks_the_formatter() {
     use std::os::unix::fs::PermissionsExt;
 
@@ -336,6 +361,7 @@ fn cache_backends_spawn_when_path_lacks_the_formatter() {
 }
 
 #[test]
+#[cfg(unix)]
 fn path_fake_is_never_used_for_formatter_tools() {
     use std::os::unix::fs::PermissionsExt;
 
@@ -393,6 +419,7 @@ fn path_fake_is_never_used_for_formatter_tools() {
 }
 
 #[test]
+#[cfg(unix)]
 fn missing_file_errors_to_stderr_while_valid_file_diff_still_prints() {
     let valid = temp_py("err_valid", "x = 1\n");
     let missing = missing_py("err_missing");
@@ -425,6 +452,7 @@ const BACKEND_TOOLS: [&str; 6] = [
 ];
 
 #[test]
+#[cfg(unix)]
 fn setup_succeeds_when_every_backend_is_already_cached() {
     use std::os::unix::fs::PermissionsExt;
 

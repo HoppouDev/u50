@@ -77,8 +77,11 @@ binary wheel), `autopep8`, `jsbeautifier` (bin `js-beautify`), `djhtml`,
 Mapping per language: C/C++/Java → clang-format, Python → autopep8,
 JavaScript → js-beautify, HTML → djhtml, CSS → css-beautify, SQL → sqlformat
 (`Language::pip_package`). u50 installs them **itself** into a uv-managed
-cache — `$XDG_CACHE_HOME`/`~/.cache` → `u50/style50` (paths built by
-`cache_dir()`; binaries in `cache_bin_dir()` = `<cache>/venv/bin`) — with no
+cache — `<base>` → `u50/style50`, where `<base>` is an absolute
+`$XDG_CACHE_HOME` (override, all platforms), else `$HOME/.cache` on Unix and
+`%LOCALAPPDATA%` (i.e. `%USERPROFILE%\AppData\Local`) on Windows (paths built
+by `cache_dir()`; binaries in `cache_bin_dir()` = `<cache>/venv/bin` on Unix,
+`<cache>\venv\Scripts` with `.exe` shims on Windows) — with no
 system pip, no distro packages, and no PATH reliance. Tool resolution is
 **cache-only** (see below), so a missing backend is simply one not yet in
 the cache, and such backends are auto-provisioned lazily on first use (see
@@ -134,10 +137,14 @@ per-package outcomes:
 2. Prints `installing N package(s) into <cache dir>`.
 3. Provisions a uv-managed CPython 3.14 and a venv at `<cache>/venv` when
    absent. The venv's console scripts carry absolute shebangs and are
-   self-contained, so no environment fixup is needed at spawn time.
+   self-contained, so no environment fixup is needed at spawn time. On
+   Windows they are `.exe` trampoline shims in `Scripts\` instead (no
+   shebangs), likewise self-contained.
 4. **Parallel downloads**: one task and one spinner per package (indicatif
    `MultiProgress`), each fetching the package's best wheel via the PyPI
-   JSON API. Backend versions are pinned (`PINNED_VERSIONS`, matching
+   JSON API — platform tags ranked for the host (pure-Python `any`, then
+   manylinux/`linux_*` on Unix or `win_amd64`/`win_arm64`/`win32` on
+   Windows); foreign-platform tags are rejected. Backend versions are pinned (`PINNED_VERSIONS`, matching
    [`tests/tool-versions.txt`](tests/tool-versions.txt) — the golden-fixture
    source of truth); each backend's hardcoded transitive runtime
    dependencies (`TRANSITIVE_DEPS`) are fetched alongside it, unpinned

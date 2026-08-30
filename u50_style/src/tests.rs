@@ -13,7 +13,7 @@ fn numbered_lines(prefix: &str, n: usize) -> String {
     }
     out
 }
-use crate::formatter::{cache_bin_dir, cache_dir, locate_tool, run_tool};
+use crate::formatter::{cache_bin_dir, cache_dir, locate_tool, run_tool, venv_bin_dir};
 use crate::render::{
     BOLD, GREEN, RED, RESET, json_document, render_character, render_split, render_unified,
     select_algorithm,
@@ -826,11 +826,12 @@ fn pip_package_maps_every_language_to_its_backend() {
 #[test]
 fn cache_dirs_are_nested_under_the_cache_root() {
     // Path construction only: the exact base depends on the environment
-    // (XDG_CACHE_HOME vs HOME/.cache), so the test asserts the suffix.
-    let root = cache_dir();
+    // (XDG_CACHE_HOME vs HOME/.cache vs %LOCALAPPDATA%), so the test
+    // asserts the suffix and the platform venv layout.
+    let root = cache_dir().expect("cache dir is determinable in tests");
     assert!(root.ends_with(std::path::Path::new("u50").join("style50")));
-    let bin = cache_bin_dir();
-    assert_eq!(bin, root.join("venv").join("bin"));
+    let bin = cache_bin_dir().expect("cache bin dir is determinable in tests");
+    assert_eq!(bin, venv_bin_dir(&root.join("venv")));
 }
 
 #[test]
