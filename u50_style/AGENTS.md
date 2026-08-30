@@ -43,6 +43,32 @@ Both `run_with` and `fix_with` call `expand_paths(&req.files)` before processing
 
   The 1000x density multiplier is a **measured heuristic**, not a constant with first-principles meaning: the Lcs→Myers crossover lies between the 8-common@7.5k collapse and the 28-common@60k win, and `cargo run --release -p u50_style --example bench_diff` records the full matrix behind it. Patience was also measured and is worse than both on wholly-dirty input (1.09s @7.5k, 69.2s @60k). Note: outputs of `bench_diff` revisions printed before this note had the `patience`/`lcs` header labels swapped relative to the measured cell order `[Myers, Lcs, Patience]` (fixed in the harness; the algorithm attribution above is verified by a one-off probe: 7.5k wholly-dirty → Myers 518ms / Lcs 186ms / Patience 1.35s). The strategy is **display-only**: formatter results and clean/dirty decisions are unaffected; student-scale files and the committed goldens render sub-second either way.
 
+## Renderer abstraction
+
+Rendering is decoupled from processing. `process_file` (engine-internal) only reads, normalizes, formats, and compares; its `FileResult` carries the normalized input (`source`) and the styled content (`formatted`) — never a rendered diff. The presentation is produced by a [`Renderer`]: a sink receiving the run as a stream of events, all with empty defaults so custom renderers override only what they need:
+
+1. `begin(&Request)` — once, before the first file;
+2. `file(&FileResult)` — once per successfully processed file (clean files may be skipped by text renderers);
+3. `file_error(&Path, &str)` — once per per-file error, in report order;
+4. `finish(&Report)` — once, after all files (final output such as a JSON document or HTML tail goes here).
+
+Entry points: `run(&Request)` (the CLI path) delegates to `run_with_renderer(&Request, &dyn Formatter, &mut dyn Renderer)` with the renderer chosen by `builtin_renderer(output, color, out: Box<dyn Write>)` — `JsonRenderer` for `Output::Json`, `ConsoleRenderer` (character/split/unified diff per dirty file, `error: <path>: <message>` lines to stderr) otherwise. `run()`'s stdout/stderr bytes are identical to the pre-abstraction output (JSON = document + trailing newline; text = concatenated per-file diffs). Custom sinks need only implement `Renderer` and call `run_with_renderer` — a minimal HTML example lives in the `Renderer` trait's doc comment (kept compiling as a doc test):
+
+```rust
+struct HtmlRenderer { buf: String }
+
+impl Renderer for HtmlRenderer {
+    fn begin(&mut self, _req: &Request) { self.buf.push_str("<html><body><table>\n"); }
+    fn file(&mut self, result: &FileResult) {
+        self.buf.push_str(&format!(
+            "<tr><td>{}</td><td>{}</td></tr>\n", result.path.display(), result.clean));
+    }
+    fn finish(&mut self, _report: &Report) { self.buf.push_str("</table></body></html>\n"); }
+}
+```
+
+The pure render functions (`render_character`/`render_split`/`render_unified`/`json_document`) are unchanged and remain the single source of diff bytes; the built-in renderers just route `FileResult.source`/`formatted` through them. In JSON, `patch` stays `null` for clean files (legacy schema); dirty files render the unified diff of source against formatted.
+
 ## Language support
 
 All 8 languages of **style50 3.0.0** (per `style50 -E` → `[c, h, cpp, hpp, py, js, java, html, css, sql]`):

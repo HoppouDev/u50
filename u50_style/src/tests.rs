@@ -74,6 +74,32 @@ impl Formatter for Failing {
     }
 }
 
+/// In-memory `Write` sink shared with a renderer (`Rc` clone, then read
+/// back after the renderer is dropped; `Box<dyn Write>` requires
+/// `'static`).
+#[derive(Default, Clone)]
+struct SharedBuf(std::rc::Rc<std::cell::RefCell<Vec<u8>>>);
+
+impl std::io::Write for SharedBuf {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.borrow_mut().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Renders a single result through the built-in renderer into a string
+/// (test helper; replaces the removed per-result `rendered` field).
+fn render_result(result: &FileResult, output: Output, color: bool) -> String {
+    let sink = SharedBuf::default();
+    let mut renderer = builtin_renderer(output, color, Box::new(sink.clone()));
+    renderer.file(result);
+    String::from_utf8(sink.0.borrow().clone()).expect("utf8 rendered output")
+}
+
 fn fix_request(files: Vec<PathBuf>) -> Request {
     Request {
         files,
@@ -147,7 +173,8 @@ fn clean_file_is_reported_clean() {
     assert!(!report.has_errors());
     assert_eq!(report.results.len(), 1);
     assert!(report.results[0].clean);
-    assert!(report.results[0].rendered.is_none());
+    let result = &report.results[0];
+    assert_eq!(result.source, result.formatted, "clean: styled == source");
     std::fs::remove_file(&path).expect("cleanup");
 }
 
@@ -161,7 +188,7 @@ fn dirty_file_unified_has_plus_and_minus_lines() {
     };
     let report = run_with(&req, &Reindent);
     assert!(!report.clean());
-    let rendered = report.results[0].rendered.clone().expect("rendered");
+    let rendered = render_result(&report.results[0], Output::Unified, false);
     assert!(rendered.lines().any(|l| l.starts_with('-')));
     assert!(rendered.lines().any(|l| l.starts_with('+')));
     assert!(rendered.contains(path.to_str().expect("utf8 path")));
@@ -177,7 +204,7 @@ fn character_output_has_plus_and_minus_lines() {
         color: false,
     };
     let report = run_with(&req, &Reindent);
-    let rendered = report.results[0].rendered.clone().expect("rendered");
+    let rendered = render_result(&report.results[0], Output::Character, false);
     assert!(rendered.lines().any(|l| l.starts_with('-')));
     assert!(rendered.lines().any(|l| l.starts_with('+')));
     std::fs::remove_file(&path).expect("cleanup");
@@ -192,7 +219,7 @@ fn split_output_has_column_separator() {
         color: false,
     };
     let report = run_with(&req, &Reindent);
-    let rendered = report.results[0].rendered.clone().expect("rendered");
+    let rendered = render_result(&report.results[0], Output::Split, false);
     assert!(rendered.contains(" | "));
     std::fs::remove_file(&path).expect("cleanup");
 }
@@ -236,15 +263,13 @@ fn json_document_multi_file_mixed_clean_and_dirty() {
     let dirty = FileResult {
         path: PathBuf::from("dirty.c"),
         clean: false,
-        rendered: Some(
-            "--- dirty.c\n+++ dirty.c\n@@ -1 +1 @@\n-return 0;\n+    return 0;\n".to_owned(),
-        ),
-        formatted: None,
+        source: Some("return 0;\n".to_owned()),
+        formatted: Some("    return 0;\n".to_owned()),
     };
     let clean = FileResult {
         path: PathBuf::from("clean.c"),
         clean: true,
-        rendered: None,
+        source: None,
         formatted: None,
     };
     let report = Report {
@@ -313,7 +338,8 @@ fn normalization_trailing_whitespace_is_not_flagged() {
     assert!(!report.has_errors());
     assert_eq!(report.results.len(), 1);
     assert!(report.results[0].clean);
-    assert!(report.results[0].rendered.is_none());
+    let result = &report.results[0];
+    assert_eq!(result.source, result.formatted, "clean: styled == source");
     std::fs::remove_file(&path).expect("cleanup");
 }
 
@@ -426,7 +452,7 @@ fn error_in_later_file_preserves_earlier_results() {
     assert!(report.has_errors());
     assert_eq!(report.results.len(), 1);
     assert!(!report.results[0].clean);
-    let rendered = report.results[0].rendered.clone().expect("rendered");
+    let rendered = render_result(&report.results[0], Output::Unified, false);
     assert!(rendered.lines().any(|l| l.starts_with('+')));
     assert_eq!(report.errors.len(), 1);
     assert_eq!(&report.errors[0].0, &missing);
@@ -502,7 +528,7 @@ fn fix_dry_run_leaves_file_unchanged() {
     // A dry run with a would-fix reports dirty (drives the exit-1 contract).
     assert!(!report.clean());
     assert!(!report.results[0].clean);
-    assert!(report.results[0].rendered.is_some());
+    assert!(report.results[0].formatted.is_some());
     assert_eq!(
         std::fs::read_to_string(&path).expect("read back"),
         original,
@@ -858,4 +884,159 @@ fn locate_tool_passes_through_explicit_paths() {
         assert_eq!(path.file_name().and_then(|n| n.to_str()), Some("sh"));
     }
     assert_eq!(locate_tool("u50-definitely-not-installed-xyz"), None);
+}
+
+/// Renderer that records the event sequence (test helper).
+struct Recorder {
+    events: Vec<String>,
+}
+
+impl Renderer for Recorder {
+    fn begin(&mut self, _req: &Request) {
+        self.events.push("begin".into());
+    }
+
+    fn file(&mut self, result: &FileResult) {
+        self.events.push(format!("file:{}", result.path.display()));
+    }
+
+    fn file_error(&mut self, path: &Path, message: &str) {
+        self.events
+            .push(format!("error:{}:{message}", path.display()));
+    }
+
+    fn finish(&mut self, _report: &Report) {
+        self.events.push("finish".into());
+    }
+}
+
+#[test]
+fn run_with_renderer_emits_events_in_order() {
+    let dirty = temp_file("evdirty.c", DIRTY_C);
+    let missing =
+        std::env::temp_dir().join(format!("u50_style_test_{}_evmissing.c", std::process::id()));
+    let req = fix_request(vec![dirty.clone(), missing.clone()]);
+    let mut recorder = Recorder { events: Vec::new() };
+    let report = run_with_renderer(&req, &Reindent, &mut recorder);
+    assert_eq!(report.results.len(), 1);
+    assert_eq!(report.errors.len(), 1);
+    assert_eq!(recorder.events.len(), 4);
+    assert_eq!(recorder.events[0], "begin");
+    assert_eq!(recorder.events[1], format!("file:{}", dirty.display()));
+    assert!(
+        recorder.events[2].starts_with(&format!("error:{}:could not read", missing.display())),
+        "unexpected file_error event: {:?}",
+        recorder.events[2]
+    );
+    assert_eq!(recorder.events[3], "finish");
+    std::fs::remove_file(&dirty).expect("cleanup");
+}
+
+#[test]
+fn run_with_renderer_empty_request_emits_only_begin_and_finish() {
+    let req = fix_request(vec![]);
+    let mut recorder = Recorder { events: Vec::new() };
+    run_with_renderer(&req, &Identity, &mut recorder);
+    assert_eq!(
+        recorder.events,
+        vec!["begin".to_owned(), "finish".to_owned()]
+    );
+}
+
+#[test]
+fn console_renderer_matches_direct_rendering() {
+    let source = "int main(void)\n{\nreturn 0;\n}\n";
+    let formatted = "    int main(void)\n    {\n    return 0;\n    }\n";
+    let result = FileResult {
+        path: PathBuf::from("x.c"),
+        clean: false,
+        source: Some(source.to_owned()),
+        formatted: Some(formatted.to_owned()),
+    };
+    for color in [false, true] {
+        assert_eq!(
+            render_result(&result, Output::Character, color),
+            render_character(source, formatted, color),
+            "character mode, color={color}"
+        );
+        assert_eq!(
+            render_result(&result, Output::Split, color),
+            render_split(source, formatted, color),
+            "split mode, color={color}"
+        );
+        assert_eq!(
+            render_result(&result, Output::Unified, color),
+            render_unified(source, formatted, Path::new("x.c")),
+            "unified mode, color={color}"
+        );
+    }
+}
+
+#[test]
+fn console_renderer_writes_nothing_for_clean_file() {
+    let result = FileResult {
+        path: PathBuf::from("x.c"),
+        clean: true,
+        source: Some("return 0;\n".to_owned()),
+        formatted: Some("return 0;\n".to_owned()),
+    };
+    for output in [Output::Character, Output::Split, Output::Unified] {
+        assert!(
+            render_result(&result, output, false).is_empty(),
+            "clean file must render nothing in {output:?}"
+        );
+    }
+}
+
+#[test]
+fn json_renderer_output_matches_json_document_plus_newline() {
+    let dirty = temp_file("jsonrender.c", DIRTY_C);
+    let req = Request {
+        files: vec![dirty.clone()],
+        output: Output::Json,
+        color: false,
+    };
+    let report = run_with(&req, &Reindent);
+    let sink = SharedBuf::default();
+    let mut renderer = builtin_renderer(Output::Json, false, Box::new(sink.clone()));
+    renderer.begin(&req);
+    for result in &report.results {
+        renderer.file(result);
+    }
+    for (path, message) in &report.errors {
+        renderer.file_error(path, message);
+    }
+    renderer.finish(&report);
+    // Byte-identical to the legacy `println!("{}", json_document(...))`.
+    let expected = format!("{}\n", json_document(&report));
+    assert_eq!(
+        String::from_utf8(sink.0.borrow().clone()).expect("utf8"),
+        expected
+    );
+    std::fs::remove_file(&dirty).expect("cleanup");
+}
+
+#[test]
+fn json_renderer_write_target_is_used_not_stdout() {
+    // The renderer must write to the injected sink, not stdout: feed it an
+    // in-memory buffer via builtin_renderer and check the bytes land there.
+    let report = Report {
+        results: vec![FileResult {
+            path: PathBuf::from("c.c"),
+            clean: true,
+            source: Some("int main(void)\n{\n    return 0;\n}\n".to_owned()),
+            formatted: Some("int main(void)\n{\n    return 0;\n}\n".to_owned()),
+        }],
+        errors: Vec::new(),
+    };
+    let sink = SharedBuf::default();
+    {
+        let mut renderer = builtin_renderer(Output::Json, false, Box::new(sink.clone()));
+        renderer.finish(&report);
+    }
+    let text = String::from_utf8(sink.0.borrow().clone()).expect("utf8");
+    assert!(text.ends_with('\n'));
+    let doc: serde_json::Value =
+        serde_json::from_str(text.trim_end()).expect("renderer wrote valid json");
+    assert_eq!(doc["files"][0]["patch"], serde_json::Value::Null);
 }
