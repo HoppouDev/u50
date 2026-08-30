@@ -11,7 +11,10 @@ env:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
 
     steps:
       - uses: actions/checkout@v4
@@ -21,12 +24,20 @@ jobs:
       - name: Run tests
         run: cargo test --verbose
       - name: Golden tests (dogfood `u50 --setup`; byte-compare against style50 3.0.0 ground truth)
+        # U50_STYLE_GOLDEN is set via env: instead of an inline `VAR=1 cmd` prefix
+        # because the inline prefix is bash-only and breaks under pwsh, the default
+        # shell on windows-latest.
+        env:
+          U50_STYLE_GOLDEN: "1"
         run: |
           cargo run -q --bin u50 -- --setup
-          U50_STYLE_GOLDEN=1 cargo test -p u50_style --test golden --release
+          cargo test -p u50_style --test golden --release
       - name: Format
         run: cargo fmt --all -- --check
       - name: Clippy
         run: cargo clippy --verbose --all-targets -- -Dwarnings
+      # Harness gate intentionally runs on both OSes: harness-score is pure JS
+      # (fs/path/os only, explicit win32 handling, no child_process, no native
+      # binaries) and npx is preinstalled on windows-latest runners.
       - name: Harness gate
         run: npx -y harness-score --min-level 3
