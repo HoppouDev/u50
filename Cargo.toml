@@ -11,6 +11,7 @@ tracing = "0.1"
 tracing-subscriber = "0.3"
 similar = { version = "2", features = ["inline"] }
 serde_json = "1"
+sha2 = "0.10"
 indicatif = "0.17"
 reqwest = { version = "0.13.4", default-features = false, features = [
     "json",

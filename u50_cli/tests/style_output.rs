@@ -365,3 +365,109 @@ fn missing_file_errors_to_stderr_while_valid_file_diff_still_prints() {
     );
     cleanup(&valid);
 }
+
+/// The six cache backends `--setup` checks (the required tools of the
+/// fixed language set; C/C++/Java share `clang-format`).
+const BACKEND_TOOLS: [&str; 6] = [
+    "clang-format",
+    "autopep8",
+    "js-beautify",
+    "djhtml",
+    "css-beautify",
+    "sqlformat",
+];
+
+#[test]
+fn setup_succeeds_when_every_backend_is_already_cached() {
+    use std::os::unix::fs::PermissionsExt;
+
+    // The `--setup` success path, hermetically: a scratch XDG_CACHE_HOME
+    // pre-seeded with the six fake backend scripts in the venv bin dir
+    // (same stub pattern as the cache-spawn test) makes every backend
+    // resolve from the cache, so `--setup` must be a no-op that prints
+    // the already-available line and exits 0 — no network, no install.
+    let root =
+        std::env::temp_dir().join(format!("u50_style_output_setup_ok_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let cache = root.join("cache");
+    let bin = cache.join("u50/style50/venv/bin");
+    std::fs::create_dir_all(&bin).expect("create cache bin");
+    for tool in BACKEND_TOOLS {
+        let stub = bin.join(tool);
+        std::fs::write(&stub, "#!/bin/sh\nexit 0\n").expect("write stub");
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod stub executable");
+    }
+
+    let out = Command::new(EXE)
+        .args(["style", "--setup"])
+        .args(["--color", "never"])
+        .env("XDG_CACHE_HOME", &cache)
+        .env("U50_STYLE_NO_PROVISION", "1")
+        .output()
+        .expect("spawn u50");
+    let code = out.status.code().unwrap_or(-1);
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+
+    assert_eq!(
+        code, 0,
+        "--setup with a full cache must exit 0 (stdout: {stdout}, stderr: {stderr})"
+    );
+    assert!(
+        stdout.contains("all formatter backends are already available"),
+        "expected the already-available line: {stdout}"
+    );
+    assert!(
+        !stdout.contains("installed:"),
+        "nothing may be installed: {stdout}"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn list_reports_missing_for_every_backend_when_cache_is_empty() {
+    // `--list` with a scratch EMPTY cache, provisioning disabled, and a
+    // formatter-free PATH: every language row must report `missing` (a
+    // listing is not an error, so exit 0), and no row may claim a cache
+    // hit. Deterministic regardless of the host's installed formatters.
+    let root = std::env::temp_dir().join(format!(
+        "u50_style_output_list_missing_{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    let cache = root.join("cache");
+    std::fs::create_dir_all(&cache).expect("create empty cache");
+    let bins = root.join("bins");
+    std::fs::create_dir_all(&bins).expect("create empty bins");
+    assert!(!BACKEND_TOOLS.iter().any(|tool| bins.join(tool).exists()));
+
+    let out = Command::new(EXE)
+        .args(["style", "--list"])
+        .args(["--color", "never"])
+        .env("XDG_CACHE_HOME", &cache)
+        .env("PATH", &bins)
+        .env("U50_STYLE_NO_PROVISION", "1")
+        .output()
+        .expect("spawn u50");
+    let code = out.status.code().unwrap_or(-1);
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+
+    assert_eq!(code, 0, "--list must exit 0");
+    assert!(
+        stdout.contains("missing"),
+        "rows must show the missing status: {stdout}"
+    );
+    assert_eq!(
+        stdout.matches("missing").count(),
+        8,
+        "one missing row per language: {stdout}"
+    );
+    assert!(
+        !stdout.contains("found (cache)"),
+        "no row may claim a cache hit: {stdout}"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}

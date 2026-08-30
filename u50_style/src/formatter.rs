@@ -29,12 +29,14 @@ pub trait Formatter {
 /// Where a tool command came from: an explicit path, or u50's cache
 /// (installed by `u50 style --setup` or auto-provisioned on first use).
 ///
-/// u50 NEVER resolves formatter tools through the system `PATH`: bare
-/// tool names are looked up in the cache only, and missing backends are
-/// downloaded into it on first use. [`ToolOrigin::Path`] therefore only
-/// ever applies to commands that themselves contain a `/` — explicit
-/// user-provided paths and `U50_STYLE_<LANG>` override commands, which
-/// are used as-is.
+/// u50 NEVER resolves its BUILT-IN formatter tools through the system
+/// `PATH`: bare tool names are looked up in the cache only, and missing
+/// backends are downloaded into it on first use. [`ToolOrigin::Path`]
+/// therefore only ever applies to commands that themselves contain a
+/// `/` — explicit user-provided paths. User override commands
+/// (`U50_STYLE_<LANG>`) are the exception to the cache-only rule: they
+/// are always spawned verbatim (argv[0] exactly as written, resolved by
+/// the OS) and never go through the cache lookup or its rewriting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolOrigin {
     /// An explicit path command (contains `/`), used as-is.
@@ -95,34 +97,30 @@ pub fn locate_tool(tool: &str) -> Option<(PathBuf, ToolOrigin)> {
     None
 }
 
-/// Spawns `tool` with `args`, feeds `source` on stdin (written from a
-/// separate thread so a child that fills its stdout pipe cannot deadlock
-/// against us still writing its stdin), and waits for it to exit. Spawn
-/// errors are mapped by `on_spawn` so callers can phrase the failure for
-/// their context (built-in install hint vs. override env var).
+/// Spawns `command` (whose argv[0] the caller has already decided) with
+/// `args`, feeds `source` on stdin (written from a separate thread so a
+/// child that fills its stdout pipe cannot deadlock against us still
+/// writing its stdin), and waits for it to exit. Spawn errors are mapped
+/// by `on_spawn` so callers can phrase the failure for their context
+/// (built-in install hint vs. override env var); `label` names the tool
+/// in the non-spawn error messages.
+///
+/// Resolution policy lives entirely with the caller: built-in tools pass
+/// the cache-resolved path from their guard ([`run_tool`]/
+/// [`run_tool_lenient`]); user overrides pass the command verbatim
+/// ([`run_override`]). No env fixup is needed: the venv console scripts
+/// installed by `--setup` carry absolute shebangs and are self-contained.
 ///
 /// # Errors
 /// Returns any error while attaching stdin or waiting on the child;
 /// spawn failures are mapped by `on_spawn` instead.
 fn run_process(
-    tool: &str,
+    mut command: Command,
+    label: &str,
     args: &[&str],
     source: &str,
     on_spawn: impl Fn(std::io::Error) -> anyhow::Error,
 ) -> anyhow::Result<std::process::Output> {
-    // Cache-only resolution: bare tool names come from the u50 style
-    // cache only (the system `PATH` is never consulted). Only cache hits
-    // get their spawn rewritten to the resolved path; unresolved tools
-    // spawn by name exactly as before, preserving the missing-tool error
-    // messages, and paths containing `/` are used as-is (overrides). No
-    // env fixup is needed: the venv console scripts installed by `--setup`
-    // carry absolute shebangs and are self-contained.
-    let mut command = Command::new(tool);
-    if !tool.contains('/')
-        && let Some((path, ToolOrigin::Cache)) = locate_tool(tool)
-    {
-        command = Command::new(path);
-    }
     let mut child = command
         .args(args)
         .stdin(Stdio::piped())
@@ -133,7 +131,7 @@ fn run_process(
     let mut stdin = child
         .stdin
         .take()
-        .ok_or_else(|| anyhow::anyhow!("could not attach stdin to `{tool}`"))?;
+        .ok_or_else(|| anyhow::anyhow!("could not attach stdin to `{label}`"))?;
     let source = source.to_owned();
     let writer = std::thread::spawn(move || {
         let _ = stdin.write_all(source.as_bytes());
@@ -151,7 +149,11 @@ fn run_override(var: &str, command: &[String], source: &str) -> anyhow::Result<S
         .ok_or_else(|| anyhow::anyhow!("empty override command in {var}"))?;
     let joined = command.join(" ");
     let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    let output = run_process(binary, &arg_refs, source, |e| {
+    // User overrides are spawned VERBATIM: argv[0] exactly as the user
+    // wrote it, resolved by the OS. Trusted user input — exempt from the
+    // built-in cache-only guard and its cache-path rewriting, so an
+    // unrelated same-named cache binary can never shadow the override.
+    let output = run_process(Command::new(binary), binary, &arg_refs, source, |e| {
         anyhow::anyhow!("could not run `{binary}` (set via {var}): {e}")
     })?;
     if !output.status.success() {
@@ -164,16 +166,18 @@ fn run_override(var: &str, command: &[String], source: &str) -> anyhow::Result<S
 }
 
 pub(crate) fn run_tool(tool: &str, args: &[&str], source: &str) -> anyhow::Result<String> {
-    // Cache-only spawn guard: never let the OS resolve a bare formatter
-    // tool through `PATH` (user overrides in `run_override` keep their
-    // own semantics).
-    if !tool.contains('/') && locate_tool(tool).is_none() {
-        anyhow::bail!(
+    // Cache-only spawn guard for BUILT-IN tools: never let the OS resolve
+    // a bare formatter tool through `PATH`. `locate_tool` runs exactly
+    // once here and the resolved path is handed straight to the spawn
+    // (no second lookup); user overrides in `run_override` keep their own
+    // verbatim, OS-resolved semantics.
+    let resolved = locate_tool(tool).map(|(path, _)| path).ok_or_else(|| {
+        anyhow::anyhow!(
             "{} (not found in the u50 style cache)",
             missing_tool_message(tool)
-        );
-    }
-    let output = run_process(tool, args, source, |e| {
+        )
+    })?;
+    let output = run_process(Command::new(&resolved), tool, args, source, |e| {
         anyhow::anyhow!("{}: {e}", missing_tool_message(tool))
     })?;
     if !output.status.success() {
@@ -195,14 +199,15 @@ pub(crate) fn run_tool(tool: &str, args: &[&str], source: &str) -> anyhow::Resul
 /// what runs — the leniency keeps u50 compatible with older djhtml
 /// versions too.
 fn run_tool_lenient(tool: &str, args: &[&str], source: &str) -> anyhow::Result<String> {
-    // Cache-only spawn guard, as in [`run_tool`].
-    if !tool.contains('/') && locate_tool(tool).is_none() {
-        anyhow::bail!(
+    // Cache-only spawn guard and single lookup, exactly as in
+    // [`run_tool`].
+    let resolved = locate_tool(tool).map(|(path, _)| path).ok_or_else(|| {
+        anyhow::anyhow!(
             "{} (not found in the u50 style cache)",
             missing_tool_message(tool)
-        );
-    }
-    let output = run_process(tool, args, source, |e| {
+        )
+    })?;
+    let output = run_process(Command::new(&resolved), tool, args, source, |e| {
         anyhow::anyhow!("{}: {e}", missing_tool_message(tool))
     })?;
     let reformatted_on_exit_1 = output.status.code() == Some(1) && !output.stdout.is_empty();

@@ -4,8 +4,11 @@
 //! so future runs can resolve the tools from the cache without root or a
 //! system-wide install.
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+
+use sha2::{Digest, Sha256};
 
 use anyhow::{Context, Result, bail};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
@@ -365,12 +368,7 @@ async fn provision_backends(
     let install_error = if dists.is_empty() {
         None
     } else {
-        Installer::new(&venv, Preview::default())
-            .with_cache(&uv_cache)
-            .with_installer_metadata(false)
-            .install_blocking(dists)
-            .err()
-            .map(|e| format!("install: {e:#}"))
+        install_dists(venv, uv_cache, dists).await
     };
 
     // Per-backend verification: a backend counts as installed when its
@@ -411,6 +409,35 @@ async fn provision_backends(
         });
     }
     Ok(outcomes)
+}
+
+/// Installs every successfully fetched wheel into the venv in one
+/// blocking uv call. An install failure (or blocking-task panic) fails
+/// all backends; the returned string is the formatted install error.
+///
+/// `install_blocking` runs rayon's wheel-install pool on the calling
+/// thread; keep that blocking work off the async runtime by moving the
+/// venv and uv cache into the blocking task and building the
+/// `Installer` inside it (its borrows are not `'static`, and neither
+/// value is used past the install step).
+async fn install_dists(
+    venv: PythonEnvironment,
+    uv_cache: Cache,
+    dists: Vec<CachedDist>,
+) -> Option<String> {
+    match tokio::task::spawn_blocking(move || {
+        Installer::new(&venv, Preview::default())
+            .with_cache(&uv_cache)
+            .with_installer_metadata(false)
+            .install_blocking(dists)
+            .err()
+            .map(|e| format!("install: {e:#}"))
+    })
+    .await
+    {
+        Ok(inner) => inner,
+        Err(e) => Some(format!("install: task failed: {e}")),
+    }
 }
 
 /// Ensures the uv-managed venv at `<cache_root>/venv` exists: when its
@@ -595,40 +622,71 @@ async fn fetch_wheel(
     let Some((entry, _)) = pick else {
         bail!("no compatible wheel for {package}=={version}");
     };
-    let filename = entry
-        .get("filename")
-        .and_then(Value::as_str)
-        .context("no filename")?
-        .to_string();
-    let wheel_url = entry
-        .get("url")
-        .and_then(Value::as_str)
-        .context("no url")?
-        .to_string();
-    let sha256 = entry
-        .pointer("/digests/sha256")
-        .and_then(Value::as_str)
-        .context("no sha256")?
-        .to_string();
+    let pick = WheelPick {
+        filename: entry
+            .get("filename")
+            .and_then(Value::as_str)
+            .context("no filename")?
+            .to_string(),
+        url: entry
+            .get("url")
+            .and_then(Value::as_str)
+            .context("no url")?
+            .to_string(),
+        sha256: entry
+            .pointer("/digests/sha256")
+            .and_then(Value::as_str)
+            .context("no sha256")?
+            .to_string(),
+    };
 
-    let display_url = DisplaySafeUrl::parse(&wheel_url).context("wheel url")?;
-    let archive = wheels_dir.join(filename.trim_end_matches(".whl"));
+    let display_url = DisplaySafeUrl::parse(&pick.url).context("wheel url")?;
+    let stem = pick.filename.trim_end_matches(".whl");
+    let archive = wheels_dir.join(stem);
 
     // Reuse a previously fetched wheel: the archive dir name embeds the
-    // package version, so a version bump invalidates it naturally.
-    if dist_info_dir(&filename).is_some_and(|dir| archive.join(dir).is_dir()) {
-        return wheel_dist(&filename, display_url, &sha256, archive);
+    // package version, so a version bump invalidates it naturally. Safe
+    // because extraction is atomic (unzip to a `.tmp` sibling, then
+    // rename): an existing final archive dir is always the complete,
+    // hash-verified extraction of that exact wheel — never a partial
+    // tree left behind by a crashed download or unzip.
+    if dist_info_dir(&pick.filename).is_some_and(|dir| archive.join(dir).is_dir()) {
+        return wheel_dist(&pick.filename, display_url, &pick.sha256, archive);
     }
 
-    // Download the wheel, then unzip it into a cache archive dir: the
-    // installer installs from an *unzipped* wheel tree (it reads
-    // `<prefix>.dist-info/WHEEL` from `dist.path()`), mirroring uv's own
-    // `archive-v0` layout.
+    // Download the wheel (enforcing its published sha256), then unzip it
+    // into a cache archive dir: the installer installs from an
+    // *unzipped* wheel tree (it reads `<prefix>.dist-info/WHEEL` from
+    // `dist.path()`), mirroring uv's own `archive-v0` layout.
+    download_and_extract_wheel(client, package, &version, &pick, wheels_dir, &archive).await?;
+
+    wheel_dist(&pick.filename, display_url, &pick.sha256, archive)
+}
+
+/// Downloads the wheel at `wheel_url`, enforces the sha256 digest `PyPI`
+/// published for it, and extracts it atomically into `archive`: unzip
+/// into a `.tmp` sibling dir, then rename onto the final archive dir
+/// (removing any stale final dir first — rename onto a non-empty dir
+/// would fail). A crash mid-unzip leaves only the `.tmp` sibling
+/// behind, never a half-extracted final archive, and the downloaded
+/// bytes never touch the cache unless the digest matches. The unzip is
+/// blocking CPU/IO work, so it runs on the blocking thread pool.
+#[allow(clippy::too_many_lines)] // one linear download→verify→extract pipeline
+async fn download_and_extract_wheel(
+    client: &BaseClient,
+    package: &str,
+    version: &str,
+    pick: &WheelPick,
+    wheels_dir: &PathBuf,
+    archive: &Path,
+) -> Result<()> {
+    let filename = pick.filename.as_str();
+    let display_url = DisplaySafeUrl::parse(&pick.url).context("wheel url")?;
     tokio::fs::create_dir_all(wheels_dir).await?;
-    let wheel_path = wheels_dir.join(&filename);
+    let wheel_path = wheels_dir.join(filename);
     let bytes = client
         .for_host(&display_url)
-        .get(&wheel_url)
+        .get(&pick.url)
         .send()
         .await
         .with_context(|| format!("wheel download request for {package}=={version}"))?
@@ -637,20 +695,67 @@ async fn fetch_wheel(
         .bytes()
         .await
         .with_context(|| format!("wheel download body for {package}=={version}"))?;
+    // Enforce the digest `PyPI` published for this wheel BEFORE the bytes
+    // touch the cache: a corrupted or tampered download must never be
+    // written, let alone unzipped and installed.
+    let actual = hex_encode(&Sha256::digest(&bytes));
+    if !actual.eq_ignore_ascii_case(&pick.sha256) {
+        bail!(
+            "sha256 mismatch for {package}=={version} ({filename}): \
+             expected {}, got {actual}",
+            pick.sha256
+        );
+    }
     tokio::fs::write(&wheel_path, &bytes).await?;
+
+    // Extract atomically: unzip into a `.tmp` sibling dir, then rename
+    // onto the final archive dir (removing any stale final dir first —
+    // rename onto a non-empty dir would fail). A crash mid-unzip then
+    // leaves only the `.tmp` sibling behind, never a half-extracted
+    // final archive. The unzip is blocking CPU/IO work, so it runs on
+    // the blocking thread pool.
+    let stem = filename.trim_end_matches(".whl");
+    let tmp_archive = wheels_dir.join(format!(".{stem}.tmp"));
+    if tmp_archive.exists() {
+        tokio::fs::remove_dir_all(&tmp_archive)
+            .await
+            .with_context(|| format!("remove stale temp archive {}", tmp_archive.display()))?;
+    }
+    let result = tokio::task::spawn_blocking({
+        let tmp_archive = tmp_archive.clone();
+        let wheel_path = wheel_path.clone();
+        move || -> anyhow::Result<()> {
+            let wheel = fs_err::File::open(&wheel_path).context("open wheel")?;
+            uv_extract::unzip(wheel, &tmp_archive).context("unzip wheel")?;
+            Ok(())
+        }
+    })
+    .await
+    .context("wheel unzip task")?;
+    if let Err(e) = result {
+        // Never leave a partial `.tmp` extraction behind.
+        let _ = tokio::fs::remove_dir_all(&tmp_archive).await;
+        return Err(e);
+    }
     if archive.exists() {
-        tokio::fs::remove_dir_all(&archive)
+        tokio::fs::remove_dir_all(archive)
             .await
             .with_context(|| format!("remove stale wheel archive {}", archive.display()))?;
     }
-    tokio::fs::create_dir_all(&archive).await?;
-    uv_extract::unzip(
-        fs_err::File::open(&wheel_path).context("open wheel")?,
-        &archive,
-    )
-    .context("unzip wheel")?;
+    tokio::fs::rename(&tmp_archive, archive)
+        .await
+        .with_context(|| format!("finalize wheel archive {}", archive.display()))?;
+    Ok(())
+}
 
-    wheel_dist(&filename, display_url, &sha256, archive)
+/// Lowercase hex encoding of a raw digest (e.g. for comparing against
+/// `PyPI`'s `digests.sha256`).
+fn hex_encode(bytes: &[u8]) -> String {
+    let mut hex = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        write!(hex, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    hex
 }
 
 /// The `<name>-<version>.dist-info` directory a wheel archive contains:
@@ -662,6 +767,14 @@ fn dist_info_dir(wheel_stem: &str) -> Option<String> {
     let (name, rest) = wheel_stem.split_once('-')?;
     let (version, _) = rest.split_once('-')?;
     Some(format!("{name}-{version}.dist-info"))
+}
+
+/// The picked wheel for a package: its filename, download URL, and the
+/// sha256 digest `PyPI` published for it.
+struct WheelPick {
+    filename: String,
+    url: String,
+    sha256: String,
 }
 
 /// Wraps a fetched (or reused) wheel as a [`CachedDist`] that
@@ -689,6 +802,8 @@ fn wheel_dist(
 
 #[cfg(test)]
 mod tests {
+    use sha2::{Digest, Sha256};
+
     use super::{
         Role, WHEEL_RANK_REJECT, dist_info_dir, missing_backends, pip_spec, transitive_deps,
         wheel_rank, wheel_specs,
@@ -834,6 +949,15 @@ mod tests {
         assert!(wheel_rank(&linux) > WHEEL_RANK_REJECT);
         assert_eq!(wheel_rank(&win), WHEEL_RANK_REJECT);
         assert_eq!(wheel_rank(&musl), WHEEL_RANK_REJECT);
+    }
+
+    #[test]
+    fn hex_encode_is_lowercase_hex_and_matches_known_digests() {
+        assert_eq!(super::hex_encode(&[]), "");
+        assert_eq!(
+            super::hex_encode(&Sha256::digest(b"abc")),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
     }
 
     #[test]
