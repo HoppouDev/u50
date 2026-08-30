@@ -144,15 +144,18 @@ per-package outcomes:
 
 ### Cache-only tool resolution
 
-Formatter spawn resolves tool commands via `locate_tool(tool)`, which
-resolves **bare tool names from `<cache>/venv/bin` ONLY — the system `PATH`
-is never consulted**, so a hostile or unrelated same-named binary on
-`PATH` can never be picked up. A bare tool absent from the cache is never
-spawned by name (which would let `Command::new` fall back to the OS `PATH`):
-the built-in and override call sites check `locate_tool` first and emit the
-standard missing-tool error instead of spawning. Cache hits spawn by
-resolved path; commands containing `/` (explicit paths and
-`U50_STYLE_<LANG>` override commands) are used as-is.
+BUILT-IN formatter tools resolve via `locate_tool(tool)`, which resolves
+**bare tool names from `<cache>/venv/bin` ONLY — the system `PATH` is
+never consulted**, so a hostile or unrelated same-named binary on `PATH`
+can never be picked up. A bare built-in tool absent from the cache is
+never spawned by name (which would let `Command::new` fall back to the OS
+`PATH`): the call sites check `locate_tool` once and emit the standard
+missing-tool error instead of spawning. Cache hits spawn by resolved path.
+
+User override commands (`U50_STYLE_<LANG>`) are the exception: they are
+spawned **verbatim** — argv[0] exactly as the user wrote it, resolved by
+the OS — and never go through the cache lookup or its rewriting, so an
+unrelated same-named cache binary can never shadow an override.
 
 ### Lazy auto-provisioning
 
