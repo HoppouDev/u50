@@ -1,6 +1,6 @@
 # Windows Support Plan
 
-Status: in progress. Scope: build/test/run on Windows; style engine is the only implemented program, check/submit are stubs.
+Status: implemented — phases 0–4 complete. Scope: build/test/run on Windows; style engine is the only implemented program, check/submit are stubs. Gates (`cargo fmt --check`, `clippy --workspace --all-targets -- -Dwarnings`, `cargo test --workspace`) are green on Linux (WSL on this machine) and `--setup` / `--status` / `u50 style` were verified end-to-end here (6/6 backends provisioned, exit 0). Windows-native gates run on the CI `windows-latest` leg — first dual-OS CI run pending.
 
 ## Goal
 
@@ -34,25 +34,33 @@ uv stack (uv-windows crate already in dep tree), tokio/clap/anyhow/reqwest+rustl
 
 ## Phases
 
-### Phase 0 - make it build (blockers 1, 5)
+### Phase 0 - make it build (blockers 1, 5) — complete
 
 cfg-split is_executable_file (unix keeps exec-bit check; windows accepts any existing regular file). locate_tool: portable explicit-path detection (backslash, drive letter, parent components). Gate: cargo check --workspace green on Windows.
 
-### Phase 1 - cache + venv + wheels (blockers 2, 3, 4)
+### Phase 1 - cache + venv + wheels (blockers 2, 3, 4) — complete
+
+Verified on this machine (Linux): `u50 --setup` provisioned CPython 3.14 + all 6 backends, `u50 --status` reports `found (cache)` for all 8 languages, and `u50 style` formats a sample file (exit 1 with violations, exit 0 clean). Windows-path behaviour is covered by the flipped unit tests (`win_amd64`/`win_arm64`/`win32` ranking, `Scripts`/`.exe` naming); the windows-latest CI leg exercises the real Windows paths.
 
 cache_dir(): keep XDG_CACHE_HOME override; Windows uses LOCALAPPDATA-based base (dirs::cache_dir() equivalent) -> <base>\u50\style50; never fall back to a relative path - error instead. One platform-aware helper for venv bin dir (Scripts on Windows, bin elsewhere) and tool file name (.exe suffix on Windows) used by cache_bin_dir(), locate_tool(), and ensure_venv() (probe Scripts\python.exe on Windows). wheel_rank(): add win_amd64/win32/win_arm64 ranks keyed on std::env::consts::OS/ARCH, reject foreign-platform tags; flip the unit tests at setup.rs:940-953 and u50_style/src/tests.rs:833 (cache_bin_dir venv/bin assertion). Gate: u50 --setup provisions CPython + all 6 backends on Windows; u50 --status all found (cache); u50 style works on a sample file.
 
-### Phase 2 - CI (item 7)
+### Phase 2 - CI (item 7) — complete
+
+`strategy.matrix.os: [ubuntu-latest, windows-latest]` added; `U50_STYLE_GOLDEN=1` moved into the step `env:` block (pwsh-safe); harness gate kept on both OSes (harness-score is pure JS). A green dual-OS CI run is pending.
 
 Status: implemented-pending-CI-verification (.github/workflows/rust.yml). Added strategy.matrix.os [ubuntu-latest, windows-latest] with runs-on: ${{ matrix.os }}; moved U50_STYLE_GOLDEN=1 into the golden step's env: block (an inline `VAR=1 cmd` prefix is bash-only and breaks under pwsh). Golden policy: run goldens on both OSes (CRLF normalized in-engine, engine.rs:44). Harness gate runs on both OSes: harness-score is pure JS (fs/path/os, explicit win32 handling, no child_process/native binaries) and npx is preinstalled on Windows runners.
 
 If golden drift appears on Windows (backend tool output differing per platform), relax the golden step to ubuntu-only by adding `if: runner.os == 'Linux'` to the golden tests step - do not flip tool-versions.txt per OS. Gate: workflow green on both OSes.
 
-### Phase 3 - tests (item 6)
+### Phase 3 - tests (item 6) — complete
+
+All Unix-only tests in `u50_cli/tests/style_output.rs` are `#[cfg(unix)]`-gated (chmod/exec-bit/symlink/sh-stub); `u50_style/src/tests.rs:682` symlink use is inside `#[cfg(unix)]`. Full `cargo test --workspace` green on Linux (103 tests).
 
 cfg-gate the Unix-only tests in u50_cli/tests/style_output.rs #[cfg(unix)] (chmod/exec-bit/symlink/sh-stub tests), keeping every test running on Linux; Windows spawn covered via the real provisioned venv rather than .cmd stubs. Verify u50_style/src/tests.rs:676-690 on Windows. Gate: full cargo test green on both OSes.
 
-### Phase 4 - docs (item 8)
+### Phase 4 - docs (item 8) — complete
+
+`u50_style/AGENTS.md` (cache base per platform, `Scripts\` `.exe` shims, shebang note, wheel platform ranking), `README.md` (cache path, dual-OS CI, Windows roadmap item checked), root `AGENTS.md` (cache path, CI matrix, clippy `--all-targets`), this file.
 
 Update u50_style/AGENTS.md (:80, :134-135), README.md:31, root AGENTS.md:42: cache is <XDG_CACHE_HOME|~/.cache>/u50/style50 on Unix, LOCALAPPDATA-based u50\style50 on Windows; note Windows support and dual-OS CI.
 

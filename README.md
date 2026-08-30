@@ -28,8 +28,9 @@ _One binary for CS50; check, style, and submit._
 
 > [!NOTE]
 > There is nothing to install besides Rust. The first `u50 style` run provisions
-> exactly the backends it needs into `~/.cache/u50/style50` — a managed venv
-> built in-process via [uv's library crates](https://github.com/astral-sh/uv).
+> exactly the backends it needs into µ50's cache — `~/.cache/u50/style50` on
+> Unix, `%LOCALAPPDATA%\u50\style50` on Windows — a managed venv built
+> in-process via [uv's library crates](https://github.com/astral-sh/uv).
 
 ```sh
 git clone https://github.com/HoppouDev/u50 && cd u50
@@ -86,7 +87,7 @@ cargo clippy --workspace --all-targets -- -Dwarnings       # zero warnings (peda
 cargo fmt --all -- --check
 ```
 
-CI (GitHub Actions, workflow name `Rust`) runs build, tests, format check, clippy, the golden suite, and a harness-score ratchet on every push/PR to `main`.
+CI (GitHub Actions, workflow name `Rust`) runs build, tests, format check, clippy, the golden suite, and a harness-score ratchet on every push/PR to `main`, on both `ubuntu-latest` and `windows-latest` runners.
 
 ## Roadmap
 
@@ -101,7 +102,7 @@ CI (GitHub Actions, workflow name `Rust`) runs build, tests, format check, clipp
 - [ ] `--clang-format-style` — custom clang-format style override
 - [ ] `score` and `html` output modes (style50 v2 features)
 - [ ] Comment-count hints ("But consider adding more comments!")
-- [ ] Windows support (uv console-script trampolines)
+- [x] Windows support (uv console-script `.exe` shims, `%LOCALAPPDATA%` cache)
 
 ### `u50 check` — [`u50_check`](u50_check/)
 

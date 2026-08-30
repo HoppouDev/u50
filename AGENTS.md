@@ -39,7 +39,7 @@ u50_submit/           # library crate (submit50 equivalent)
 
 - **Workspace root `Cargo.toml`**: `resolver = "3"`, all dependency versions in `[workspace.dependencies]`, release profile tuned for size (`opt-level = "z"`, `strip`, `lto`, `codegen-units = 1`). Members: `u50_check`, `u50_cli`, `u50_style`, `u50_submit`.
 - **u50_cli/**: the binary crate, `[[bin]] name = "u50"`. Implemented CLI: clap subcommands `check`/`style`/`submit` with global flags, dispatching to the library crates; its `AGENTS.md` defines the CLI design.
-- **u50_check/, u50_style/, u50_submit/**: library crates, one per original cs50 tool. `u50_style`'s engine is implemented (the style50 3.0.0 language set — C/C++/Java via clang-format, Python via autopep8, JavaScript via js-beautify, HTML via djhtml, CSS via css-beautify, SQL via sqlformat; unified/character/split/json output; in-place fix (`--fix`) with dry-run; directory arguments; root-level `--status` table and `--setup`/lazy auto-provisioning of backends into a uv-managed venv in `~/.cache/u50/style50` (in-process via uv library crates — no system python3/pip/uv binary needed; cache-only tool resolution, `PATH` never consulted); `u50_check` and `u50_submit` remain stubs: `run()` bails with a "not implemented yet" error; request types (Request/enums) are defined and dispatched from the CLI. Each has its own `AGENTS.md` with program-specific details.
+- **u50_check/, u50_style/, u50_submit/**: library crates, one per original cs50 tool. `u50_style`'s engine is implemented (the style50 3.0.0 language set — C/C++/Java via clang-format, Python via autopep8, JavaScript via js-beautify, HTML via djhtml, CSS via css-beautify, SQL via sqlformat; unified/character/split/json output; in-place fix (`--fix`) with dry-run; directory arguments; root-level `--status` table and `--setup`/lazy auto-provisioning of backends into a uv-managed venv in µ50's cache (`~/.cache/u50/style50` on Unix, `%LOCALAPPDATA%\u50\style50` on Windows; in-process via uv library crates — no system python3/pip/uv binary needed; cache-only tool resolution, `PATH` never consulted); `u50_check` and `u50_submit` remain stubs: `run()` bails with a "not implemented yet" error; request types (Request/enums) are defined and dispatched from the CLI. Each has its own `AGENTS.md` with program-specific details.
 
 ## Conventions
 
@@ -54,12 +54,12 @@ Agent guardrails live in `.claude/`: a PreToolUse hook (`.claude/hooks/gate-dest
 
 ## CI / quality gates
 
-GitHub Actions workflow `.github/workflows/rust.yml` (name: `Rust`) runs on push/PR to `main`:
+GitHub Actions workflow `.github/workflows/rust.yml` (name: `Rust`) runs on push/PR to `main`, on a `ubuntu-latest` + `windows-latest` matrix:
 
 - `cargo build`
 - `cargo test`
 - `cargo fmt --all -- --check` — code must be rustfmt-clean.
-- `cargo clippy --verbose -- -Dwarnings` — **zero warnings allowed**; with pedantic enabled, this is strict. Linter configuration lives in the root `clippy.toml`.
+- `cargo clippy --verbose --all-targets -- -Dwarnings` — **zero warnings allowed**; with pedantic enabled, this is strict. Linter configuration lives in the root `clippy.toml`.
 
 ## Common commands
 
