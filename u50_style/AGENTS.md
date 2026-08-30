@@ -202,7 +202,7 @@ Findings recorded from the official docs: <https://cs50.readthedocs.io/style50/>
 
 - Usage: `style50 <file>` — checks file(s) against CS50's style guide.
 - Languages: C, C++, Java, Python, JavaScript, HTML, CSS, SQL (style50 3.0.0; see 'Language support').
-- Under the hood it shells out to per-language external formatters (see 'Language support' below; clang-format >= 14 required for C/C++/Java); 
+- Under the hood it shells out to per-language external formatters (see 'Language support' below; clang-format >= 14 required for C/C++/Java).
 
 ### Output
 

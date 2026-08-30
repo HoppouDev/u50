@@ -2,5 +2,6 @@
 .pi/
 tmp/
 /.ruff-cache/
+codeql/
 .env
 .env.*
