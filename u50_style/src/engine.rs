@@ -91,14 +91,16 @@ fn check_files(files: &[PathBuf], formatter: &dyn Formatter) -> Report {
 /// custom output sinks (HTML, SARIF, an editor panel, ...): implement the
 /// trait and pass it here, no engine changes needed.
 ///
-/// Event order (see [`Renderer`]): `begin(req)` once, then one
-/// `skipped(path)` per unsupported regular file found while walking a
-/// directory operand (in walk order — the style50-parity
-/// `unknown file type ..., skipping...` warning), then one
-/// `file(result)` per successfully processed file in report order, then
-/// one `file_error(path, message)` per per-file error in report order,
-/// then `finish(&report)` once. The built-in renderers write the legacy
-/// console/JSON output byte for byte ([`run`] uses [`builtin_renderer`]).
+/// Event order (see [`Renderer`]): `begin(req)` once, then
+/// `total_files(count)` (results + errors; the count character mode needs
+/// to decide on per-file headers), then one `skipped(path)` per
+/// unsupported regular file found while walking a directory operand (in
+/// walk order — the style50-parity `unknown file type ..., skipping...`
+/// warning), then one `file(result)` per successfully processed file in
+/// report order, then one `file_error(path, message)` per per-file error
+/// in report order, then `finish(&report)` once. The built-in renderers
+/// write the style50-parity console/JSON output ([`run`] uses
+/// [`builtin_renderer`]).
 pub fn run_with_renderer(
     req: &Request,
     formatter: &dyn Formatter,
@@ -107,6 +109,9 @@ pub fn run_with_renderer(
     let (files, skipped) = expand_paths(&req.files);
     let report = check_files(&files, formatter);
     renderer.begin(req);
+    // Results + errors (walk-warned unsupported files excluded) — the
+    // count character mode uses to decide whether per-file headers apply.
+    renderer.total_files(report.results.len() + report.errors.len());
     for path in &skipped {
         renderer.skipped(path);
     }

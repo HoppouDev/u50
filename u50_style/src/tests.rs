@@ -15,9 +15,10 @@ fn numbered_lines(prefix: &str, n: usize) -> String {
 }
 use crate::formatter::{cache_bin_dir, cache_dir, locate_tool, run_tool, venv_bin_dir};
 use crate::render::{
-    BOLD, GREEN, RED, RESET, json_document, render_character, render_split, render_unified,
-    select_algorithm,
+    BOLD, BRIGHT_WHITE, CYAN, GREEN, ON_GREEN, ON_RED, RED, RESET, YELLOW, json_document,
+    render_character, render_split, render_unified, select_algorithm,
 };
+use crate::renderer::HEADER_RULE;
 use similar::algorithms::Algorithm;
 
 /// Formatter that leaves the source untouched (models a clean file).
@@ -223,7 +224,7 @@ fn dirty_file_unified_has_plus_and_minus_lines() {
 }
 
 #[test]
-fn character_output_has_plus_and_minus_lines() {
+fn character_output_renders_the_original_text_without_plus_minus_lines() {
     let path = temp_file("char.c", "int main(void)\n{\nreturn 0;\n}\n");
     let req = Request {
         files: vec![path.clone()],
@@ -232,9 +233,40 @@ fn character_output_has_plus_and_minus_lines() {
     };
     let report = run_with(&req, &Reindent);
     let rendered = render_result(&report.results[0], Output::Character, false);
-    assert!(rendered.lines().any(|l| l.starts_with('-')));
-    assert!(rendered.lines().any(|l| l.starts_with('+')));
+    // style50 parity: a leading blank line, then the original text
+    // re-rendered with the styled spans inlined (here the changes are pure
+    // 4-space insertions, so the body IS the styled text), then a trailing
+    // blank line. Character mode has no +/- rows.
+    assert_eq!(
+        rendered,
+        "\n    int main(void)\n    {\n    return 0;\n    }\n\n"
+    );
+    assert!(
+        !rendered
+            .lines()
+            .any(|l| l.starts_with('+') || l.starts_with('-'))
+    );
     std::fs::remove_file(&path).expect("cleanup");
+}
+
+#[test]
+fn character_output_escapes_newline_and_tab_markers_with_legend() {
+    // A deleted newline merges the two lines it joined and contributes a
+    // legend line (marker escaped, style50's wording).
+    assert_eq!(
+        render_character("a\nb\n", "ab\n", false),
+        "\na\\nb\n\n\\n means that you should delete a newline.\n\n"
+    );
+    // An inserted newline ends the visible line where it is inserted.
+    assert_eq!(
+        render_character("ab\n", "a\nb\n", false),
+        "\na\\n\nb\n\n\\n means that you should insert a newline.\n\n"
+    );
+    // An inserted tab renders as the escaped marker plus its legend line.
+    assert_eq!(
+        render_character("x\n", "\tx\n", false),
+        "\n\\tx\n\n\\t means that you should insert a tab.\n\n"
+    );
 }
 
 #[test]
@@ -488,23 +520,43 @@ fn error_in_later_file_preserves_earlier_results() {
 }
 
 #[test]
-fn character_render_colored_uses_red_and_green_and_restores_line_color() {
-    let source = "int main(void)\n{\nreturn 0;\n}\n";
-    let formatted = "int main(void)\n{\n    return 0;\n}\n";
-    let out = render_character(source, formatted, true);
-    assert!(out.contains(RED), "red line color missing: {out:?}");
-    assert!(out.contains(GREEN), "green line color missing: {out:?}");
-    // An emphasized span must not cancel the enclosing line color: after
-    // the span's RESET (which follows the emphasized text) the line color
-    // code reappears before the rest of the line.
-    assert!(out.contains(BOLD), "no emphasized span: {out:?}");
+fn character_render_colored_uses_background_transitions_and_plain_has_no_ansi() {
+    // A deleted newline: the deletion transition is reset+on-red, and the
+    // legend line is an on-red marker followed by the yellow message.
+    let deleted = render_character("a\nb\n", "ab\n", true);
     assert!(
-        out.contains(&format!("{RESET}{GREEN}")),
-        "line color not restored after an emphasized span: {out:?}"
+        deleted.contains(&format!("{RESET}{ON_RED}")),
+        "red deletion transition missing: {deleted:?}"
     );
-    // The non-colored rendering of the same diff must not contain ANSI.
-    let plain = render_character(source, formatted, false);
-    assert!(!plain.contains('\u{1b}'), "unexpected ANSI: {plain:?}");
+    assert!(
+        deleted.contains(&format!(
+            "{ON_RED}\\n{RESET}{YELLOW} means that you should delete a newline.{RESET}"
+        )),
+        "colored deletion legend missing: {deleted:?}"
+    );
+    assert!(
+        !deleted.contains(&format!("{RESET}{ON_GREEN}")),
+        "no insertion background in a deletion-only diff: {deleted:?}"
+    );
+    // An inserted newline: reset+on-green transition, on-green legend.
+    let inserted = render_character("ab\n", "a\nb\n", true);
+    assert!(
+        inserted.contains(&format!("{RESET}{ON_GREEN}")),
+        "green insertion transition missing: {inserted:?}"
+    );
+    assert!(
+        inserted.contains(&format!(
+            "{ON_GREEN}\\n{RESET}{YELLOW} means that you should insert a newline.{RESET}"
+        )),
+        "colored insertion legend missing: {inserted:?}"
+    );
+    // Every background span is closed by a reset.
+    assert!(inserted.contains("\\n\u{1b}[0m"));
+    // The non-colored renderings of the same diffs must not contain ANSI.
+    for (source, formatted) in [("a\nb\n", "ab\n"), ("ab\n", "a\nb\n")] {
+        let plain = render_character(source, formatted, false);
+        assert!(!plain.contains('\u{1b}'), "unexpected ANSI: {plain:?}");
+    }
 }
 
 #[test]
@@ -850,11 +902,33 @@ fn large_wholly_changed_input_renders_completely() {
     assert_eq!(dels, 5000, "unified deletions incomplete");
     assert_eq!(adds, 5000, "unified insertions incomplete");
 
-    let character = render_character(&source, &formatted, false);
-    let char_dels = character.lines().filter(|l| l.starts_with('-')).count();
-    let char_adds = character.lines().filter(|l| l.starts_with('+')).count();
-    assert_eq!(char_dels, 5000, "character deletions incomplete");
-    assert_eq!(char_adds, 5000, "character insertions incomplete");
+    // Character mode re-renders the original text with the styled text
+    // inlined at the diff positions (no +/- rows): every one of the 5000
+    // lines must carry both the deleted (red background) and inserted
+    // (green background) span.
+    let character = render_character(&source, &formatted, true);
+    let char_lines = character.lines().filter(|l| !l.is_empty()).count();
+    assert_eq!(char_lines, 5000, "character body incomplete");
+    assert_eq!(
+        character.lines().filter(|l| l.contains(ON_RED)).count(),
+        5000,
+        "character deletions incomplete"
+    );
+    assert_eq!(
+        character.lines().filter(|l| l.contains(ON_GREEN)).count(),
+        5000,
+        "character insertions incomplete"
+    );
+    let plain = render_character(&source, &formatted, false);
+    assert_eq!(
+        plain
+            .lines()
+            .filter(|l| l.contains("old") && l.contains("new"))
+            .count(),
+        5000,
+        "plain character body incomplete"
+    );
+    assert!(!plain.contains('\u{1b}'), "unexpected ANSI: {plain:?}");
 
     let split = render_split(&source, &formatted, false);
     let rows: Vec<&str> = split.lines().collect();
@@ -928,11 +1002,17 @@ fn locate_tool_passes_through_explicit_paths() {
 /// Renderer that records the event sequence (test helper).
 struct Recorder {
     events: Vec<String>,
+    total_files: Option<usize>,
 }
 
 impl Renderer for Recorder {
     fn begin(&mut self, _req: &Request) {
         self.events.push("begin".into());
+    }
+
+    fn total_files(&mut self, count: usize) {
+        self.total_files = Some(count);
+        self.events.push(format!("total:{count}"));
     }
 
     fn file(&mut self, result: &FileResult) {
@@ -955,30 +1035,45 @@ fn run_with_renderer_emits_events_in_order() {
     let missing =
         std::env::temp_dir().join(format!("u50_style_test_{}_evmissing.c", std::process::id()));
     let req = fix_request(vec![dirty.clone(), missing.clone()]);
-    let mut recorder = Recorder { events: Vec::new() };
+    let mut recorder = Recorder {
+        events: Vec::new(),
+        total_files: None,
+    };
     let report = run_with_renderer(&req, &Reindent, &mut recorder);
     assert_eq!(report.results.len(), 1);
     assert_eq!(report.errors.len(), 1);
-    assert_eq!(recorder.events.len(), 4);
+    // The total-files event (results + errors) precedes every per-file
+    // event: character mode needs the count for its header decision.
+    assert_eq!(recorder.total_files, Some(2));
+    assert_eq!(recorder.events.len(), 5);
     assert_eq!(recorder.events[0], "begin");
-    assert_eq!(recorder.events[1], format!("file:{}", dirty.display()));
+    assert_eq!(recorder.events[1], "total:2");
+    assert_eq!(recorder.events[2], format!("file:{}", dirty.display()));
     assert!(
-        recorder.events[2].starts_with(&format!("error:{}:could not read", missing.display())),
+        recorder.events[3].starts_with(&format!("error:{}:could not read", missing.display())),
         "unexpected file_error event: {:?}",
-        recorder.events[2]
+        recorder.events[3]
     );
-    assert_eq!(recorder.events[3], "finish");
+    assert_eq!(recorder.events[4], "finish");
     std::fs::remove_file(&dirty).expect("cleanup");
 }
 
 #[test]
-fn run_with_renderer_empty_request_emits_only_begin_and_finish() {
+fn run_with_renderer_empty_request_emits_begin_total_and_finish() {
     let req = fix_request(vec![]);
-    let mut recorder = Recorder { events: Vec::new() };
+    let mut recorder = Recorder {
+        events: Vec::new(),
+        total_files: None,
+    };
     run_with_renderer(&req, &Identity, &mut recorder);
+    assert_eq!(recorder.total_files, Some(0));
     assert_eq!(
         recorder.events,
-        vec!["begin".to_owned(), "finish".to_owned()]
+        vec![
+            "begin".to_owned(),
+            "total:0".to_owned(),
+            "finish".to_owned()
+        ]
     );
 }
 
@@ -1012,19 +1107,108 @@ fn console_renderer_matches_direct_rendering() {
 }
 
 #[test]
-fn console_renderer_writes_nothing_for_clean_file() {
+fn console_renderer_clean_file_is_looks_good_in_character_mode_only() {
     let result = FileResult {
         path: PathBuf::from("x.c"),
         clean: true,
         source: Some("return 0;\n".to_owned()),
         formatted: Some("return 0;\n".to_owned()),
     };
-    for output in [Output::Character, Output::Split, Output::Unified] {
+    // Character mode (style50 parity): clean files get `Looks good!`.
+    assert_eq!(
+        render_result(&result, Output::Character, false),
+        "Looks good!\n"
+    );
+    assert_eq!(
+        render_result(&result, Output::Character, true),
+        format!("{GREEN}Looks good!{RESET}\n")
+    );
+    // The other text modes stay silent for clean files.
+    for output in [Output::Split, Output::Unified] {
         assert!(
             render_result(&result, output, false).is_empty(),
             "clean file must render nothing in {output:?}"
         );
     }
+}
+
+#[test]
+fn console_renderer_character_mode_banner_headers_and_looks_good() {
+    let req = Request {
+        files: vec![],
+        output: Output::Character,
+        color: false,
+    };
+    let clean = FileResult {
+        path: PathBuf::from("a.c"),
+        clean: true,
+        source: Some("return 0;\n".to_owned()),
+        formatted: Some("return 0;\n".to_owned()),
+    };
+    let dirty = FileResult {
+        path: PathBuf::from("b.c"),
+        clean: false,
+        source: Some("return 0;\n".to_owned()),
+        formatted: Some("    return 0;\n".to_owned()),
+    };
+    let sink = SharedBuf::default();
+    {
+        let mut renderer = builtin_renderer(Output::Character, false, Box::new(sink.clone()));
+        renderer.begin(&req);
+        renderer.total_files(2);
+        renderer.file(&clean);
+        renderer.file(&dirty);
+    }
+    let text = String::from_utf8(sink.0.borrow().clone()).expect("utf8");
+    let banner = format!("Results generated by u50 v{}", env!("CARGO_PKG_VERSION"));
+    assert!(
+        text.starts_with(&format!("{banner}\n")),
+        "banner first, followed directly by the next element (style50 parity): {text:?}"
+    );
+    // Headers apply only when the run covers more than one file: one rule
+    // pair per file around the file name (clean files included).
+    assert_eq!(text.matches(HEADER_RULE).count(), 4);
+    assert!(text.contains(&format!("{HEADER_RULE}\nb.c\n{HEADER_RULE}\n")));
+    assert_eq!(text.matches("Looks good!").count(), 1);
+    assert!(
+        text.contains("\n    return 0;\n\n"),
+        "dirty file block after its header: {text:?}"
+    );
+}
+
+#[test]
+fn console_renderer_character_mode_colors_banner_and_headers() {
+    let req = Request {
+        files: vec![],
+        output: Output::Character,
+        color: true,
+    };
+    let clean = FileResult {
+        path: PathBuf::from("a.c"),
+        clean: true,
+        source: Some("return 0;\n".to_owned()),
+        formatted: Some("return 0;\n".to_owned()),
+    };
+    let sink = SharedBuf::default();
+    {
+        let mut renderer = builtin_renderer(Output::Character, true, Box::new(sink.clone()));
+        renderer.begin(&req);
+        // Two files so the cyan header path (total_files > 1) is exercised.
+        renderer.total_files(2);
+        renderer.file(&clean);
+    }
+    let text = String::from_utf8(sink.0.borrow().clone()).expect("utf8");
+    let banner = format!("Results generated by u50 v{}", env!("CARGO_PKG_VERSION"));
+    // Bold bright-white banner, cyan header pair, green Looks good!.
+    assert!(
+        text.contains(&format!("{BOLD}{BRIGHT_WHITE}{banner}{RESET}")),
+        "banner not bold-bright-white: {text:?}"
+    );
+    assert!(text.contains(CYAN), "header not cyan: {text:?}");
+    assert!(
+        text.contains(&format!("{GREEN}Looks good!{RESET}")),
+        "Looks good! not green: {text:?}"
+    );
 }
 
 #[test]

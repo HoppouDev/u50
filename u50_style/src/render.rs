@@ -12,6 +12,16 @@ pub(crate) const GREEN: &str = "\u{1b}[32m";
 pub(crate) const BOLD: &str = "\u{1b}[1m";
 pub(crate) const YELLOW: &str = "\u{1b}[33m";
 pub(crate) const RESET: &str = "\u{1b}[0m";
+/// Cyan foreground (`termcolor` "cyan"): the per-file `::::::::::::::`
+/// header of character mode.
+pub(crate) const CYAN: &str = "\u{1b}[36m";
+/// Bright white foreground (`termcolor` "white"): the character-mode
+/// banner (which also carries [`BOLD`]).
+pub(crate) const BRIGHT_WHITE: &str = "\u{1b}[97m";
+/// Green background (`termcolor` "`on_green")`: character-mode insertions.
+pub(crate) const ON_GREEN: &str = "\u{1b}[42m";
+/// Red background (`termcolor` "`on_red")`: character-mode deletions.
+pub(crate) const ON_RED: &str = "\u{1b}[41m";
 
 /// Context radius passed to `TextDiff::grouped_ops` to keep every change in
 /// a single group. Must satisfy `n * 2 <= usize::MAX` (see
@@ -75,49 +85,197 @@ pub(crate) fn line_diff<'a>(source: &'a str, formatted: &'a str) -> TextDiff<'a,
         .diff_lines(source, formatted)
 }
 
-/// Character mode: per-line diff with inline (character-level) emphasis on
-/// changed spans.
+/// The state of a character in the character-mode diff: common to both
+/// texts ([`CharState::Equal`]), present only in the source
+/// ([`CharState::Delete`]), or only in the styled text
+/// ([`CharState::Insert`]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum CharState {
+    Equal,
+    Delete,
+    Insert,
+}
+
+/// The visible marker text for a warned character (style50 renders the
+/// literal two-character sequences `\n` / `\t` instead of the raw control
+/// characters).
+const NEWLINE_MARKER: &str = "\\n";
+const TAB_MARKER: &str = "\\t";
+
+impl CharState {
+    /// The transition sequence entering `self`, style50's
+    /// `color_transition`: a reset closing any previous background, then
+    /// the new background for Delete/Insert (or none for Equal).
+    fn transition(self) -> &'static str {
+        match self {
+            CharState::Equal => RESET,
+            CharState::Insert => "\u{1b}[0m\u{1b}[42m",
+            CharState::Delete => "\u{1b}[0m\u{1b}[41m",
+        }
+    }
+}
+
+/// Removes ANSI escape sequences the way style50's EOF-flush check does
+/// (`re.sub(r"\x1b[^m]*m", "")`): every `ESC ... m` run disappears.
+fn strip_ansi(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find('\u{1b}') {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 1..];
+        rest = match after.find('m') {
+            Some(end) => &after[end + 1..],
+            // Unterminated escape: drop the ESC and keep scanning.
+            None => after,
+        };
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Character mode, style50 3.0.0 parity (`_api.py::char_diff` +
+/// `renderer/_renderers.py::to_ansi`): the full normalized source and its
+/// styled content are diffed **character by character** (newlines are diff
+/// units too) and the *original text* is re-rendered with
+/// character-level background highlighting — inserted characters on green,
+/// deleted on red, common text unstyled. Added or removed newlines are
+/// shown as a literal `\n` in the active background (an added newline ends
+/// the visible line; a deleted one merges the two lines it joined), added
+/// or removed tabs as a literal `\t`; each such marker also contributes a
+/// legend line `<marker> means that you should insert|delete a
+/// newline|tab.`
+///
+/// The returned per-file dirty block is: a blank line, the highlighted
+/// diff, a blank line, one legend line per unique (state, marker) in
+/// first-seen order, and a trailing blank line when any legend line was
+/// emitted. With `color == false` no ANSI escape is emitted anywhere
+/// (markers and layout are identical).
+///
+/// The character diff uses the `similar` crate where style50 uses Python's
+/// `difflib.ndiff`; both compute character-level edit scripts, but the
+/// chosen alignment may differ on ambiguous inputs — structure and colors
+/// are the parity contract, not byte-identical spans.
+///
+/// Like style50's own `ndiff`-based walk this is quadratic in the edit
+/// distance; on pathological large inputs character mode is the slowest
+/// renderer by design.
 pub(crate) fn render_character(source: &str, formatted: &str, color: bool) -> String {
-    let diff = line_diff(source, formatted);
-    let mut out = String::new();
-    for group in &diff.grouped_ops(ALL_IN_ONE_GROUP) {
-        for op in group {
-            for change in diff.iter_inline_changes(op) {
-                let code = match change.tag() {
-                    ChangeTag::Equal => None,
-                    ChangeTag::Delete => Some(RED),
-                    ChangeTag::Insert => Some(GREEN),
-                };
-                let colored = color && code.is_some();
-                if colored {
-                    out.push_str(code.unwrap_or(""));
+    // `line_diff` groups by lines; character mode needs char units (and
+    // pays the char-level cost that implies).
+    let diff = TextDiff::configure().diff_chars(source, formatted);
+
+    // The visible diff state — kept exactly like style50's `dtype`: it is
+    // only reassigned when a diff unit's tag differs from it, and NOT
+    // touched by the newline handling (the newline branches emit their own
+    // transition pairs without changing `dtype`), so consecutive
+    // same-type newlines emit no spurious transitions.
+    let mut dtype: Option<CharState> = None;
+    let mut line = String::new();
+    let mut body = String::new();
+    let mut legend: Vec<(CharState, &'static str)> = Vec::new();
+
+    // `dtype` (Some(tag) of the current unit) drives transitions; `warn`
+    // records a legend entry unless the (state, marker) pair is already
+    // there (style50 keeps a set; insertion order is preserved here).
+    macro_rules! warn {
+        ($state:expr, $marker:expr) => {
+            if !legend.contains(&($state, $marker)) {
+                legend.push(($state, $marker));
+            }
+        };
+    }
+
+    for change in diff.iter_all_changes() {
+        let tag = match change.tag() {
+            ChangeTag::Equal => CharState::Equal,
+            ChangeTag::Delete => CharState::Delete,
+            ChangeTag::Insert => CharState::Insert,
+        };
+        for ch in change.value().chars() {
+            if dtype != Some(tag) {
+                if color {
+                    line.push_str(tag.transition());
                 }
-                out.push(match change.tag() {
-                    ChangeTag::Equal => ' ',
-                    ChangeTag::Delete => '-',
-                    ChangeTag::Insert => '+',
-                });
-                for (emphasized, value) in change.values() {
-                    if *emphasized && colored {
-                        out.push_str(BOLD);
+                dtype = Some(tag);
+            }
+            if ch == '\n' {
+                if dtype != Some(CharState::Equal) {
+                    let state = dtype.expect("dtype is Some unless the tag was Equal");
+                    warn!(state, NEWLINE_MARKER);
+                    line.push_str(NEWLINE_MARKER);
+                    if color {
+                        line.push_str(CharState::Equal.transition());
                     }
-                    out.push_str(value.trim_end_matches(['\r', '\n']));
-                    if *emphasized && colored {
-                        out.push_str(RESET);
-                        // A bare RESET would cancel the enclosing line's
-                        // color for the rest of the line, so re-establish
-                        // it (Equal lines are never colored).
-                        if let Some(line) = code {
-                            out.push_str(line);
-                        }
-                    }
                 }
-                if colored {
-                    out.push_str(RESET);
+                // An inserted (or common) newline ends the visible line;
+                // a deleted one merges the two lines (no yield).
+                if dtype != Some(CharState::Delete) {
+                    body.push_str(&line);
+                    body.push('\n');
+                    line.clear();
                 }
-                out.push('\n');
+                if color {
+                    // Re-open the background for the text that follows
+                    // (style50's unconditional `transition(" ", dtype)`).
+                    line.push_str(tag.transition());
+                }
+            } else if dtype != Some(CharState::Equal) && ch == '\t' {
+                let state = dtype.expect("dtype is Some unless the tag was Equal");
+                warn!(state, TAB_MARKER);
+                line.push_str(TAB_MARKER);
+            } else {
+                line.push(ch);
             }
         }
+    }
+    // Close any open background, then flush the pending line only if it
+    // carries visible (non-ANSI) content — style50's EOF behavior.
+    if color {
+        line.push_str(RESET);
+    }
+    if !strip_ansi(&line).is_empty() {
+        body.push_str(&line);
+        body.push('\n');
+    }
+
+    let mut out = String::new();
+    out.push('\n');
+    out.push_str(&body);
+    out.push('\n');
+    for (state, marker) in &legend {
+        let (background, verb) = match state {
+            CharState::Insert => (ON_GREEN, "insert"),
+            CharState::Delete => (ON_RED, "delete"),
+            CharState::Equal => continue,
+        };
+        let noun = if *marker == NEWLINE_MARKER {
+            "newline"
+        } else {
+            "tab"
+        };
+        if color {
+            out.push_str(background);
+            out.push_str(marker);
+            out.push_str(RESET);
+            out.push_str(YELLOW);
+            out.push_str(" means that you should ");
+            out.push_str(verb);
+            out.push_str(" a ");
+            out.push_str(noun);
+            out.push('.');
+            out.push_str(RESET);
+        } else {
+            out.push_str(marker);
+            out.push_str(" means that you should ");
+            out.push_str(verb);
+            out.push_str(" a ");
+            out.push_str(noun);
+            out.push('.');
+        }
+        out.push('\n');
+    }
+    if !legend.is_empty() {
+        out.push('\n');
     }
     out
 }
