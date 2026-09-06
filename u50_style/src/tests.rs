@@ -683,14 +683,16 @@ fn expand_paths_walks_directories_filters_and_sorts() {
     let c = write_in(&root, "dirty.c", DIRTY_C);
     let py = write_in(&root, "sub/dirty.py", "x = 1\n");
     let js = write_in(&root, "sub/deep/dirty.js", "x = 1;\n");
-    write_in(&root, "unsupported.rb", "puts 1\n");
+    let unsupported = write_in(&root, "unsupported.rb", "puts 1\n");
     let hidden = write_in(&root, ".hiddendir/dirty2.c", DIRTY_C);
-    let expanded = expand_paths(std::slice::from_ref(&root));
+    let (expanded, skipped) = expand_paths(std::slice::from_ref(&root));
     // Hidden dirs are included (style50 parity: --ignore is the filter);
-    // unsupported extensions are dropped; result is sorted and unique.
+    // unsupported regular files are reported as skipped (in walk order);
+    // the kept list is sorted and unique.
     let mut expected = vec![c, hidden, js, py];
     expected.sort();
     assert_eq!(expanded, expected);
+    assert_eq!(skipped, vec![unsupported]);
     std::fs::remove_dir_all(&root).expect("cleanup");
 }
 
@@ -698,7 +700,9 @@ fn expand_paths_walks_directories_filters_and_sorts() {
 fn expand_paths_keeps_explicit_unsupported_file() {
     let root = temp_dir("keepunsup");
     let rb = write_in(&root, "bad.rb", "puts 1\n");
-    assert_eq!(expand_paths(std::slice::from_ref(&rb)), vec![rb]);
+    let (files, skipped) = expand_paths(std::slice::from_ref(&rb));
+    assert_eq!(files, vec![rb]);
+    assert!(skipped.is_empty());
     std::fs::remove_dir_all(&root).expect("cleanup");
 }
 
@@ -708,7 +712,9 @@ fn expand_paths_keeps_missing_path() {
         "u50_style_test_{}_gone_dir_missing.c",
         std::process::id()
     ));
-    assert_eq!(expand_paths(std::slice::from_ref(&missing)), vec![missing]);
+    let (files, skipped) = expand_paths(std::slice::from_ref(&missing));
+    assert_eq!(files, vec![missing]);
+    assert!(skipped.is_empty());
 }
 
 #[test]
@@ -716,13 +722,16 @@ fn expand_paths_dedupes_dir_and_file_inside() {
     let root = temp_dir("dedupe");
     let c = write_in(&root, "dirty.c", DIRTY_C);
     let py = write_in(&root, "sub/dirty.py", "x = 1\n");
-    let expanded = expand_paths(&[root.clone(), c.clone(), root]);
+    let (expanded, skipped) = expand_paths(&[root.clone(), c.clone(), root]);
     assert_eq!(expanded, vec![c, py]);
+    assert!(skipped.is_empty());
 }
 
 #[test]
 fn expand_paths_empty_input_is_empty() {
-    assert!(expand_paths(&[]).is_empty());
+    let (files, skipped) = expand_paths(&[]);
+    assert!(files.is_empty());
+    assert!(skipped.is_empty());
 }
 
 #[test]
@@ -736,13 +745,14 @@ fn expand_paths_does_not_follow_symlinked_dirs() {
         if std::os::unix::fs::symlink(&other, &link).is_ok() {
             // Inside a walked tree the symlinked dir is neither descended
             // into (os.walk followlinks=false) nor collected as a file.
-            assert!(expand_paths(std::slice::from_ref(&root)).is_empty());
+            let (files, skipped) = expand_paths(std::slice::from_ref(&root));
+            assert!(files.is_empty());
+            assert!(skipped.is_empty());
             // A symlinked dir passed directly is a non-dir argument: kept
             // unchanged (its per-file error happens downstream).
-            assert_eq!(
-                expand_paths(std::slice::from_ref(&link)),
-                vec![link.clone()]
-            );
+            let (files, skipped) = expand_paths(std::slice::from_ref(&link));
+            assert_eq!(files, vec![link.clone()]);
+            assert!(skipped.is_empty());
         }
     }
     let _ = std::fs::remove_dir_all(&root);
@@ -752,7 +762,9 @@ fn expand_paths_does_not_follow_symlinked_dirs() {
 #[test]
 fn expand_paths_empty_directory_contributes_nothing() {
     let root = temp_dir("emptydir");
-    assert!(expand_paths(std::slice::from_ref(&root)).is_empty());
+    let (files, skipped) = expand_paths(std::slice::from_ref(&root));
+    assert!(files.is_empty());
+    assert!(skipped.is_empty());
     std::fs::remove_dir_all(&root).expect("cleanup");
 }
 

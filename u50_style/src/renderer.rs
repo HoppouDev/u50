@@ -21,10 +21,12 @@ use crate::request::{FileResult, Output, Report, Request};
 /// A sink for the events of a style check.
 ///
 /// Event order: [`begin`](Renderer::begin), then one
-/// [`file`](Renderer::file) per successfully processed file and one
-/// [`file_error`](Renderer::file_error) per file that could not be
-/// processed, then [`finish`](Renderer::finish). Every method has an empty
-/// default, so a custom renderer only overrides what it needs.
+/// [`skipped`](Renderer::skipped) per unsupported regular file found while
+/// walking a directory operand, then one [`file`](Renderer::file) per
+/// successfully processed file and one [`file_error`](Renderer::file_error)
+/// per file that could not be processed, then [`finish`](Renderer::finish).
+/// Every method has an empty default, so a custom renderer only overrides
+/// what it needs.
 ///
 /// # Examples
 ///
@@ -78,6 +80,12 @@ pub trait Renderer {
     /// Called once before the first file is reported.
     fn begin(&mut self, _req: &Request) {}
 
+    /// One unsupported regular file found while walking a directory
+    /// operand (the style50-parity `unknown file type "<path>",
+    /// skipping...` warning). Never called for explicit file arguments;
+    /// symlinks, FIFOs, and devices inside the walk are never reported.
+    fn skipped(&mut self, _path: &Path) {}
+
     /// One successfully processed file (clean or dirty).
     fn file(&mut self, _result: &FileResult) {}
 
@@ -100,6 +108,10 @@ pub struct ConsoleRenderer {
 }
 
 impl Renderer for ConsoleRenderer {
+    fn skipped(&mut self, path: &Path) {
+        eprintln!("unknown file type \"{}\", skipping...", path.display());
+    }
+
     fn file(&mut self, result: &FileResult) {
         if result.clean {
             return;
@@ -204,6 +216,15 @@ pub struct ScoreRenderer {
 }
 
 impl Renderer for ScoreRenderer {
+    fn skipped(&mut self, path: &Path) {
+        // Buffered so the warning prints before the score line, matching
+        // the original's error-then-score ordering.
+        self.errors.push(format!(
+            "unknown file type \"{}\", skipping...",
+            path.display()
+        ));
+    }
+
     fn file(&mut self, result: &FileResult) {
         let (Some(source), Some(formatted)) = (&result.source, &result.formatted) else {
             return;

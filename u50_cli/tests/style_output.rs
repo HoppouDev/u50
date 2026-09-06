@@ -37,9 +37,11 @@ const UPPER: &str = "#!/bin/sh\nexec tr a-z A-Z\n";
 #[cfg(unix)]
 static STUB_SEQ: AtomicUsize = AtomicUsize::new(0);
 
-/// A scratch cache whose `venv/bin/autopep8` stub is `script` (mirroring
-/// the uv-managed venv layout `<cache>/u50/style50/venv/bin`). Removed on
-/// drop; every run is hermetic (`U50_STYLE_NO_PROVISION=1`).
+/// A scratch cache whose `venv/bin/autopep8` and `venv/bin/clang-format`
+/// stubs are `script` (mirroring the uv-managed venv layout
+/// `<cache>/u50/style50/venv/bin`; C shares clang-format, so both stubs
+/// let the walk-warning tests below use `.c` operands hermetically).
+/// Removed on drop; every run is hermetic (`U50_STYLE_NO_PROVISION=1`).
 #[cfg(unix)]
 struct StubCache {
     root: PathBuf,
@@ -58,10 +60,12 @@ impl StubCache {
         let _ = std::fs::remove_dir_all(&root);
         let bin = root.join("cache/u50/style50/venv/bin");
         std::fs::create_dir_all(&bin).expect("create cache bin");
-        let stub = bin.join("autopep8");
-        std::fs::write(&stub, script).expect("write stub");
-        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755))
-            .expect("chmod stub executable");
+        for tool in ["autopep8", "clang-format"] {
+            let stub = bin.join(tool);
+            std::fs::write(&stub, script).expect("write stub");
+            std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod stub executable");
+        }
         Self { root }
     }
 
@@ -500,6 +504,130 @@ fn setup_succeeds_when_every_backend_is_already_cached() {
     );
 
     let _ = std::fs::remove_dir_all(&root);
+}
+
+// --- directory-walk warnings (style50 parity) ---
+
+/// A fresh scratch directory named after the test (plus the pid), removed
+/// wholesale by the caller.
+#[cfg(unix)]
+fn temp_dir(test: &str) -> PathBuf {
+    let path = std::env::temp_dir().join(format!(
+        "u50_style_output_dir_{}_{}",
+        std::process::id(),
+        test
+    ));
+    let _ = std::fs::remove_dir_all(&path);
+    std::fs::create_dir_all(&path).expect("create scratch dir");
+    path
+}
+
+/// Writes `contents` to `dir/rel`, creating parent directories.
+#[cfg(unix)]
+fn write_in(dir: &Path, rel: &str, contents: &str) -> PathBuf {
+    let path = dir.join(rel);
+    std::fs::create_dir_all(path.parent().expect("rel has a parent")).expect("create parent");
+    std::fs::write(&path, contents).expect("write file");
+    path
+}
+
+#[test]
+#[cfg(unix)]
+fn check_mode_walk_warns_unknown_file_type_to_stderr_and_exits_1() {
+    let dir = temp_dir("walk_check");
+    write_in(&dir, "dirty.c", "int main(void)\n{\nreturn 0;\n}\n");
+    let notes = write_in(&dir, "notes.txt", "not code\n");
+    let args = [dir.to_str().expect("utf-8 temp path")];
+
+    let (code, stdout, stderr) = style(&args, UPPER);
+    assert_eq!(code, 1, "dirty .c operand must exit 1 (stderr: {stderr})");
+    assert_eq!(
+        stderr,
+        format!("unknown file type \"{}\", skipping...\n", notes.display()),
+        "the walk warning must be the only stderr output: {stderr}"
+    );
+    assert!(
+        stdout.contains("-int main(void)") && stdout.contains("+INT MAIN(VOID)"),
+        "the C diff must print on stdout: {stdout}"
+    );
+    assert!(
+        !stdout.contains("notes.txt"),
+        "no diff/status may mention the skipped file: {stdout}"
+    );
+    std::fs::remove_dir_all(&dir).expect("cleanup");
+}
+
+#[test]
+#[cfg(unix)]
+fn score_mode_walk_warning_prints_on_stdout_before_the_score() {
+    let dir = temp_dir("walk_score");
+    write_in(&dir, "clean.c", "INT MAIN(Void)\n{\nRETURN 0;\n}\n");
+    let notes = write_in(&dir, "notes.txt", "not code\n");
+    let args = ["-o", "score", dir.to_str().expect("utf-8 temp path")];
+
+    let (code, stdout, stderr) = style(&args, CAT);
+    assert_eq!(code, 0, "clean-only run must exit 0 (stderr: {stderr})");
+    assert_eq!(
+        stdout,
+        format!(
+            "unknown file type \"{}\", skipping...\n1.0\n",
+            notes.display()
+        ),
+        "warning line then score line, both on stdout: {stdout}"
+    );
+    assert!(stderr.is_empty(), "score mode keeps stderr clean: {stderr}");
+    std::fs::remove_dir_all(&dir).expect("cleanup");
+}
+
+#[test]
+#[cfg(unix)]
+fn fix_mode_walk_warns_to_stderr_and_still_fixes() {
+    let dir = temp_dir("walk_fix");
+    write_in(&dir, "dirty.c", "int main(void)\n{\nreturn 0;\n}\n");
+    let notes = write_in(&dir, "notes.txt", "not code\n");
+    let args = ["--fix", dir.to_str().expect("utf-8 temp path")];
+
+    let (code, stdout, stderr) = style(&args, UPPER);
+    assert_eq!(code, 0, "fix must exit 0 (stderr: {stderr})");
+    assert_eq!(
+        stderr,
+        format!("unknown file type \"{}\", skipping...\n", notes.display()),
+        "the walk warning must precede the fix lines: {stderr}"
+    );
+    assert!(
+        stdout.contains(&format!("fixed: {}", dir.join("dirty.c").display())),
+        "expected the `fixed:` status line: {stdout}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join("dirty.c")).expect("read fixed c"),
+        "INT MAIN(VOID)\n{\nRETURN 0;\n}\n",
+        "the .c file must be rewritten in place"
+    );
+    std::fs::remove_dir_all(&dir).expect("cleanup");
+}
+
+#[test]
+#[cfg(unix)]
+fn json_mode_walk_is_silent_about_unknown_file_types() {
+    // JSON output is machine-readable: walk warnings must appear neither
+    // on stdout (inside or beside the document) nor on stderr.
+    let dir = temp_dir("walk_json");
+    write_in(&dir, "clean.c", "INT MAIN(Void)\n{\nRETURN 0;\n}\n");
+    write_in(&dir, "notes.txt", "not code\n");
+    let args = ["-o", "json", dir.to_str().expect("utf-8 temp path")];
+
+    let (code, stdout, stderr) = style(&args, CAT);
+    assert_eq!(code, 0, "clean-only run must exit 0 (stderr: {stderr})");
+    assert!(
+        !stdout.contains("notes.txt"),
+        "the JSON document must not mention the skipped file: {stdout}"
+    );
+    assert!(stderr.is_empty(), "JSON mode must not warn: {stderr}");
+    assert!(
+        stdout.contains("clean.c"),
+        "the document must still list the processed file: {stdout}"
+    );
+    std::fs::remove_dir_all(&dir).expect("cleanup");
 }
 
 #[test]

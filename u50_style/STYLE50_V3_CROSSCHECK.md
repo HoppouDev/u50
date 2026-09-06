@@ -185,6 +185,8 @@ The Python-fixture difference is fully explained: both computed **diffs = 15.0**
 
 Exit codes again differ: score mode with dirty files → style50 0, u50 1 (by design).
 
+**Resolution (walk warning):** style50 warns `unknown file type "<path>", skipping...` when its directory walk hits unsupported files; u50's score mode now prints the same per-file warning on stdout before the score (style50-parity; text/fix modes print it on stderr instead, JSON stays silent — it never affects exit codes in u50).
+
 ### html
 
 Not implemented in u50 (see register #8).

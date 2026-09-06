@@ -64,10 +64,20 @@ pub fn normalize_source(source: &str) -> String {
 /// [`fix_with`] via [`process_file`]; [`FileResult::formatted`] carries the
 /// styled content for every successfully processed file.
 pub fn run_with(req: &Request, formatter: &dyn Formatter) -> Report {
-    let files = expand_paths(&req.files);
+    let (files, _skipped) = expand_paths(&req.files);
+    check_files(&files, formatter)
+}
+
+/// Processes already-expanded `files` (see [`expand_paths`]) into a
+/// [`Report`]: the per-file loop shared verbatim by [`run_with`] (check)
+/// and [`run_with_renderer`] (check + rendering). Walk warnings are a
+/// rendering concern: callers that render expand themselves (see
+/// [`run_with_renderer`]) or print the warnings engine-side (see
+/// [`fix_with`]); this helper never sees them.
+fn check_files(files: &[PathBuf], formatter: &dyn Formatter) -> Report {
     let mut results = Vec::with_capacity(files.len());
     let mut errors = Vec::new();
-    for path in &files {
+    for path in files {
         match process_file(path, formatter) {
             Ok(result) => results.push(result),
             Err(e) => errors.push((path.clone(), e.to_string())),
@@ -82,17 +92,24 @@ pub fn run_with(req: &Request, formatter: &dyn Formatter) -> Report {
 /// trait and pass it here, no engine changes needed.
 ///
 /// Event order (see [`Renderer`]): `begin(req)` once, then one
-/// `file(result)` per successfully processed file in report order, then one
-/// `file_error(path, message)` per per-file error in report order, then
-/// `finish(&report)` once. The built-in renderers write the legacy
+/// `skipped(path)` per unsupported regular file found while walking a
+/// directory operand (in walk order — the style50-parity
+/// `unknown file type ..., skipping...` warning), then one
+/// `file(result)` per successfully processed file in report order, then
+/// one `file_error(path, message)` per per-file error in report order,
+/// then `finish(&report)` once. The built-in renderers write the legacy
 /// console/JSON output byte for byte ([`run`] uses [`builtin_renderer`]).
 pub fn run_with_renderer(
     req: &Request,
     formatter: &dyn Formatter,
     renderer: &mut dyn Renderer,
 ) -> Report {
-    let report = run_with(req, formatter);
+    let (files, skipped) = expand_paths(&req.files);
+    let report = check_files(&files, formatter);
     renderer.begin(req);
+    for path in &skipped {
+        renderer.skipped(path);
+    }
     for result in &report.results {
         renderer.file(result);
     }
@@ -157,12 +174,21 @@ fn process_file(path: &Path, formatter: &dyn Formatter) -> anyhow::Result<FileRe
 ///
 /// Directory arguments are expanded recursively before processing (see
 /// [`expand_paths`]): every supported file inside a directory is fixed,
-/// deduplicated against the other arguments, and processed in sorted order.
+/// deduplicated against the other arguments, and processed in sorted
+/// order; unsupported regular files encountered during the walk are
+/// warned (never errors) and skipped, without affecting the exit code.
 ///
-/// No printing happens here (see [`fix`] for the printing entry point), and
-/// fix mode otherwise ignores the per-file diff rendering.
+/// One exception to no printing: unsupported regular files found while
+/// walking a directory operand are warned to stderr
+/// (`unknown file type "<path>", skipping...`, style50 parity) before the
+/// per-file fix lines; dry runs warn too. Otherwise no printing happens
+/// here (see [`fix`] for the printing entry point), and fix mode ignores
+/// the per-file diff rendering.
 pub fn fix_with(req: &Request, formatter: &dyn Formatter, dry_run: bool) -> Report {
-    let files = expand_paths(&req.files);
+    let (files, skipped) = expand_paths(&req.files);
+    for path in &skipped {
+        eprintln!("unknown file type \"{}\", skipping...", path.display());
+    }
     let mut results = Vec::with_capacity(files.len());
     let mut errors = Vec::new();
     for path in &files {
@@ -200,9 +226,17 @@ pub fn fix_with(req: &Request, formatter: &dyn Formatter, dry_run: bool) -> Repo
 /// style50 3.0.0's directory handling (an `os.walk` expansion with
 /// `followlinks=false`):
 ///
+/// Returns `(files, skipped)`: `files` is the deduplicated, sorted list
+/// to process; `skipped` holds the walked **regular files** whose
+/// [`detect_language`] is `None`, in walk order, for the caller to emit
+/// style50's `unknown file type "<path>", skipping...` warning (the
+/// channel is the caller's: stderr in text/fix modes, stdout in score
+/// mode; explicit operands are never reported there).
+///
 /// - a **directory** argument is walked recursively; only regular files
 ///   whose [`detect_language`] is `Some` are collected (the same
-///   extension filtering style50 applies while walking), and hidden
+///   extension filtering style50 applies while walking, plus its per-file
+///   warning for the skipped ones), and hidden
 ///   directories are included (style50's `--ignore` is the exclusion
 ///   mechanism, which u50 does not implement yet);
 /// - a **symlinked directory is not followed** (`symlink_metadata` says
@@ -211,34 +245,37 @@ pub fn fix_with(req: &Request, formatter: &dyn Formatter, dry_run: bool) -> Repo
 ///   unchanged, so explicit file arguments preserve their existing
 ///   per-file error semantics (unsupported extension, could not read);
 /// - a directory containing zero supported files contributes nothing
-///   (no error — style50 likewise skips unknown file types);
+///   (no error — style50 likewise skips unknown file types, warning once
+///   per skipped regular file; the warning never affects exit codes);
 /// - **unreadable directories are skipped silently** (there is no error
 ///   channel here; this also matches `os.walk`'s ignored-error default);
 /// - the final list is deduplicated (a directory and a file inside it can
 ///   both be named) and returned in sorted order for deterministic output.
-pub(crate) fn expand_paths(paths: &[PathBuf]) -> Vec<PathBuf> {
+pub(crate) fn expand_paths(paths: &[PathBuf]) -> (Vec<PathBuf>, Vec<PathBuf>) {
     let mut files: BTreeSet<PathBuf> = BTreeSet::new();
+    let mut skipped: Vec<PathBuf> = Vec::new();
     for path in paths {
         match std::fs::symlink_metadata(path) {
             // `symlink_metadata` never follows the link: a symlinked
             // directory reads as a link, not a directory, so it is kept
             // (and later errors per-file) instead of being walked.
-            Ok(meta) if meta.is_dir() => walk_dir(path, &mut files),
+            Ok(meta) if meta.is_dir() => walk_dir(path, &mut files, &mut skipped),
             _ => {
                 files.insert(path.clone());
             }
         }
     }
-    files.into_iter().collect()
+    (files.into_iter().collect(), skipped)
 }
 
 /// Recursively collects the supported regular files under `dir` into
-/// `files` (regular only: symlinks, FIFOs, devices, etc. inside the
-/// walked tree are skipped — `os.walk` with `followlinks=false` never
-/// visits them either). Entries are visited in file-name order at each
-/// level, and an unreadable directory is skipped silently (see
-/// [`expand_paths`]).
-fn walk_dir(dir: &Path, files: &mut BTreeSet<PathBuf>) {
+/// `files`, appending unsupported regular files to `skipped` in visit
+/// order (regular only: symlinks, FIFOs, devices, etc. inside the walked
+/// tree are skipped silently — `os.walk` with `followlinks=false` never
+/// visits them either, and they are never warned about). Entries are
+/// visited in file-name order at each level, and an unreadable directory
+/// is skipped silently (see [`expand_paths`]).
+fn walk_dir(dir: &Path, files: &mut BTreeSet<PathBuf>, skipped: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -252,10 +289,12 @@ fn walk_dir(dir: &Path, files: &mut BTreeSet<PathBuf>) {
             // `os.walk` `followlinks=false`, which leaves symlinked
             // entries unvisited, and also skips FIFOs/devices, which
             // could block on open when read.
-            Ok(meta) if meta.is_dir() => walk_dir(&path, files),
+            Ok(meta) if meta.is_dir() => walk_dir(&path, files, skipped),
             Ok(meta) if meta.is_file() => {
                 if detect_language(&path).is_some() {
                     files.insert(path);
+                } else {
+                    skipped.push(path);
                 }
             }
             // Unreadable entries and non-regular files (symlinks,
@@ -284,6 +323,9 @@ fn walk_dir(dir: &Path, files: &mut BTreeSet<PathBuf>) {
 ///   document of would-fix results only — no status lines (the output is
 ///   machine-readable; already-clean files are omitted).
 /// - errors always go to stderr as `error: <path>: <message>`.
+/// - walk warnings (`unknown file type "<path>", skipping...` for each
+///   unsupported regular file found while expanding directory operands)
+///   are printed by [`fix_with`] to stderr before the fix lines above.
 pub fn fix(req: &Request, dry_run: bool) -> Report {
     tracing::debug!(?req, dry_run, "u50_style::fix");
     let report = fix_with(req, &Cs50Formatter, dry_run);
