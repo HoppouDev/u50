@@ -79,7 +79,7 @@ enum Command {
 - `-v/--verbose` — repeatable, maps to tracing levels.
 - `--log-level <trace|debug|info|warn|error>` — overrides `-v`.
 - `-q/--quiet`.
-- `--color <auto|always|never>` — default `auto`; honors `NO_COLOR`.
+- `--color <auto|always|never>` — default `auto`; honors `NO_COLOR` and is tty-gated (no color when stdout is a pipe, matching style50).
 - `-V/--version` on root (the original submit50 used `-V`; the others `--version`).
 
 ## Compatibility notes

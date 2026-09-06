@@ -24,7 +24,10 @@
 
 use std::path::PathBuf;
 
-use u50_style::{Cs50Formatter, Formatter, Language, Output, Request, normalize_source, run_with};
+use u50_style::{
+    Cs50Formatter, Formatter, Language, Output, Request, builtin_renderer, normalize_source,
+    run_with, run_with_renderer,
+};
 
 /// (directory under `tests/fixtures`, file extension, language, backing tool).
 const LANGUAGES: &[(&str, &str, Language, &str)] = &[
@@ -100,6 +103,69 @@ macro_rules! golden_test {
             run_golden($dir, $ext, $language, $tool);
         }
     };
+}
+
+/// In-memory `Write` sink for renderer output: an `Rc`-shared buffer so a
+/// clone can be owned by the renderer's `Box<dyn Write>` and the bytes
+/// read back afterwards.
+#[derive(Default, Clone)]
+struct SharedBuf(std::rc::Rc<std::cell::RefCell<Vec<u8>>>);
+
+impl std::io::Write for SharedBuf {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.borrow_mut().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Runs score mode (`Output::Score`) over `<dir>/dirty.<ext>` with the real
+/// formatter and returns the rendered bytes; `None` when the test is gated
+/// off (same gate as the golden format tests).
+fn score_of(dir: &str, ext: &str, tool: &str) -> Option<String> {
+    if !gate(dir, tool) {
+        return None;
+    }
+    let req = Request {
+        files: vec![fixture(dir, &format!("dirty.{ext}"))],
+        output: Output::Score,
+        color: false,
+    };
+    let sink = SharedBuf::default();
+    let mut renderer = builtin_renderer(Output::Score, false, Box::new(sink.clone()));
+    let report = run_with_renderer(&req, &Cs50Formatter, renderer.as_mut());
+    assert!(
+        report.errors.is_empty(),
+        "{dir}: errors {:?}",
+        report.errors
+    );
+    Some(String::from_utf8(sink.0.borrow().clone()).expect("utf8 score"))
+}
+
+/// Verified live against style50 3.0.0 (`STYLE50_V3_CROSSCHECK.md` §5):
+/// `style50 -o score fixtures/py/dirty.py` → `0.9814814814814815`
+/// (diffs = 15.0; `Python.count_lines` counts ALL 810 lines — blank lines
+/// matter per PEP 8).
+#[test]
+fn py_dirty_score_matches_style50() {
+    let Some(score) = score_of("py", "py", "autopep8") else {
+        return; // gated off (no U50_STYLE_GOLDEN / autopep8 not cached)
+    };
+    assert_eq!(score, "0.9814814814814815\n");
+}
+
+/// Verified live against style50 3.0.0 (`STYLE50_V3_CROSSCHECK.md` §5):
+/// `style50 -o score fixtures/c/dirty.c` → `0.5036334275333064` (C counts
+/// non-blank lines; the denominator for non-Python languages is unchanged).
+#[test]
+fn c_dirty_score_matches_style50() {
+    let Some(score) = score_of("c", "c", "clang-format") else {
+        return; // gated off (no U50_STYLE_GOLDEN / clang-format not cached)
+    };
+    assert_eq!(score, "0.5036334275333064\n");
 }
 
 golden_test!(c_golden, "c", "c", Language::C, "clang-format");

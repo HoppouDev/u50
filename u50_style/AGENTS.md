@@ -52,7 +52,7 @@ Rendering is decoupled from processing. `process_file` (engine-internal) only re
 3. `file_error(&Path, &str)` — once per per-file error, in report order;
 4. `finish(&Report)` — once, after all files (final output such as a JSON document or HTML tail goes here).
 
-Entry points: `run(&Request)` (the CLI path) delegates to `run_with_renderer(&Request, &dyn Formatter, &mut dyn Renderer)` with the renderer chosen by `builtin_renderer(output, color, out: Box<dyn Write>)` — `JsonRenderer` for `Output::Json`, `ConsoleRenderer` (character/split/unified diff per dirty file, `error: <path>: <message>` lines to stderr) otherwise. `run()`'s stdout/stderr bytes are identical to the pre-abstraction output (JSON = document + trailing newline; text = concatenated per-file diffs). Custom sinks need only implement `Renderer` and call `run_with_renderer` — a minimal HTML example lives in the `Renderer` trait's doc comment (kept compiling as a doc test):
+Entry points: `run(&Request)` (the CLI path) delegates to `run_with_renderer(&Request, &dyn Formatter, &mut dyn Renderer)` with the renderer chosen by `builtin_renderer(output, color, out: Box<dyn Write>)` — `JsonRenderer` for `Output::Json`, `ConsoleRenderer` (character/split/unified diff per dirty file, `error: <path>: <message>` lines to stderr) otherwise. `run()`'s stdout/stderr bytes match the pre-abstraction output except JSON, which is now pretty-printed with a 4-space indent like style50 (document + trailing newline); text = concatenated per-file diffs. Custom sinks need only implement `Renderer` and call `run_with_renderer` — a minimal HTML example lives in the `Renderer` trait's doc comment (kept compiling as a doc test):
 
 ```rust
 struct HtmlRenderer { buf: String }
@@ -67,7 +67,11 @@ impl Renderer for HtmlRenderer {
 }
 ```
 
-`ScoreRenderer` (`Output::Score`) reproduces the original style50's score mode: per successfully processed file it accumulates half the inserted/deleted line count of the source-vs-styled line diff (the same `line_diff` machinery the display modes use) into `diffs`, and the styled text's non-blank line count into `lines`; `finish` prints one error line per errored file in order (bare message — no `error: ` prefix — yellow ANSI 33 when color is on, mirroring the original's unconditional termcolor), then the uncolored score `max(1 - diffs/lines, 0)` (`0.0` when nothing was checked successfully, i.e. only successful files contribute). A styled text with no non-blank lines contributes a `file is empty` error line instead of touching the sums (the original raises a per-file `Error` there). The score prints with Python `str(float)` formatting via `py_str_f64` (Rust `f64` `Debug` = same shortest-round-trip representation, always with a decimal point: `1.0`, `0.5`, `0.8846153846153846`); no diff text is produced. Deliberate divergence: u50 keeps its own exit codes in score mode (the original style50 always exits 0).
+`ScoreRenderer` (`Output::Score`) reproduces the original style50's score mode: per successfully processed file it accumulates half the inserted/deleted line count of the source-vs-styled line diff (the same `line_diff` machinery the display modes use) into `diffs`, and the styled text's non-blank line count into `lines`; `finish` prints one error line per errored file in order (bare message — no `error: ` prefix — yellow ANSI 33 when color is on, mirroring the original's unconditional termcolor), then the uncolored score `max(1 - diffs/lines, 0)` (`0.0` when nothing was checked successfully, i.e. only successful files contribute). A styled text with no non-blank lines contributes a `file is empty` error line instead of touching the sums (the original raises a per-file `Error` there). `lines` counts ALL lines of the styled text for Python (the original's
+`Python.count_lines` counts blank lines too, per PEP 8) and non-blank lines
+for every other language — verified live: `py/dirty.py` → `0.9814814814814815`,
+`c/dirty.c` → `0.5036334275333064`, byte-identical to style50. The score
+prints with Python `str(float)` formatting via `py_str_f64` (Rust `f64` `Debug` = same shortest-round-trip representation, always with a decimal point: `1.0`, `0.5`, `0.8846153846153846`); no diff text is produced. Deliberate divergence: u50 keeps its own exit codes in score mode (the original style50 always exits 0).
 
 The pure render functions (`render_character`/`render_split`/`render_unified`/`json_document`) are unchanged and remain the single source of diff bytes; the built-in renderers just route `FileResult.source`/`formatted` through them. In JSON, `patch` stays `null` for clean files (legacy schema); dirty files render the unified diff of source against formatted.
 
@@ -255,7 +259,10 @@ Findings recorded from the official docs: <https://cs50.readthedocs.io/style50/>
   { "clean": bool, "files": [ { "path": String, "clean": bool, "patch": string-or-null } ] }
   ```
 
-  `patch` is the unified diff, null when the file is clean.
+  `patch` is the unified diff, null when the file is clean. The document is
+  **pretty-printed with a 4-space indent** (matching the original's JSON
+  formatting); the schema itself is a documented by-design divergence (see
+  [STYLE50_V3_CROSSCHECK.md](STYLE50_V3_CROSSCHECK.md), register #1).
 
 ### Embedded style config (verbatim, from the original's source)
 
@@ -357,6 +364,6 @@ Findings below were empirically verified live against the installed `/usr/bin/st
 - style50 skips unknown file types with a warning (rc=0); u50 errors with exit 3.
 - **Presentation divergences (cosmetic)**: style50 prints a "Results generated by style50 vX" banner, "Looks good!", comment-count hints ("But consider adding more comments!" — a feature u50 lacks), and a "\n means insert a newline" legend in character mode; style50's character mode renders the original text with ins/del spans while u50 renders -/+ lines; style50's unified mode is not a patchable git diff (no `@@`/`---`/`+++`), u50's is.
 - **JSON schema differs by design**: style50 emits `{files: [{name, score, comments, diff(html), warn_chars, loc}], score, version}`; u50 emits `{clean, files: [{path, clean, patch}]}`.
-- style50 colors via `termcolor` (tty-aware); u50's `--color auto` honors `NO_COLOR` but has no tty check (colored output when piped).
+- style50 colors via `termcolor` (tty-aware); u50's `--color auto` honors `NO_COLOR` and is tty-gated (no color when stdout is piped, matching the original).
 
 Workspace-wide conventions (Rust edition 2024, workspace dependencies, clippy pedantic, CI gates) live in the root [AGENTS.md](../AGENTS.md) and are not repeated here.

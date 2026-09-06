@@ -278,11 +278,19 @@ fn resolve_level_verbose_count() {
 }
 
 #[test]
-fn resolve_ansi_color_modes_and_no_color() {
-    assert!(resolve_ansi(Color::Always, true));
-    assert!(resolve_ansi(Color::Always, false));
-    assert!(!resolve_ansi(Color::Never, false));
-    assert!(!resolve_ansi(Color::Never, true));
-    assert!(!resolve_ansi(Color::Auto, true));
-    assert!(resolve_ansi(Color::Auto, false));
+fn resolve_ansi_color_modes_no_color_and_tty() {
+    // Always / Never are unconditional.
+    assert!(resolve_ansi(Color::Always, false, false));
+    assert!(resolve_ansi(Color::Always, true, false));
+    assert!(resolve_ansi(Color::Always, false, true));
+    assert!(resolve_ansi(Color::Always, true, true));
+    assert!(!resolve_ansi(Color::Never, false, false));
+    assert!(!resolve_ansi(Color::Never, false, true));
+    assert!(!resolve_ansi(Color::Never, true, false));
+    assert!(!resolve_ansi(Color::Never, true, true));
+    // Auto: NO_COLOR wins even on a tty; a pipe suppresses color.
+    assert!(!resolve_ansi(Color::Auto, true, true));
+    assert!(!resolve_ansi(Color::Auto, true, false));
+    assert!(!resolve_ansi(Color::Auto, false, false));
+    assert!(resolve_ansi(Color::Auto, false, true));
 }

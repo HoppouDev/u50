@@ -1034,12 +1034,46 @@ fn json_renderer_output_matches_json_document_plus_newline() {
         renderer.file_error(path, message);
     }
     renderer.finish(&report);
-    // Byte-identical to the legacy `println!("{}", json_document(...))`.
-    let expected = format!("{}\n", json_document(&report));
+    // Byte-identical to pretty-printing the document with a 4-space
+    // indent (style50's JSON formatting) plus a trailing newline.
+    let mut expected = crate::renderer::json_pretty(&json_document(&report));
+    expected.push(b'\n');
     assert_eq!(
         String::from_utf8(sink.0.borrow().clone()).expect("utf8"),
-        expected
+        String::from_utf8(expected).expect("utf8")
     );
+    std::fs::remove_file(&dirty).expect("cleanup");
+}
+
+#[test]
+fn json_renderer_output_is_pretty_printed_with_four_space_indent() {
+    // style50 pretty-prints its JSON with indent 4; u50 must match the
+    // formatting (the schema itself stays u50's own — documented as a
+    // by-design divergence in STYLE50_V3_CROSSCHECK.md).
+    let dirty = temp_file("jsonpretty.c", DIRTY_C);
+    let req = Request {
+        files: vec![dirty.clone()],
+        output: Output::Json,
+        color: false,
+    };
+    let report = run_with(&req, &Reindent);
+    let sink = SharedBuf::default();
+    let mut renderer = builtin_renderer(Output::Json, false, Box::new(sink.clone()));
+    renderer.finish(&report);
+    let text = String::from_utf8(sink.0.borrow().clone()).expect("utf8");
+
+    // Pretty-printed: newlines and 4-space indentation, not one line.
+    assert!(text.contains('\n'), "json output must be multi-line");
+    assert!(
+        text.contains("\n    \"clean\"") && text.contains("\n            \"path\""),
+        "json output must use 4-space indentation:\n{text}"
+    );
+    let compact = serde_json::to_string(&json_document(&report)).expect("compact");
+    assert_ne!(text.trim_end(), compact, "json output must not be compact");
+    // Still parses to the same document.
+    let doc: serde_json::Value =
+        serde_json::from_str(text.trim_end()).expect("renderer wrote valid json");
+    assert_eq!(doc, json_document(&report));
     std::fs::remove_file(&dirty).expect("cleanup");
 }
 
@@ -1134,6 +1168,46 @@ fn score_renderer_half_insert_and_blank_lines() {
             false
         ),
         "0.75\n"
+    );
+}
+
+#[test]
+fn score_renderer_python_counts_all_lines() {
+    // style50's `Python.count_lines` counts ALL lines (blank lines matter
+    // per PEP 8), unlike every other language: 3 non-blank + 2 blank = 5
+    // styled lines; diffs = 1.0; score = 1 - 1/5 = 0.8.
+    assert_eq!(
+        score_output(
+            vec![FileResult {
+                path: PathBuf::from("a.py"),
+                clean: false,
+                source: Some("a\nb\nc\n".to_owned()),
+                formatted: Some("a\nb\nc\n\n\n".to_owned()),
+            }],
+            Vec::new(),
+            false
+        ),
+        "0.8\n"
+    );
+}
+
+#[test]
+fn score_renderer_non_python_still_counts_non_blank() {
+    // The same styled text under a .c path: the 2 blank lines do NOT
+    // count (C and all other languages keep non-blank counting, and their
+    // parity with style50 is byte-exact): score = 1 - 1/3.
+    assert_eq!(
+        score_output(
+            vec![FileResult {
+                path: PathBuf::from("a.c"),
+                clean: false,
+                source: Some("a\nb\nc\n".to_owned()),
+                formatted: Some("a\nb\nc\n\n\n".to_owned()),
+            }],
+            Vec::new(),
+            false
+        ),
+        "0.6666666666666667\n"
     );
 }
 

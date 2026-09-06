@@ -19,6 +19,7 @@ reqwest = {
     "system-proxy",
   ]
 }
+serde = "1"
 serde_json = "1"
 sha2 = "0.10"
 similar = { version = "2", features = ["inline"] }

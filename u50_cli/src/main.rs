@@ -1,5 +1,6 @@
 #![warn(clippy::pedantic)]
 
+use std::io::IsTerminal;
 use std::process::ExitCode;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -244,7 +245,11 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 let request = u50_style::Request {
                     files: args.files,
                     output: map_style_output(args.output),
-                    color: resolve_ansi(cli.globals.color, no_color),
+                    color: resolve_ansi(
+                        cli.globals.color,
+                        no_color,
+                        std::io::stdout().is_terminal(),
+                    ),
                 };
                 if args.fix {
                     // In-place fix: 3 on any per-file error (incl. write
@@ -336,12 +341,13 @@ fn resolve_level(quiet: bool, verbose: u8, explicit: Option<LogLevel>) -> LevelF
 }
 
 /// Resolves whether ANSI colors are enabled; in `Auto` mode, honors
-/// `NO_COLOR` (probed by the caller to keep this helper pure).
-fn resolve_ansi(color: Color, no_color_set: bool) -> bool {
+/// `NO_COLOR` and tty-gates the output (style50 emits no color when piped).
+/// `is_tty` is probed by the caller to keep this helper pure.
+fn resolve_ansi(color: Color, no_color_set: bool, is_tty: bool) -> bool {
     match color {
         Color::Always => true,
         Color::Never => false,
-        Color::Auto => !no_color_set,
+        Color::Auto => !no_color_set && is_tty,
     }
 }
 
@@ -351,7 +357,7 @@ fn init_tracing(cli: &Cli, no_color: bool) {
         cli.globals.verbose,
         cli.globals.log_level,
     );
-    let ansi = resolve_ansi(cli.globals.color, no_color);
+    let ansi = resolve_ansi(cli.globals.color, no_color, std::io::stdout().is_terminal());
 
     tracing_subscriber::fmt()
         .with_max_level(level)

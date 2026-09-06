@@ -10,6 +10,7 @@
 use std::io::Write;
 use std::path::Path;
 
+use serde::Serialize;
 use similar::ChangeTag;
 
 use crate::render::{
@@ -136,12 +137,30 @@ pub struct JsonRenderer {
 impl Renderer for JsonRenderer {
     fn finish(&mut self, report: &Report) {
         let document = json_document(report);
-        let _ = writeln!(self.out, "{document}");
+        let _ = writeln!(
+            self.out,
+            "{}",
+            String::from_utf8_lossy(&json_pretty(&document))
+        );
     }
 
     fn file_error(&mut self, path: &Path, message: &str) {
         eprintln!("error: {}: {message}", path.display());
     }
+}
+
+/// Serializes `document` pretty-printed with a **4-space indent**, matching
+/// the original style50's JSON formatting (the schema itself stays u50's
+/// own — a documented by-design divergence). The bytes carry no trailing
+/// newline.
+pub(crate) fn json_pretty(document: &serde_json::Value) -> Vec<u8> {
+    let mut buf = Vec::new();
+    let formatter = serde_json::ser::PrettyFormatter::with_indent(b"    ");
+    let mut serializer = serde_json::Serializer::with_formatter(&mut buf, formatter);
+    // Serializing a `serde_json::Value` into an in-memory buffer cannot
+    // fail, so the result is ignored.
+    let _ = Serialize::serialize(document, &mut serializer);
+    buf
 }
 
 /// Formats an `f64` the way Python's `str()` formats style scores: the
@@ -165,7 +184,9 @@ pub(crate) fn py_str_f64(value: f64) -> String {
 /// successfully processed file, `diffs` accumulates half the number of
 /// inserted/deleted lines between the normalized source and its styled
 /// content (via the same line diff the display modes use), and `lines`
-/// accumulates the styled text's non-blank line count. The final score is
+/// accumulates the styled text's line count — ALL lines for Python (the
+/// original's `Python.count_lines` counts blank lines too, per PEP 8),
+/// non-blank lines only for every other language. The final score is
 /// `max(1 - diffs/lines, 0)`, or `0.0` when no file was checked
 /// successfully. Only successful files contribute — the engine never
 /// reports [`Renderer::file`] for errored files — matching the original,
@@ -203,11 +224,20 @@ impl Renderer for ScoreRenderer {
             self.errors.push("file is empty".to_owned());
             return;
         }
+        // style50's `Python.count_lines` counts ALL lines of the styled
+        // text ("blank lines are relevant to style per pep8"); every other
+        // language counts non-blank lines only. The empty-text check above
+        // stays on the non-blank count for all languages.
+        let line_count = if result.path.extension() == Some(std::ffi::OsStr::new("py")) {
+            formatted.lines().count()
+        } else {
+            non_blank
+        };
         // Line counts stay far below 2^53, so the conversions are exact.
         #[allow(clippy::cast_precision_loss)]
         let file_diffs = change_count as f64 / 2.0;
         self.diffs += file_diffs;
-        self.lines += non_blank as u64;
+        self.lines += line_count as u64;
     }
 
     fn file_error(&mut self, _path: &Path, message: &str) {
