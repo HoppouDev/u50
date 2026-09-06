@@ -276,7 +276,7 @@ clang-format >= 14 is required; when a formatter binary is missing the engine er
 ### Not yet implemented (present in the original; future work)
 
 - `--ignore` (the mechanism for excluding directories such as `node_modules` from the directory walk), `--clang-format-style` (custom style override).
-- `score` and `html` output modes (style50 v2 features).
+- `html` output mode (`score` is implemented — verified byte-parity with the original in [STYLE50_V3_CROSSCHECK.md](STYLE50_V3_CROSSCHECK.md)).
 - comment-count hints (style50's "But consider adding more comments!" suggestion).
 
 ## Golden fixture tests
