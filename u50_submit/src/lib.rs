@@ -15,8 +15,12 @@ pub struct Request {
     pub ssh: bool,
     /// Show what would be submitted without pushing.
     pub dry_run: bool,
-    /// Log out of the current session.
+    /// Log out of the current session (`--logout`; ignores the slug —
+    /// submit50 treats it as a standalone request, so dispatch may skip
+    /// the rest of the fields when this is set).
     pub logout: bool,
+    /// Log verbosity for the submission (`--log-level`; `None` = default).
+    pub log_level: Option<String>,
 }
 
 /// Submits the work described by `req` to GitHub via git.

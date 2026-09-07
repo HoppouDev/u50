@@ -1,7 +1,7 @@
 //! Formatter backend backed by external style tools.
 
 use std::collections::HashSet;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{LazyLock, Mutex};
@@ -77,8 +77,12 @@ pub(crate) fn cache_dir() -> anyhow::Result<PathBuf> {
 /// `%USERPROFILE%\AppData\Local`) on Windows.
 #[cfg(unix)]
 fn cache_base() -> Option<PathBuf> {
+    // Absolute only — a relative $HOME would silently root the cache at
+    // the working directory, exactly the scattering `cache_dir` rules
+    // out (the Windows branch filters the same way).
     std::env::var_os("HOME")
         .map(PathBuf::from)
+        .filter(|home| home.is_absolute())
         .map(|home| home.join(".cache"))
 }
 
@@ -206,6 +210,19 @@ fn spawn_tool(tool: &str, args: &[&str], source: &str) -> anyhow::Result<std::pr
         )
     })?;
     let mut command = Command::new(&resolved);
+    // The venv console scripts are self-contained, but the interpreter
+    // they launch still honors inherited Python env vars: a user's
+    // PYTHONHOME breaks site initialization and a stray PYTHONPATH can
+    // shadow the pinned transitive deps. Strip them (see AGENTS.md,
+    // "self-contained").
+    for var in [
+        "PYTHONHOME",
+        "PYTHONPATH",
+        "PYTHONSTARTUP",
+        "PYTHONPYCACHEPREFIX",
+    ] {
+        command.env_remove(var);
+    }
     let mut child = command
         .args(args)
         .stdin(Stdio::piped())
@@ -221,20 +238,87 @@ fn spawn_tool(tool: &str, args: &[&str], source: &str) -> anyhow::Result<std::pr
     let writer = std::thread::spawn(move || {
         let _ = stdin.write_all(source.as_bytes());
     });
-    let output = child.wait_with_output()?;
-    let _ = writer.join();
-    Ok(output)
+    // Drain both pipes on separate threads and wait under a deadline: a
+    // hung backend must not hang the whole (rayon-parallel) run.
+    // style50 waits forever — documented divergence.
+    let mut stdout_pipe = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("could not attach stdout to `{tool}`"))?;
+    let mut stderr_pipe = child
+        .stderr
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("could not attach stderr to `{tool}`"))?;
+    let stdout_reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = stdout_pipe.read_to_end(&mut buf);
+        buf
+    });
+    let stderr_reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = stderr_pipe.read_to_end(&mut buf);
+        buf
+    });
+    let started = std::time::Instant::now();
+    let deadline = tool_timeout();
+    let status = loop {
+        match child.try_wait()? {
+            Some(status) => break status,
+            None if started.elapsed() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = writer.join();
+                anyhow::bail!("`{tool}` timed out after {}s", deadline.as_secs());
+            }
+            None => std::thread::sleep(std::time::Duration::from_millis(25)),
+        }
+    };
+    let stdout = stdout_reader
+        .join()
+        .map_err(|_| anyhow::anyhow!("stdout reader task for `{tool}` failed"))?;
+    let stderr = stderr_reader
+        .join()
+        .map_err(|_| anyhow::anyhow!("stderr reader task for `{tool}` failed"))?;
+    Ok(std::process::Output {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
+/// The per-tool wall-clock deadline (default: one minute, generous for
+/// even the large golden fixtures). Override with
+/// `U50_STYLE_TOOL_TIMEOUT_SECS`.
+fn tool_timeout() -> std::time::Duration {
+    const DEFAULT: std::time::Duration = std::time::Duration::from_mins(1);
+    std::env::var_os("U50_STYLE_TOOL_TIMEOUT_SECS")
+        .and_then(|v| v.into_string().ok())
+        .and_then(|v| v.parse::<u64>().ok())
+        .map_or(DEFAULT, std::time::Duration::from_secs)
 }
 
 pub(crate) fn run_tool(tool: &str, args: &[&str], source: &str) -> anyhow::Result<String> {
     let output = spawn_tool(tool, args, source)?;
     if !output.status.success() {
-        anyhow::bail!(
-            "`{tool}` failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
+        return Err(tool_failure(tool, output.status, &output.stderr));
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// Formats a failed-tool error: always carries the exit status (several
+/// backends can exit nonzero with empty stderr — a bare message with a
+/// trailing colon helps nobody), plus the stderr text when present.
+fn tool_failure(tool: &str, status: std::process::ExitStatus, stderr: &[u8]) -> anyhow::Error {
+    let code = status
+        .code()
+        .map_or_else(|| "signal".to_owned(), |code| code.to_string());
+    let lossy = String::from_utf8_lossy(stderr);
+    let detail = lossy.trim();
+    if detail.is_empty() {
+        anyhow::anyhow!("`{tool}` failed with exit code {code} (no error output)")
+    } else {
+        anyhow::anyhow!("`{tool}` failed with exit code {code}: {detail}")
+    }
 }
 
 /// Runs `tool` with `args`, feeding `source` on stdin, tolerating the
@@ -250,10 +334,7 @@ fn run_tool_lenient(tool: &str, args: &[&str], source: &str) -> anyhow::Result<S
     let output = spawn_tool(tool, args, source)?;
     let reformatted_on_exit_1 = output.status.code() == Some(1) && !output.stdout.is_empty();
     if !output.status.success() && !reformatted_on_exit_1 {
-        anyhow::bail!(
-            "`{tool}` failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
+        return Err(tool_failure(tool, output.status, &output.stderr));
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
@@ -296,7 +377,7 @@ pub(crate) fn ensure_backends(missing: &[(String, String)]) {
         ?tools,
         "formatter backends missing from the cache; auto-provisioning"
     );
-    if let Err(e) = crate::setup::install_backends(&pending) {
+    if let Err(e) = crate::setup::install_backends(&pending, crate::setup::ProgressTarget::Stderr) {
         tracing::warn!(?tools, error = %e, "auto-provisioning failed");
     }
 }

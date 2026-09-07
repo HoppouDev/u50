@@ -15,8 +15,8 @@ use similar::ChangeTag;
 
 use crate::language::{comment_hint, detect_language, style50_count_lines};
 use crate::render::{
-    bold, bright_white, cyan, green, json_document, line_diff, render_character, render_split,
-    render_unified, reset, yellow,
+    bold, bright_white, cyan, green, json_document, line_diff_score, render_character,
+    render_split, render_unified, reset, yellow,
 };
 use crate::request::{FileResult, Output, Report, Request};
 
@@ -126,8 +126,10 @@ pub trait Renderer {
 /// and the char-diff block (with legend and the yellow `And consider
 /// adding more comments!` hint) from [`render_character`] for dirty
 /// ones. Split/unified stay plain
-/// per-dirty-file diffs (clean files print nothing), matching the
-/// original's non-ANSI renderers.
+/// per-dirty-file diffs (clean files print nothing) — a by-design
+/// divergence: the original routes every text mode through `to_ansi`
+/// (banner, cyan headers, green `Looks good!`) and colors its
+/// split/unified lines; see `STYLE50_V3_CROSSCHECK.md` registers #6/#7.
 pub struct ConsoleRenderer {
     output: Output,
     color: bool,
@@ -331,7 +333,7 @@ impl Renderer for ScoreRenderer {
         let (Some(source), Some(formatted)) = (&result.source, &result.formatted) else {
             return;
         };
-        let change_count = line_diff(source, formatted)
+        let change_count = line_diff_score(source, formatted)
             .iter_all_changes()
             .filter(|change| !matches!(change.tag(), ChangeTag::Equal))
             .count();

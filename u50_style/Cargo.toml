@@ -7,6 +7,7 @@ edition = "2024"
 anyhow = { workspace = true }
 crossterm = { workspace = true }
 fs-err = { workspace = true }
+fslock = { workspace = true }
 indicatif = { workspace = true }
 leptos = { workspace = true }
 rayon = { workspace = true }
@@ -16,6 +17,7 @@ sha2 = { workspace = true }
 similar = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+unicode-width = { workspace = true }
 uv-cache = { workspace = true }
 uv-cache-info = { workspace = true }
 uv-client = { workspace = true }

@@ -14,6 +14,7 @@ use crossterm::Command;
 use crossterm::style::{Attribute, Color, SetAttribute, SetBackgroundColor, SetForegroundColor};
 use similar::algorithms::Algorithm;
 use similar::{ChangeTag, DiffTag, TextDiff};
+use unicode_width::UnicodeWidthChar;
 
 use crate::request::Report;
 
@@ -133,6 +134,18 @@ pub(crate) fn line_diff<'a>(source: &'a str, formatted: &'a str) -> TextDiff<'a,
         .diff_lines(source, formatted)
 }
 
+/// Line diff for the score renderer: Myers **unconditionally**. The
+/// adaptive Lcs switch is display-only — the score sums the change count
+/// and must match style50's ndiff-based value on every input.
+pub(crate) fn line_diff_score<'a>(
+    source: &'a str,
+    formatted: &'a str,
+) -> TextDiff<'a, 'a, 'a, str> {
+    TextDiff::configure()
+        .algorithm(Algorithm::Myers)
+        .diff_lines(source, formatted)
+}
+
 /// The visible marker text for a warned character (style50 renders the
 /// literal two-character sequences `\n` / `\t` instead of the raw control
 /// characters).
@@ -161,10 +174,14 @@ fn strip_ansi(text: &str) -> String {
     while let Some(start) = rest.find('\u{1b}') {
         out.push_str(&rest[..start]);
         let after = &rest[start + 1..];
-        rest = match after.find('m') {
-            Some(end) => &after[end + 1..],
-            // Unterminated escape: drop the ESC and keep scanning.
-            None => after,
+        rest = if let Some(end) = after.find('m') {
+            &after[end + 1..]
+        } else {
+            // Unterminated escape: style50's regex only strips
+            // terminated `ESC…m` runs and leaves a bare ESC in
+            // place, so keep it and continue scanning after it.
+            out.push('\u{1b}');
+            after
         };
     }
     out.push_str(rest);
@@ -382,22 +399,54 @@ fn flush_split_rows(out: &mut String, dels: &mut Vec<String>, adds: &mut Vec<Str
     adds.clear();
 }
 
+/// The column width of one side of a split row.
+const SPLIT_WIDTH: usize = 50;
+/// Tab stops for split-column expansion.
+const TAB_STOP: usize = 4;
+
+/// Expands tabs to the next [`TAB_STOP`] boundary and pads/truncates to
+/// exactly [`SPLIT_WIDTH`] **display columns** (unicode width — CJK and
+/// emoji occupy 2), so both sides of a split row stay aligned even for
+/// wide characters and tabs.
+fn fit_column(text: &str) -> String {
+    let mut out = String::with_capacity(SPLIT_WIDTH);
+    let mut column = 0usize;
+    for ch in text.chars() {
+        if ch == '\t' {
+            let stop = TAB_STOP - (column % TAB_STOP);
+            for _ in 0..stop.min(SPLIT_WIDTH - column) {
+                out.push(' ');
+                column += 1;
+            }
+        } else {
+            let width = ch.width().unwrap_or(0);
+            if column + width > SPLIT_WIDTH {
+                break;
+            }
+            out.push(ch);
+            column += width;
+        }
+    }
+    while column < SPLIT_WIDTH {
+        out.push(' ');
+        column += 1;
+    }
+    out
+}
+
 fn split_row(left: &str, deleted: bool, right: &str, inserted: bool, color: bool) -> String {
-    const WIDTH: usize = 50;
-    let mut l = left.chars().take(WIDTH).collect::<String>();
-    let mut r = right.chars().take(WIDTH).collect::<String>();
-    for _ in l.chars().count()..WIDTH {
-        l.push(' ');
-    }
-    for _ in r.chars().count()..WIDTH {
-        r.push(' ');
-    }
-    if color && deleted {
-        l = format!("{}{l}{}", red(), reset());
-    }
-    if color && inserted {
-        r = format!("{}{r}{}", green(), reset());
-    }
+    let l = fit_column(left);
+    let r = fit_column(right);
+    let l = if color && deleted {
+        format!("{}{l}{}", red(), reset())
+    } else {
+        l
+    };
+    let r = if color && inserted {
+        format!("{}{r}{}", green(), reset())
+    } else {
+        r
+    };
     format!("{l} | {r}\n")
 }
 

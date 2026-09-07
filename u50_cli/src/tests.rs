@@ -119,32 +119,47 @@ fn setup_with_subcommand_is_usage_error() {
     let cli = Cli::try_parse_from(["u50", "--setup", "style", "foo.c"]).expect("parses");
     assert!(cli.setup);
     assert!(cli.command.is_some());
-    assert_eq!(run(cli).expect("usage errors return Ok"), ExitCode::from(2));
+    assert_eq!(
+        run(cli, false).expect("usage errors return Ok"),
+        ExitCode::from(2)
+    );
 }
 
 #[test]
 fn status_with_setup_is_usage_error() {
     let cli = Cli::try_parse_from(["u50", "--status", "--setup"]).expect("parses");
-    assert_eq!(run(cli).expect("usage errors return Ok"), ExitCode::from(2));
+    assert_eq!(
+        run(cli, false).expect("usage errors return Ok"),
+        ExitCode::from(2)
+    );
 }
 
 #[test]
 fn status_with_subcommand_is_usage_error() {
     let cli = Cli::try_parse_from(["u50", "--status", "style", "foo.c"]).expect("parses");
-    assert_eq!(run(cli).expect("usage errors return Ok"), ExitCode::from(2));
+    assert_eq!(
+        run(cli, false).expect("usage errors return Ok"),
+        ExitCode::from(2)
+    );
 }
 
 #[test]
 fn bare_invocation_is_usage_error() {
     let cli = Cli::try_parse_from(["u50"]).expect("parses");
     assert!(cli.command.is_none());
-    assert_eq!(run(cli).expect("usage errors return Ok"), ExitCode::from(2));
+    assert_eq!(
+        run(cli, false).expect("usage errors return Ok"),
+        ExitCode::from(2)
+    );
 }
 
 #[test]
 fn style_without_files_is_usage_error() {
     let cli = Cli::try_parse_from(["u50", "style"]).expect("parses");
-    assert_eq!(run(cli).expect("usage errors return Ok"), ExitCode::from(2));
+    assert_eq!(
+        run(cli, false).expect("usage errors return Ok"),
+        ExitCode::from(2)
+    );
 }
 
 #[test]

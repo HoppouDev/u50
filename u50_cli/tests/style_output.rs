@@ -627,6 +627,63 @@ fn score_mode_walk_warning_prints_on_stdout_before_the_score() {
 
 #[test]
 #[cfg(unix)]
+fn score_mode_dirty_file_exits_1_like_other_modes() {
+    // Documented divergence: u50 keeps its own exit codes in score mode
+    // (the original style50 always exits 0) — a dirty file exits 1, and
+    // stdout still ends with the aggregate score line.
+    let dir = temp_dir("score_dirty");
+    write_in(&dir, "dirty.py", "x = 1\n");
+    let args = ["-o", "score", dir.to_str().expect("utf-8 temp path")];
+
+    let (code, stdout, stderr) = style(&args, UPPER);
+    assert_eq!(
+        code, 1,
+        "dirty file under score mode must exit 1 (stderr: {stderr})"
+    );
+    let score = stdout.lines().last().expect("score line");
+    assert!(
+        score.parse::<f64>().is_ok(),
+        "last stdout line must be the score: {stdout:?}"
+    );
+    std::fs::remove_dir_all(&dir).expect("cleanup");
+}
+
+#[test]
+#[cfg(unix)]
+fn usage_errors_exit_2() {
+    // The documented exit-2 usage contracts (u50_style/AGENTS.md,
+    // u50_cli/AGENTS.md): --dry-run requires --fix; --fix conflicts with
+    // -o/--output; zero operands is a dispatcher usage error.
+    let dir = temp_dir("usage_errors");
+    write_in(&dir, "dirty.c", "int main(void)\n{\nreturn 0;\n}\n");
+    let file = dir
+        .join("dirty.c")
+        .to_str()
+        .expect("utf-8 temp path")
+        .to_owned();
+
+    let (code, _, stderr) = style(&["--dry-run", &file], UPPER);
+    assert_eq!(code, 2, "--dry-run without --fix is a usage error");
+    assert!(stderr.contains("--fix"), "message names --fix: {stderr}");
+
+    let (code, _, stderr) = style(&["--fix", "-o", "json", &file], UPPER);
+    assert_eq!(code, 2, "--fix with -o is a usage error");
+    assert!(
+        stderr.contains("cannot be used with"),
+        "clap conflict message: {stderr}"
+    );
+
+    let (code, _, stderr) = style(&[], UPPER);
+    assert_eq!(code, 2, "zero operands is a usage error");
+    assert!(
+        stderr.contains("at least one FILE operand"),
+        "dispatcher message: {stderr}"
+    );
+    std::fs::remove_dir_all(&dir).expect("cleanup");
+}
+
+#[test]
+#[cfg(unix)]
 fn fix_mode_walk_warns_to_stderr_and_still_fixes() {
     let dir = temp_dir("walk_fix");
     write_in(&dir, "dirty.c", "int main(void)\n{\nreturn 0;\n}\n");

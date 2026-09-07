@@ -256,7 +256,7 @@ pub fn fix_with(req: &Request, formatter: &dyn Formatter, dry_run: bool) -> Repo
                 } else {
                     match &result.formatted {
                         // `process_file` always sets `formatted` on success.
-                        Some(styled) => match std::fs::write(path, styled) {
+                        Some(styled) => match write_atomic(path, styled) {
                             Ok(()) => true,
                             Err(e) => {
                                 errors.push((
@@ -296,8 +296,12 @@ pub fn fix_with(req: &Request, formatter: &dyn Formatter, dry_run: bool) -> Repo
 ///   warning for the skipped ones), and hidden
 ///   directories are included (style50's `--ignore` is the exclusion
 ///   mechanism, which u50 does not implement yet);
-/// - a **symlinked directory is not followed** (`symlink_metadata` says
-///   it is a link, not a directory — matches `os.walk` defaults);
+/// - a **symlinked directory operand is followed** (`metadata` resolves
+///   links, matching `os.walk`'s top-level behavior — style50 3.0.0
+///   formats the targets too), but **symlinked subdirectories inside the
+///   walk are never descended into** (`followlinks=false`), and
+///   **symlinked regular files are checked** like any file (style50
+///   filters by name, and the resolved target is read through the link);
 /// - anything else (a file, a symlink to a file, a missing path) is kept
 ///   unchanged, so explicit file arguments preserve their existing
 ///   per-file error semantics (unsupported extension, could not read);
@@ -306,19 +310,27 @@ pub fn fix_with(req: &Request, formatter: &dyn Formatter, dry_run: bool) -> Repo
 ///   per skipped regular file; the warning never affects exit codes);
 /// - **unreadable directories are skipped silently** (there is no error
 ///   channel here; this also matches `os.walk`'s ignored-error default);
-/// - the final list is deduplicated (a directory and a file inside it can
-///   both be named) and returned in sorted order for deterministic output.
+/// - the final list is deduplicated **by canonical path** (a directory
+///   and a file inside it can both be named, and equivalent spellings
+///   like `dir` and `./dir/a.c` resolve to the same file; unresolvable
+///   paths fall back to their raw spelling) and returned in sorted order
+///   for deterministic output.
 pub(crate) fn expand_paths(paths: &[PathBuf]) -> (Vec<PathBuf>, Vec<PathBuf>) {
     let mut files: BTreeSet<PathBuf> = BTreeSet::new();
     let mut skipped: Vec<PathBuf> = Vec::new();
+    let mut seen: HashSet<PathBuf> = HashSet::new();
     for path in paths {
-        match std::fs::symlink_metadata(path) {
-            // `symlink_metadata` never follows the link: a symlinked
-            // directory reads as a link, not a directory, so it is kept
-            // (and later errors per-file) instead of being walked.
-            Ok(meta) if meta.is_dir() => walk_dir(path, &mut files, &mut skipped),
+        // `metadata` (unlike `symlink_metadata`) resolves links, so a
+        // symlinked directory operand is walked — matching `os.walk`'s
+        // top-level behavior. Anything unreadable or non-directory is
+        // kept unchanged for its per-file error semantics.
+        match std::fs::metadata(path) {
+            Ok(meta) if meta.is_dir() => walk_dir(path, &mut files, &mut skipped, &mut seen),
             _ => {
-                files.insert(path.clone());
+                let key = std::fs::canonicalize(path).unwrap_or_else(|_| path.clone());
+                if seen.insert(key) {
+                    files.insert(path.clone());
+                }
             }
         }
     }
@@ -327,12 +339,19 @@ pub(crate) fn expand_paths(paths: &[PathBuf]) -> (Vec<PathBuf>, Vec<PathBuf>) {
 
 /// Recursively collects the supported regular files under `dir` into
 /// `files`, appending unsupported regular files to `skipped` in visit
-/// order (regular only: symlinks, FIFOs, devices, etc. inside the walked
-/// tree are skipped silently — `os.walk` with `followlinks=false` never
-/// visits them either, and they are never warned about). Entries are
+/// order. Symlinked regular files are resolved through the link and
+/// collected (or warned about) like any file; symlinked subdirectories
+/// are never descended into (`os.walk` with `followlinks=false`), and
+/// broken links, FIFOs, and devices contribute nothing. Entries are
 /// visited in file-name order at each level, and an unreadable directory
-/// is skipped silently (see [`expand_paths`]).
-fn walk_dir(dir: &Path, files: &mut BTreeSet<PathBuf>, skipped: &mut Vec<PathBuf>) {
+/// is skipped silently (see [`expand_paths`]). Every collected or
+/// skipped path is deduplicated against `seen` by its canonical path.
+fn walk_dir(
+    dir: &Path,
+    files: &mut BTreeSet<PathBuf>,
+    skipped: &mut Vec<PathBuf>,
+    seen: &mut HashSet<PathBuf>,
+) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -340,25 +359,72 @@ fn walk_dir(dir: &Path, files: &mut BTreeSet<PathBuf>, skipped: &mut Vec<PathBuf
     entries.sort_by_key(std::fs::DirEntry::file_name);
     for entry in entries {
         let path = entry.path();
-        match std::fs::symlink_metadata(&path) {
-            // `is_file()` (regular file only, not a symlink —
-            // `symlink_metadata` never follows links) matches
-            // `os.walk` `followlinks=false`, which leaves symlinked
-            // entries unvisited, and also skips FIFOs/devices, which
-            // could block on open when read.
-            Ok(meta) if meta.is_dir() => walk_dir(&path, files, skipped),
-            Ok(meta) if meta.is_file() => {
-                if detect_language(&path).is_some() {
-                    files.insert(path);
-                } else {
-                    skipped.push(path);
-                }
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_dir() {
+            walk_dir(&path, files, skipped, seen);
+        } else if file_type.is_file() {
+            classify_file(&path, files, skipped, seen);
+        } else if file_type.is_symlink() {
+            // Resolve the link: a symlinked regular file is checked like
+            // any file (style50 filters by name); a symlinked directory
+            // is never descended into (`followlinks=false`); broken
+            // links and special targets contribute nothing.
+            if std::fs::metadata(&path).is_ok_and(|meta| meta.is_file()) {
+                classify_file(&path, files, skipped, seen);
             }
-            // Unreadable entries and non-regular files (symlinks,
-            // FIFOs, devices, …) contribute nothing.
-            Ok(_) | Err(_) => {}
         }
+        // Non-regular entries (FIFOs, devices, …) contribute nothing.
     }
+}
+
+/// Collects (or walk-warns) one file: deduplicated by canonical path so
+/// equivalent spellings of the same file are processed once; unresolvable
+/// paths fall back to their raw spelling.
+fn classify_file(
+    path: &Path,
+    files: &mut BTreeSet<PathBuf>,
+    skipped: &mut Vec<PathBuf>,
+    seen: &mut HashSet<PathBuf>,
+) {
+    let key = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    if detect_language(path).is_some() {
+        if seen.insert(key) {
+            files.insert(path.to_path_buf());
+        }
+    } else if seen.insert(key) {
+        skipped.push(path.to_path_buf());
+    }
+}
+
+/// Writes `styled` to `path` without ever leaving it truncated: the
+/// content lands in a sibling temp file first and is then renamed onto
+/// the target — a rename within one directory is atomic, so a failed or
+/// interrupted write leaves the original byte-for-byte intact and a
+/// successful one is all-or-nothing (`std::fs::write` would truncate at
+/// open, before the first byte lands).
+fn write_atomic(path: &Path, styled: &str) -> std::io::Result<()> {
+    // A read-only target fails BEFORE anything is written. `std::fs::write`
+    // used to fail with EACCES at open; the rename below would silently
+    // replace a read-only file (rename needs directory, not file, write
+    // permission) — so the mode is checked up front to keep the old
+    // failure semantics under the new atomicity.
+    if std::fs::metadata(path).is_ok_and(|meta| meta.permissions().readonly()) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "file is read-only",
+        ));
+    }
+    let mut temp_name = path.as_os_str().to_owned();
+    temp_name.push(".u50-tmp");
+    let temp = PathBuf::from(temp_name);
+    let result = std::fs::write(&temp, styled).and_then(|()| std::fs::rename(&temp, path));
+    if result.is_err() {
+        // Never leave the temp sibling behind on a failed write or rename.
+        let _ = std::fs::remove_file(&temp);
+    }
+    result
 }
 
 /// Runs the in-place fix for `req` using the CS50 formatter stack

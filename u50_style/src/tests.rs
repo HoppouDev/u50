@@ -53,6 +53,35 @@ impl Formatter for Reindent {
 /// input, e.g. a tool that only strips trailing whitespace).
 struct Rstrip;
 
+/// A dirty file whose in-place write fails (read-only permissions) must
+/// be reported as `could not write` — and the ORIGINAL must survive
+/// byte-for-byte: the styled content is written to a sibling temp file
+/// and renamed, so a failing write never truncates the target.
+#[test]
+#[cfg(unix)]
+fn fix_with_records_write_failures_and_keeps_the_original() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = temp_dir("fixwrite");
+    let c = write_in(&root, "dirty.c", DIRTY_C);
+    std::fs::set_permissions(&c, std::fs::Permissions::from_mode(0o444)).expect("chmod fixture");
+    let report = fix_with(&fix_request(vec![c.clone()]), &Reindent, false);
+    assert_eq!(report.errors.len(), 1, "write failure recorded: {report:?}");
+    assert!(
+        report.errors[0]
+            .1
+            .starts_with(&format!("could not write `{}`", c.display())),
+        "unexpected error: {:?}",
+        report.errors[0]
+    );
+    // The original is byte-for-byte intact — never truncated.
+    assert_eq!(std::fs::read_to_string(&c).expect("read"), DIRTY_C);
+    assert!(report.results.is_empty());
+    // No temp sibling is left behind.
+    assert!(!root.join("dirty.c.u50-tmp").exists());
+    std::fs::set_permissions(&c, std::fs::Permissions::from_mode(0o644)).expect("restore perms");
+    std::fs::remove_dir_all(&root).expect("cleanup");
+}
+
 impl Formatter for Rstrip {
     fn format(&self, source: &str, _language: Language) -> anyhow::Result<String> {
         let mut out = source
@@ -804,28 +833,55 @@ fn expand_paths_empty_input_is_empty() {
 }
 
 #[test]
-fn expand_paths_does_not_follow_symlinked_dirs() {
+fn expand_paths_symlink_parity_follows_operands_not_subdirs() {
     let root = temp_dir("symlink");
     let other = temp_dir("symlink_target");
     write_in(&other, "other.js", "x = 1;\n");
+    write_in(&root, "dirty.c", DIRTY_C);
     #[cfg(unix)]
     {
-        let link = root.join("link");
-        if std::os::unix::fs::symlink(&other, &link).is_ok() {
-            // Inside a walked tree the symlinked dir is neither descended
-            // into (os.walk followlinks=false) nor collected as a file.
-            let (files, skipped) = expand_paths(std::slice::from_ref(&root));
-            assert!(files.is_empty());
-            assert!(skipped.is_empty());
-            // A symlinked dir passed directly is a non-dir argument: kept
-            // unchanged (its per-file error happens downstream).
-            let (files, skipped) = expand_paths(std::slice::from_ref(&link));
-            assert_eq!(files, vec![link.clone()]);
-            assert!(skipped.is_empty());
-        }
+        // Inside a walked tree: a symlinked directory is never descended
+        // into (os.walk followlinks=false) — but a symlinked regular file
+        // IS collected like any file (style50 filters by name).
+        let subdir_link = root.join("sublink");
+        std::os::unix::fs::symlink(&other, &subdir_link).expect("create symlink");
+        let file_link = root.join("filelink.js");
+        std::os::unix::fs::symlink(other.join("other.js"), &file_link)
+            .expect("create file symlink");
+        let (files, skipped) = expand_paths(std::slice::from_ref(&root));
+        assert_eq!(files, vec![root.join("dirty.c"), file_link.clone()]);
+        assert!(skipped.is_empty());
+        // A symlinked directory passed directly IS walked (os.walk's
+        // top-level behavior resolves the operand).
+        let (files, _) = expand_paths(std::slice::from_ref(&subdir_link));
+        assert_eq!(files, vec![subdir_link.join("other.js")]);
+        // A symlinked regular file passed directly stays unchanged
+        // (per-file processing reads through the link).
+        let (files, _) = expand_paths(std::slice::from_ref(&file_link));
+        assert_eq!(files, vec![file_link.clone()]);
     }
     let _ = std::fs::remove_dir_all(&root);
     let _ = std::fs::remove_dir_all(&other);
+}
+
+#[test]
+#[cfg(unix)]
+fn expand_paths_dedupes_by_canonical_path() {
+    let root = temp_dir("dedupe-canonical");
+    let c = write_in(&root, "a.c", DIRTY_C);
+    // Equivalent spellings of one file, plus a repeated directory
+    // operand: the file must be processed exactly once.
+    let awkward = root.join("./a.c");
+    let (files, skipped) = expand_paths(&[root.clone(), awkward.clone(), root.clone()]);
+    assert_eq!(files, vec![c.clone()]);
+    assert!(skipped.is_empty(), "walk warnings deduped too: {skipped:?}");
+    // Explicit unsupported operands still dedupe (they stay in `files`
+    // — explicit arguments keep their per-file error semantics).
+    let txt = write_in(&root, "note.txt", "hi\n");
+    let (files, skipped) = expand_paths(&[txt.clone(), root.join("note.txt")]);
+    assert_eq!(files, vec![txt.clone()]);
+    assert!(skipped.is_empty());
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
@@ -1041,6 +1097,10 @@ impl Renderer for Recorder {
             .push(format!("error:{}:{message}", path.display()));
     }
 
+    fn skipped(&mut self, path: &Path) {
+        self.events.push(format!("skipped:{}", path.display()));
+    }
+
     fn finish(&mut self, _report: &Report) {
         self.events.push("finish".into());
     }
@@ -1073,6 +1133,36 @@ fn run_with_renderer_emits_events_in_order() {
     );
     assert_eq!(recorder.events[4], "finish");
     std::fs::remove_file(&dirty).expect("cleanup");
+}
+
+#[test]
+fn run_with_renderer_emits_skipped_for_walk_warnings() {
+    // A directory operand with an unsupported regular file: the walk
+    // warning surfaces as a `skipped` event between `total_files` and
+    // the per-file events — and never for explicit file arguments (the
+    // other tests pass explicit operands and record no `skipped`).
+    let root = temp_dir("renderer-skipped");
+    let dirty = write_in(&root, "dirty.c", DIRTY_C);
+    write_in(&root, "note.txt", "not code\n");
+    let req = fix_request(vec![root.clone()]);
+    let mut recorder = Recorder {
+        events: Vec::new(),
+        total_files: None,
+    };
+    let report = run_with_renderer(&req, &Reindent, &mut recorder);
+    assert_eq!(report.results.len(), 1);
+    assert_eq!(report.errors.len(), 0);
+    assert_eq!(
+        recorder.events,
+        vec![
+            "begin".to_owned(),
+            "total:1".to_owned(),
+            format!("skipped:{}", root.join("note.txt").display()),
+            format!("file:{}", dirty.display()),
+            "finish".to_owned(),
+        ]
+    );
+    std::fs::remove_dir_all(&root).expect("cleanup");
 }
 
 #[test]
@@ -1198,6 +1288,39 @@ fn console_renderer_character_mode_banner_headers_and_looks_good() {
     assert!(
         text.contains("\n    return 0;\n\n"),
         "dirty file block after its header: {text:?}"
+    );
+}
+
+#[test]
+fn console_renderer_single_file_prints_no_header() {
+    // The negative branch of the header rule: a single-file run (the most
+    // common invocation) prints no ::::::::::::::  header at all.
+    let req = Request {
+        files: vec![],
+        output: Output::Character,
+        color: false,
+    };
+    let dirty = FileResult {
+        path: PathBuf::from("only.c"),
+        clean: false,
+        source: Some("return 0;\n".to_owned()),
+        formatted: Some("    return 0;\n".to_owned()),
+    };
+    let sink = SharedBuf::default();
+    {
+        let mut renderer = builtin_renderer(Output::Character, false, Box::new(sink.clone()));
+        renderer.begin(&req);
+        renderer.total_files(1);
+        renderer.file(&dirty);
+    }
+    let text = String::from_utf8(sink.0.borrow().clone()).expect("utf8");
+    assert!(
+        !text.contains(HEADER_RULE),
+        "single-file run must not print per-file headers: {text:?}"
+    );
+    assert!(
+        text.contains("    return 0;\n"),
+        "diff block still rendered"
     );
 }
 

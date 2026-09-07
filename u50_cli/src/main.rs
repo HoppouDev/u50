@@ -175,9 +175,11 @@ enum StyleOutput {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    let no_color = std::env::var_os("NO_COLOR").is_some();
+    // NO_COLOR only disables color when present AND non-empty
+    // (no-color.org); computed once and threaded through.
+    let no_color = std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty());
     init_tracing(&cli, no_color);
-    let result = run(cli);
+    let result = run(cli, no_color);
     match result {
         Ok(code) => code,
         Err(e) => {
@@ -194,8 +196,7 @@ fn main() -> ExitCode {
 /// errors (exit 2) come back as `Ok(ExitCode::from(2))` with a message on
 /// stderr; only runtime failures map to `Err` and exit 3 via `main`'s
 /// generic handler.
-fn run(cli: Cli) -> anyhow::Result<ExitCode> {
-    let no_color = std::env::var_os("NO_COLOR").is_some();
+fn run(cli: Cli, no_color: bool) -> anyhow::Result<ExitCode> {
     if cli.status {
         if cli.setup {
             eprintln!("error: --status cannot be combined with --setup");
@@ -230,10 +231,19 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             let outputs = args.outputs.iter().map(|o| map_output_format(*o)).collect();
             u50_check::run(&u50_check::Request {
                 slug: args.slug,
+                // No working-directory flag yet: check50 operates on the
+                // current directory, which `None` encodes.
+                work_dir: None,
                 mode: map_mode(args.mode),
                 targets: args.targets,
                 outputs,
                 output_file: args.output_file,
+                verbose: false,
+                show_log: false,
+                log_level: cli
+                    .globals
+                    .log_level
+                    .map(|level| format!("{level:?}").to_lowercase()),
             })
             .map(|()| ExitCode::SUCCESS)
         }
@@ -282,6 +292,10 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             ssh: args.ssh,
             dry_run: args.dry_run,
             logout: args.logout,
+            log_level: cli
+                .globals
+                .log_level
+                .map(|level| format!("{level:?}").to_lowercase()),
         })
         .map(|()| ExitCode::SUCCESS),
     }
@@ -341,7 +355,8 @@ fn resolve_level(quiet: bool, verbose: u8, explicit: Option<LogLevel>) -> LevelF
 }
 
 /// Resolves whether ANSI colors are enabled; in `Auto` mode, honors
-/// `NO_COLOR` and tty-gates the output (style50 emits no color when piped).
+/// `NO_COLOR` (present **and non-empty** — the no-color.org convention)
+/// and tty-gates the output (style50 emits no color when piped).
 /// `is_tty` is probed by the caller to keep this helper pure.
 fn resolve_ansi(color: Color, no_color_set: bool, is_tty: bool) -> bool {
     match color {
@@ -357,11 +372,15 @@ fn init_tracing(cli: &Cli, no_color: bool) {
         cli.globals.verbose,
         cli.globals.log_level,
     );
-    let ansi = resolve_ansi(cli.globals.color, no_color, std::io::stdout().is_terminal());
+    // Logs go to **stderr**: stdout is pure diff/JSON/score output (see
+    // AGENTS.md), and a WARN-level auto-provisioning failure or a -v
+    // request dump must never corrupt it.
+    let ansi = resolve_ansi(cli.globals.color, no_color, std::io::stderr().is_terminal());
 
     tracing_subscriber::fmt()
         .with_max_level(level)
         .with_ansi(ansi)
+        .with_writer(std::io::stderr)
         .init();
 }
 

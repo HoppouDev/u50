@@ -19,6 +19,16 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+      - name: Cache u50 style formatter cache
+        # The golden step's `u50 --setup` provisions a uv-managed CPython
+        # plus six pinned backends into this cache; its contents are fully
+        # determined by tests/tool-versions.txt, so key on that hash.
+        if: runner.os == 'Linux'
+        uses: actions/cache@1bd1e32a3bdc45362d1a799c8c9d3fb16c3df0b1 # v4
+        with:
+          path: ~/.cache/u50/style50
+          key: u50-style-cache-${{ runner.os }}-${{ hashFiles('u50_style/tests/tool-versions.txt') }}
+          restore-keys: u50-style-cache-${{ runner.os }}-
       - name: Build
         run: cargo build --verbose
       - name: Run tests
@@ -26,9 +36,9 @@ jobs:
       - name: Golden tests (dogfood `u50 --setup`; byte-compare against style50 3.0.0 ground truth)
         # Ubuntu-only: djhtml (html) and the SQL backend produce byte-different
         # output on Windows (observed in CI: html_golden, sql_golden, and
-        # expected-fixture-clean failures while c/cpp/java/py/js pass).
-        # Byte-parity is enforced on ubuntu; policy in docs/windows-support.md
-        # Phase 2.
+        # expected-fixture-clean failures while c/cpp/java/py/js pass), so
+        # byte-parity is enforced on ubuntu only; re-enable the step on
+        # windows-latest once those backends are byte-stable there.
         if: runner.os == 'Linux'
         # U50_STYLE_GOLDEN is set via env: instead of an inline `VAR=1 cmd` prefix
         # because the inline prefix is bash-only and breaks under pwsh, the default
@@ -44,6 +54,10 @@ jobs:
         run: cargo clippy --verbose --all-targets -- -Dwarnings
 
   harness:
+    # Badge publishing needs contents:write — scope the whole job to the
+    # push run that publishes it instead of running it (write-scoped) on
+    # every pull_request.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: write

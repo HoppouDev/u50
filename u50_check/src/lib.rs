@@ -21,15 +21,21 @@ pub enum Output {
     Ansi,
     /// HTML report.
     Html,
-    /// Machine-readable JSON (u50 addition for tooling).
+    /// Machine-readable JSON (same schema as check50's `--output json`).
     Json,
 }
 
 /// Parameters for a `u50 check` invocation.
+///
+/// The flag fields mirror the CLI's invocation options one-to-one (see
+/// `u50_cli`'s dispatch), so the surface churns only when the CLI does.
 #[derive(Debug, Clone)]
 pub struct Request {
     /// Problem slug (server-side contract; kept identical to check50).
     pub slug: String,
+    /// Working directory for student code (`None` means the current
+    /// directory — check50 operates on the cwd by default).
+    pub work_dir: Option<std::path::PathBuf>,
     /// Execution mode.
     pub mode: Mode,
     /// Named checks to run (plus dependencies); empty means all.
@@ -38,6 +44,12 @@ pub struct Request {
     pub outputs: Vec<Output>,
     /// Write output to a file instead of stdout (`None` means stdout).
     pub output_file: Option<std::path::PathBuf>,
+    /// List available checks and exit (`--verbose`'s companion view).
+    pub verbose: bool,
+    /// Print the check log (`--log`).
+    pub show_log: bool,
+    /// Log verbosity for the check run (`--log-level`; `None` = default).
+    pub log_level: Option<String>,
 }
 
 /// Runs checks for `req` against student code.

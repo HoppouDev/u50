@@ -12,9 +12,11 @@
 //! the system `PATH` is never consulted).
 //! Rationale: the ground truth is only byte-stable for a given set of tool
 //! versions, and clang-format in particular varies across machines. CI
-//! installs the exact pinned versions from `tests/tool-versions.txt` (a
-//! pip constraints file — the single source of truth for backend versions)
-//! into a venv on PATH and runs these tests; without the env var they skip.
+//! runs `u50 --setup` (provisioning the exact pinned versions from
+//! `tests/tool-versions.txt` — the single source of truth for backend
+//! versions — into the u50 style cache) and runs these tests; because
+//! resolution is cache-only, a system-PATH tool is never silently used.
+//! Without the env var they skip.
 //! When regenerating fixtures, use the pinned versions (or refresh
 //! `tool-versions.txt` and the goldens together). Run locally with:
 //!

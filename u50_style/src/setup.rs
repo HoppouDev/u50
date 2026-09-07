@@ -53,6 +53,14 @@ const PINNED_VERSIONS: &[(&str, &str)] = &[
     // to 3.0.6 on the golden fixture.
     ("djhtml", "3.0.11"),
     ("sqlparse", "0.5.3"),
+    // The transitive runtime dependencies of the backends above (see
+    // `TRANSITIVE_DEPS`). They are pinned too: they are installed into
+    // the same venv and affect golden byte-stability just as much, and a
+    // future dep-chain change would otherwise surface only as a per-file
+    // `ImportError` while provisioning reports success.
+    ("pycodestyle", "2.14.0"),
+    ("editorconfig", "0.17.1"),
+    ("six", "1.17.0"),
 ];
 
 /// Hardcoded transitive runtime dependencies of the backend packages.
@@ -111,7 +119,8 @@ fn pip_spec(package: &str) -> String {
 }
 
 /// The hardcoded transitive dependencies of `package` (empty when none
-/// are declared in [`TRANSITIVE_DEPS`]).
+/// are declared in [`TRANSITIVE_DEPS`]); each one carries a pin in
+/// [`PINNED_VERSIONS`].
 fn transitive_deps(package: &str) -> &'static [&'static str] {
     TRANSITIVE_DEPS
         .iter()
@@ -239,21 +248,42 @@ pub fn setup_missing() -> Result<()> {
         println!("all formatter backends are already available");
         return Ok(());
     }
-    install_backends(&missing)
+    install_backends(&missing, ProgressTarget::Stdout)
+}
+
+/// Where provisioning progress lines go: the explicit `u50 --setup`
+/// path owns stdout (the report IS the output); the lazy
+/// auto-provisioning path runs mid-style-check, where stdout must stay
+/// pure diff/JSON (AGENTS.md), so its progress reports on stderr —
+/// failures would already surface as per-file missing-tool errors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProgressTarget {
+    Stdout,
+    Stderr,
 }
 
 /// The shared install core, used by `u50 --setup` and by the engine's
-/// batched provisioning pre-pass: initializes uv's preview state,
-/// drives the async provisioning pipeline ([`provision_backends`]) on a
-/// local runtime — one parallel wheel-fetch task per package, one
-/// serialized venv install — prints the `installing N package(s)`
-/// banner and the per-package summary lines (`installed:` /
-/// `failed:`), and bails when anything failed.
+/// batched provisioning pre-pass: initializes uv's preview state, drives
+/// the async provisioning pipeline ([`provision_backends`]) on a local
+/// runtime — one parallel wheel-fetch task per package, one serialized
+/// venv install — reports the `installing N package(s)` banner and the
+/// per-package summary lines (`installed:` / `failed:`) on
+/// [`ProgressTarget`], and bails when anything failed.
+///
+/// A cross-process advisory lock (`<cache>/.provision.lock`) is held for
+/// the whole run: venv creation, wheel extraction, and the venv install
+/// all mutate shared cache state, and two concurrent cold-start
+/// processes would otherwise race (torn extractions, half-created venvs).
 ///
 /// # Errors
 /// Returns an error when uv provisioning fails or any package failed to
 /// install.
-pub(crate) fn install_backends(missing: &[(String, String)]) -> Result<()> {
+pub(crate) fn install_backends(missing: &[(String, String)], target: ProgressTarget) -> Result<()> {
+    let report = |line: String| match target {
+        ProgressTarget::Stdout => println!("{line}"),
+        ProgressTarget::Stderr => eprintln!("{line}"),
+    };
+
     // Several uv crates read the process-global preview state; initialize
     // it before touching any uv API.
     uv_preview::set(Preview::default()).context("preview init")?;
@@ -263,20 +293,28 @@ pub(crate) fn install_backends(missing: &[(String, String)]) -> Result<()> {
     // local runtime.
     let runtime = Runtime::new().context("tokio runtime")?;
     let cache = cache_dir().context("resolve the u50 style cache directory")?;
-    println!(
+    // The lock file lives inside the cache; a cold cache has no directory
+    // yet (fslock will not create parents).
+    std::fs::create_dir_all(&cache).context("create the u50 style cache directory")?;
+    // Cross-process serialization for the whole provisioning run (held
+    // until `lock` drops at function end).
+    let _lock = fslock::LockFile::open(&cache.join(".provision.lock"))
+        .and_then(|mut lock| lock.lock().map(|()| lock))
+        .context("acquire the cache provisioning lock")?;
+    report(format!(
         "installing {} package(s) into {}",
         missing.len(),
         cache.display()
-    );
+    ));
     let outcomes = runtime.block_on(provision_backends(&cache, missing))?;
 
     let mut any_failure = false;
     for outcome in &outcomes {
         match &outcome.failure {
-            None => println!("installed: {} ({})", outcome.package, outcome.tool),
+            None => report(format!("installed: {} ({})", outcome.package, outcome.tool)),
             Some(reason) => {
                 any_failure = true;
-                println!("failed: {}: {reason}", outcome.package);
+                report(format!("failed: {}: {reason}", outcome.package));
             }
         }
     }
@@ -611,6 +649,9 @@ async fn fetch_wheel(
             continue;
         };
         let rank = wheel_rank(filename);
+        if !wheel_python_compatible(filename.trim_end_matches(".whl")) {
+            continue;
+        }
         if rank > pick.map_or(WHEEL_RANK_REJECT, |(_, best)| best) {
             pick = Some((url, rank));
         }
@@ -636,17 +677,23 @@ async fn fetch_wheel(
             .to_string(),
     };
 
+    validate_wheel_filename(&pick.filename)?;
     let display_url = DisplaySafeUrl::parse(&pick.url).context("wheel url")?;
     let stem = pick.filename.trim_end_matches(".whl");
     let archive = wheels_dir.join(stem);
 
     // Reuse a previously fetched wheel: the archive dir name embeds the
-    // package version, so a version bump invalidates it naturally. Safe
-    // because extraction is atomic (unzip to a `.tmp` sibling, then
-    // rename): an existing final archive dir is always the complete,
-    // hash-verified extraction of that exact wheel — never a partial
-    // tree left behind by a crashed download or unzip.
-    if dist_info_dir(&pick.filename).is_some_and(|dir| archive.join(dir).is_dir()) {
+    // package version, so a version bump invalidates it naturally. The
+    // extraction is atomic (unzip to a `.tmp` sibling, then rename), and
+    // a `<archive>.sha256` sidecar records the digest the archive was
+    // extracted from — reuse requires the dist-info tree AND a sidecar
+    // matching the digest `PyPI` currently publishes, so a torn or
+    // outdated archive is never mistaken for the complete extraction.
+    let sidecar = wheels_dir.join(format!("{stem}.sha256"));
+    if dist_info_dir(&pick.filename).is_some_and(|dir| archive.join(dir).is_dir())
+        && std::fs::read_to_string(&sidecar)
+            .is_ok_and(|digest| digest.trim().eq_ignore_ascii_case(&pick.sha256))
+    {
         return wheel_dist(&pick.filename, display_url, &pick.sha256, archive);
     }
 
@@ -708,10 +755,13 @@ async fn download_and_extract_wheel(
     // onto the final archive dir (removing any stale final dir first —
     // rename onto a non-empty dir would fail). A crash mid-unzip then
     // leaves only the `.tmp` sibling behind, never a half-extracted
-    // final archive. The unzip is blocking CPU/IO work, so it runs on
-    // the blocking thread pool.
+    // final archive. The temp name embeds the pid so two processes no
+    // longer race on one fixed sibling (the advisory provisioning lock
+    // is the primary guard; this keeps even unlocked callers safe). The
+    // unzip is blocking CPU/IO work, so it runs on the blocking thread
+    // pool.
     let stem = filename.trim_end_matches(".whl");
-    let tmp_archive = wheels_dir.join(format!(".{stem}.tmp"));
+    let tmp_archive = wheels_dir.join(format!(".{stem}.{}.tmp", std::process::id()));
     if tmp_archive.exists() {
         tokio::fs::remove_dir_all(&tmp_archive)
             .await
@@ -741,7 +791,51 @@ async fn download_and_extract_wheel(
     tokio::fs::rename(&tmp_archive, archive)
         .await
         .with_context(|| format!("finalize wheel archive {}", archive.display()))?;
+    // Record the digest the archive was extracted from, so the reuse
+    // fast path can re-verify it against what `PyPI` currently publishes.
+    tokio::fs::write(wheels_dir.join(format!("{stem}.sha256")), &pick.sha256)
+        .await
+        .context("write wheel archive sha256 sidecar")?;
     Ok(())
+}
+
+/// Validates a wheel filename from the (HTTPS-fetched) index response
+/// before it touches any path: the filename feeds both the wheel write
+/// and `remove_dir_all` calls on the archive/tmp siblings, so a hostile
+/// entry with separators or `..` must not escape `wheels_dir`.
+///
+/// # Errors
+/// Returns an error when the filename is empty, carries path separators,
+/// or contains a `..` component.
+fn validate_wheel_filename(filename: &str) -> Result<()> {
+    if filename.is_empty()
+        || Path::new(filename)
+            .file_name()
+            .is_none_or(|name| name != std::ffi::OsStr::new(filename))
+        || filename.contains("..")
+    {
+        bail!("hostile wheel filename from the index response: {filename:?}");
+    }
+    Ok(())
+}
+
+/// Whether the wheel's Python/ABI tags are usable by the pinned `CPython`
+/// (3.14): `abi3` wheels are forward-compatible across `CPython` minors,
+/// pure wheels use the `py` tags, and every other wheel must target
+/// `cp314` exactly — a `cp312`/`cp313` platform wheel would fit the
+/// platform tag yet fail to import at runtime.
+fn wheel_python_compatible(stem: &str) -> bool {
+    let parts: Vec<&str> = stem.split('-').collect();
+    if parts.len() < 3 {
+        return false;
+    }
+    let python_tag = parts[parts.len() - 3];
+    let abi_tag = parts[parts.len() - 2];
+    if abi_tag == "abi3" {
+        return true;
+    }
+    let python_ok = python_tag == "py2.py3" || python_tag == "py3" || python_tag == "cp314";
+    python_ok && (abi_tag == "none" || abi_tag == "cp314")
 }
 
 /// Lowercase hex encoding of a raw digest (e.g. for comparing against
@@ -984,9 +1078,9 @@ mod tests {
             );
             for dep in *deps {
                 assert!(
-                    !super::PINNED_VERSIONS.iter().any(|(p, _)| p == dep),
-                    "{dep} is a transitive dependency and must not be pinned \
-                     (it resolves to the latest release via PyPI)"
+                    super::PINNED_VERSIONS.iter().any(|(p, _)| p == dep),
+                    "{dep} is a transitive dependency and must be pinned \
+                     (a dep-chain change would otherwise fail only at runtime)"
                 );
                 assert!(
                     transitive_deps(dep).is_empty(),
