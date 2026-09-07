@@ -7,3 +7,11 @@ pre-commit:
     clippy:
       glob: "*.rs"
       run: cargo clippy --workspace --all-targets -- -Dwarnings
+    prettier:
+      glob: "*.{md,yml,yaml,json}"
+      stage_fixed: true
+      run: prettier --write {staged_files}
+    toml-format:
+      glob: "*.toml"
+      stage_fixed: true
+      run: tombi format {staged_files}

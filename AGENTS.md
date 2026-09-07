@@ -24,7 +24,7 @@ Each program crate has its own `AGENTS.md` in its directory — `u50_cli/AGENTS.
 
 ## Codebase layout
 
-```
+```text
 Cargo.toml            # workspace root
 u50_cli/              # binary crate: [[bin]] name = "u50"
   src/main.rs

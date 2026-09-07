@@ -17,8 +17,8 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-      - uses: actions/checkout@v4
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
       - name: Build
         run: cargo build --verbose
       - name: Run tests
@@ -48,11 +48,11 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: paladini/harness-score@v1
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: paladini/harness-score@51dcaba93c176f149a0e4a58d23e867bac63f9fc # v1
         with:
-          min-level: '4'
-          badge: 'harness-badge.svg'
+          min-level: "4"
+          badge: "harness-badge.svg"
       - name: Publish badge (badges branch)
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         shell: bash
