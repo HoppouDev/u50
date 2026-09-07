@@ -1,13 +1,19 @@
 //! Style-check driver: reads files, formats, and builds the report.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 
-use crate::formatter::{Cs50Formatter, Formatter};
+use rayon::prelude::*;
+
+use crate::formatter::{Cs50Formatter, Formatter, ensure_backend, locate_tool};
 use crate::language::detect_language;
 use crate::render::json_document;
 use crate::renderer::{Renderer, builtin_renderer};
 use crate::request::{FileResult, Output, Report, Request};
+
+/// One per-file outcome of the parallel check pass ([`check_files`]):
+/// either a [`FileResult`] or a `(path, message)` error entry.
+type Outcome = (Option<FileResult>, Option<(PathBuf, String)>);
 
 /// Runs the style check for `req` using the CS50 formatter stack,
 /// printing results (the only place this crate prints) and returning the
@@ -69,21 +75,56 @@ pub fn run_with(req: &Request, formatter: &dyn Formatter) -> Report {
 }
 
 /// Processes already-expanded `files` (see [`expand_paths`]) into a
-/// [`Report`]: the per-file loop shared verbatim by [`run_with`] (check)
-/// and [`run_with_renderer`] (check + rendering). Walk warnings are a
+/// [`Report`]: the per-file pass shared verbatim by [`run_with`] (check)
+/// and [`run_with_renderer`] (check + rendering), run in parallel with
+/// rayon — a serial cold-cache provisioning pre-pass
+/// ([`provision_backends`]) installs any missing backends first. Walk warnings are a
 /// rendering concern: callers that render expand themselves (see
 /// [`run_with_renderer`]) or print the warnings engine-side (see
 /// [`fix_with`]); this helper never sees them.
 fn check_files(files: &[PathBuf], formatter: &dyn Formatter) -> Report {
+    provision_backends(files);
+    // Rayon preserves input order in the collect, so results and errors
+    // come out exactly as the sequential loop did (deterministic output).
+    let outcomes: Vec<Outcome> = files
+        .par_iter()
+        .map(|path| match process_file(path, formatter) {
+            Ok(result) => (Some(result), None),
+            Err(e) => (None, Some((path.clone(), e.to_string()))),
+        })
+        .collect();
     let mut results = Vec::with_capacity(files.len());
-    let mut errors = Vec::new();
-    for path in files {
-        match process_file(path, formatter) {
-            Ok(result) => results.push(result),
-            Err(e) => errors.push((path.clone(), e.to_string())),
+    let mut errors = Vec::with_capacity(files.len());
+    for (result, error) in outcomes {
+        if let Some(result) = result {
+            results.push(result);
+        }
+        if let Some(error) = error {
+            errors.push(error);
         }
     }
     Report { results, errors }
+}
+
+/// Cold-cache provisioning pre-pass for the parallel check: resolves
+/// each file's language backend and downloads any missing tool into the
+/// cache serially — before [`check_files`] fans out — so parallel
+/// first-use cannot race concurrent uv installs into the shared cache
+/// (see [`ensure_backend`]). Per-process dedupe and the
+/// `U50_STYLE_NO_PROVISION` escape hatch live in [`ensure_backend`].
+fn provision_backends(files: &[PathBuf]) {
+    let mut seen = HashSet::new();
+    for path in files {
+        let Some(language) = detect_language(path) else {
+            continue;
+        };
+        let Some(tool) = language.required_tool() else {
+            continue;
+        };
+        if seen.insert(tool) && locate_tool(tool).is_none() {
+            ensure_backend(tool);
+        }
+    }
 }
 
 /// Runs the style check like [`run_with`], then drives `renderer` over the

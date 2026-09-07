@@ -8,6 +8,7 @@ anyhow = { workspace = true }
 fs-err = { workspace = true }
 indicatif = { workspace = true }
 leptos = { workspace = true }
+rayon = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }

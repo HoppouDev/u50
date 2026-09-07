@@ -18,7 +18,7 @@ BreakBeforeBraces: Custom, ColumnLimit: 100, IndentCaseLabels: true, \
 IndentWidth: 4, SpaceAfterCStyleCast: true, TabWidth: 4 }";
 
 /// Styles one file's source.
-pub trait Formatter {
+pub trait Formatter: Sync {
     /// Formats `source` per CS50 style.
     ///
     /// # Errors
@@ -259,11 +259,11 @@ fn run_tool_lenient(tool: &str, args: &[&str], source: &str) -> anyhow::Result<S
 }
 
 /// Tools whose lazy auto-provisioning was already attempted in this
-/// process (see [`ensure_backend_once`]). The first missing-tool
-/// occurrence per run triggers provisioning; later files in the same run
-/// skip straight to the missing-tool error when the first attempt
-/// failed. When an attempt succeeded, [`locate_tool`] finds the tool and
-/// the dedupe never matters.
+/// process (see [`ensure_backend`]). The first missing-tool occurrence
+/// per run triggers provisioning; later files in the same run skip
+/// straight to the missing-tool error when the first attempt failed.
+/// When an attempt succeeded, [`locate_tool`] finds the tool and the
+/// dedupe never matters.
 static PROVISION_ATTEMPTED: LazyLock<Mutex<HashSet<String>>> =
     LazyLock::new(|| Mutex::new(HashSet::new()));
 
@@ -273,7 +273,7 @@ static PROVISION_ATTEMPTED: LazyLock<Mutex<HashSet<String>>> =
 /// recursion) and lets the caller's subsequent spawn fail naturally when
 /// provisioning did not help. Set `U50_STYLE_NO_PROVISION` in the
 /// environment to disable (used by hermetic tests).
-fn ensure_backend_once(tool: &str) {
+pub(crate) fn ensure_backend(tool: &str) {
     if std::env::var_os("U50_STYLE_NO_PROVISION").is_some() {
         return;
     }
@@ -331,7 +331,7 @@ impl Formatter for Cs50Formatter {
         if let Some(tool) = language.required_tool()
             && locate_tool(tool).is_none()
         {
-            ensure_backend_once(tool);
+            ensure_backend(tool);
         }
         match language {
             Language::C | Language::Cpp | Language::Java => {

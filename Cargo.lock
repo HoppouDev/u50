@@ -5223,6 +5223,7 @@ dependencies = [
  "fs-err",
  "indicatif",
  "leptos",
+ "rayon",
  "reqwest",
  "serde",
  "serde_json",

@@ -9,6 +9,7 @@ fs-err = "3"
 git2 = { version = "0.21", features = ["ssh"] }
 indicatif = "0.17"
 leptos = "0.8"
+rayon = "1"
 reqwest = {
   version = "0.13.4",
   default-features = false,
