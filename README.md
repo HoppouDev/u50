@@ -102,7 +102,7 @@ CI (GitHub Actions, workflow name `Rust`) runs on every push/PR to `main`: build
 - [ ] `--ignore` — exclude directories (e.g. `node_modules`) from directory walks
 - [ ] `--clang-format-style` — custom clang-format style override
 - [ ] `html` output mode (style50 v2 feature)
-- [ ] Comment-count hints ("But consider adding more comments!")
+- [x] Comment-count hints ("But consider adding more comments!")
 - [x] Windows support (uv console-script `.exe` shims, `%LOCALAPPDATA%` cache)
 
 ### `u50 check` — [`u50_check`](u50_check/)
