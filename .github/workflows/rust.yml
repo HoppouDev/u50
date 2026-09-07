@@ -23,10 +23,18 @@ jobs:
         # The golden step's `u50 --setup` provisions a uv-managed CPython
         # plus six pinned backends into this cache; its contents are fully
         # determined by tests/tool-versions.txt, so key on that hash.
+        #
+        # BOTH halves must be cached: the venv's interpreter is a symlink
+        # into uv's managed-Python dir, so restoring only the u50 cache
+        # leaves every console script with a dangling shebang target
+        # (ENOENT at spawn) while `--setup` still reports "already
+        # available". Bump the key manually if PINNED_PYTHON changes.
         if: runner.os == 'Linux'
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
-          path: ~/.cache/u50/style50
+          path: |
+            ~/.cache/u50/style50
+            ~/.local/share/uv/python
           key: u50-style-cache-${{ runner.os }}-${{ hashFiles('u50_style/tests/tool-versions.txt') }}
           restore-keys: u50-style-cache-${{ runner.os }}-
       - name: Build
