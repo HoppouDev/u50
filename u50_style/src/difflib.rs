@@ -32,8 +32,8 @@
 //! pair needs `ratio() > 0.74999`, i.e. identical characters) but is kept
 //! for faithfulness.
 
-use std::collections::HashMap;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Condvar, Mutex};
 
 /// Runs the ported [`Differ`] over the two texts as character sequences
 /// (`ndiff(old, new)`, difflib.py:1310) and returns the delta as
@@ -124,6 +124,45 @@ struct Opcode {
 
 /// The optional junk predicate (`isjunk`/`linejunk`/`charjunk`).
 type IsJunk = Option<fn(char) -> bool>;
+
+/// Below this total element count the character diff stays sequential:
+/// spawning the worker pool would cost more than the diff itself.
+const PARALLEL_DIFF_MIN_CHARS: usize = 4096;
+
+/// Per-call scratch for the `j2len` walk in
+/// [`SequenceMatcher::find_longest_match`]: two generation-stamped arrays
+/// replacing `CPython`'s per-iteration `dict` pair — the lookup reads the
+/// map from the previous iteration (`j2len`) while writes go to a
+/// separate map (`newj2len`), so an ascending bucket walk can never
+/// clobber an entry a later `j` still needs (a single array would:
+/// looking up `j-1` after writing `j` hits the fresh stamp and reads
+/// absent). One scratch per worker; `epoch` advances across calls so
+/// stale stamps are never read.
+struct MatchScratch {
+    /// `(epoch, run length)` per element of `b` — the previous iteration.
+    prev: Vec<(u64, u32)>,
+    /// Same layout — the current iteration's writes.
+    cur: Vec<(u64, u32)>,
+    /// Current generation stamp (monotonic; never wraps in practice).
+    epoch: u64,
+}
+
+impl MatchScratch {
+    fn new(b_len: usize) -> Self {
+        Self {
+            prev: vec![(0, 0); b_len],
+            cur: vec![(0, 0); b_len],
+            epoch: 0,
+        }
+    }
+}
+
+/// The shared work stack and the unprocessed-window count for the
+/// parallel [`SequenceMatcher::get_matching_blocks`] drain.
+struct DiffState {
+    stack: Vec<(usize, usize, usize, usize)>,
+    pending: usize,
+}
 
 /// `CPython`'s `SequenceMatcher` (difflib.py:44-669) over `char` sequences.
 /// Both style50 call sites keep the `autojunk=True` default, so the flag
@@ -236,26 +275,39 @@ impl SequenceMatcher {
     /// leftmost-earliest per `CPython`'s tie-breaking (`k > bestsize` is
     /// strict, so the first candidate in a-position, then in j-order,
     /// wins).
+    ///
+    /// `scratch` carries the `j2len` walk state between iterations: a
+    /// generation-stamped array replacing `CPython`'s per-iteration
+    /// `dict` (a fresh `HashMap` per `i` dominated the profile). Writes
+    /// stamp the current generation; lookups accept only the previous
+    /// one, exactly mirroring `newj2len`'s freshness. `scratch.epoch`
+    /// advances by 2 at call entry so stale stamps from the previous
+    /// call can never be read, and by 1 per iteration thereafter.
+    ///
+    /// `k` is stored as `u32` in the stamp arrays; it is bounded by the
+    /// window size, so truncation is unreachable for any realistic
+    /// input.
+    #[allow(clippy::cast_possible_truncation)]
     fn find_longest_match(
         &self,
         alo: usize,
         ahi: usize,
         blo: usize,
         bhi: usize,
+        scratch: &mut MatchScratch,
     ) -> (usize, usize, usize) {
         let (a, b) = (&self.a, &self.b);
         let isbjunk = |c: char| self.bjunk.contains(&c);
         let (mut best_ai, mut bestj, mut bestsize) = (alo, blo, 0usize);
-        // During an iteration of the loop, j2len[j] = length of longest
-        // junk-free match ending with a[i-1] and b[j].
-        let mut j2len: HashMap<usize, usize> = HashMap::new();
+        scratch.epoch += 2;
         // The index `i` IS the algorithm (the j2len walk over a[i-1]);
         // renaming to iterators would obscure the CPython parity.
         #[allow(clippy::needless_range_loop)]
         for i in alo..ahi {
-            // b2j has no junk/popular keys, so the inner loop is skipped
-            // when a[i] is junk or popular.
-            let mut newj2len: HashMap<usize, usize> = HashMap::new();
+            scratch.epoch += 1;
+            let current = scratch.epoch;
+            let previous = current - 1;
+            let MatchScratch { prev, cur, .. } = scratch;
             if let Some(indices) = self.b2j.get(&a[i]) {
                 for &j in indices {
                     if j < blo {
@@ -268,9 +320,14 @@ impl SequenceMatcher {
                     let k = if j == 0 {
                         1
                     } else {
-                        j2len.get(&(j - 1)).copied().unwrap_or(0) + 1
+                        let entry = prev[j - 1];
+                        if entry.0 == previous {
+                            entry.1 as usize + 1
+                        } else {
+                            1
+                        }
                     };
-                    newj2len.insert(j, k);
+                    cur[j] = (current, k as u32);
                     if k > bestsize {
                         best_ai = i + 1 - k;
                         bestj = j + 1 - k;
@@ -278,7 +335,9 @@ impl SequenceMatcher {
                     }
                 }
             }
-            j2len = newj2len;
+            // The current iteration's map becomes the lookup map for the
+            // next one (CPython's `j2len = newj2len`).
+            std::mem::swap(prev, cur);
         }
 
         // Extend the best by non-junk elements on each end (popular
@@ -324,47 +383,129 @@ impl SequenceMatcher {
     /// `get_matching_blocks` (difflib.py:440-519): queue-based recursion
     /// (LIFO `pop`), tuple sort, adjacent merge, `(len(a), len(b), 0)`
     /// sentinel.
+    ///
+    /// The windows are independent subproblems — each
+    /// [`find_longest_match`] reads only `a`/`b`/`b2j`/`bjunk` — so the
+    /// queue is drained by a worker pool: every worker pops a window,
+    /// computes its block, and pushes the two child windows. The block
+    /// *set* does not depend on the processing order (it is sorted and
+    /// merged afterwards), so parallel draining is byte-identical to the
+    /// sequential walk. Small inputs stay sequential: spawning threads
+    /// would cost more than the diff.
     fn get_matching_blocks(&mut self) -> &[(usize, usize, usize)] {
         if self.matching_blocks.is_none() {
             let (la, lb) = (self.a.len(), self.b.len());
-            let mut queue = vec![(0, la, 0, lb)];
-            let mut blocks: Vec<(usize, usize, usize)> = Vec::new();
-            while let Some((alo, ahi, blo, bhi)) = queue.pop() {
-                let (i, j, k) = self.find_longest_match(alo, ahi, blo, bhi);
-                if k != 0 {
-                    blocks.push((i, j, k));
-                    if alo < i && blo < j {
-                        queue.push((alo, i, blo, j));
-                    }
-                    if i + k < ahi && j + k < bhi {
-                        queue.push((i + k, ahi, j + k, bhi));
+            let workers = std::thread::available_parallelism()
+                .map_or(1, std::num::NonZero::get)
+                .min(16);
+            if la + lb < PARALLEL_DIFF_MIN_CHARS || workers == 1 {
+                let mut scratch = MatchScratch::new(lb);
+                let mut stack = vec![(0, la, 0, lb)];
+                let mut blocks: Vec<(usize, usize, usize)> = Vec::new();
+                while let Some((alo, ahi, blo, bhi)) = stack.pop() {
+                    let (i, j, k) = self.find_longest_match(alo, ahi, blo, bhi, &mut scratch);
+                    if k != 0 {
+                        blocks.push((i, j, k));
+                        if alo < i && blo < j {
+                            stack.push((alo, i, blo, j));
+                        }
+                        if i + k < ahi && j + k < bhi {
+                            stack.push((i + k, ahi, j + k, bhi));
+                        }
                     }
                 }
-            }
-            blocks.sort_unstable();
-
-            // Collapse adjacent equal blocks.
-            let mut non_adjacent: Vec<(usize, usize, usize)> = Vec::new();
-            let (mut i1, mut j1, mut k1) = (0usize, 0usize, 0usize);
-            for &(i2, j2, k2) in &blocks {
-                if i1 + k1 == i2 && j1 + k1 == j2 {
-                    k1 += k2;
-                } else {
-                    if k1 != 0 {
-                        non_adjacent.push((i1, j1, k1));
+                Self::finish_blocks(la, lb, blocks, &mut self.matching_blocks);
+            } else {
+                let state = Mutex::new(DiffState {
+                    stack: vec![(0, la, 0, lb)],
+                    // Windows on the stack plus windows being processed.
+                    pending: 1usize,
+                });
+                let cv = Condvar::new();
+                let collected = Mutex::new(Vec::new());
+                std::thread::scope(|scope| {
+                    for _ in 0..workers {
+                        scope.spawn(|| {
+                            let mut scratch = MatchScratch::new(self.b.len());
+                            loop {
+                                // Pop a window, waiting while other workers
+                                // still hold unprocessed ones.
+                                let window = {
+                                    let mut guard = state.lock().expect("diff state");
+                                    loop {
+                                        if let Some(window) = guard.stack.pop() {
+                                            break Some(window);
+                                        }
+                                        if guard.pending == 0 {
+                                            break None;
+                                        }
+                                        guard = cv.wait(guard).expect("diff state");
+                                    }
+                                };
+                                let Some((alo, ahi, blo, bhi)) = window else {
+                                    break;
+                                };
+                                let (i, j, k) =
+                                    self.find_longest_match(alo, ahi, blo, bhi, &mut scratch);
+                                let mut guard = state.lock().expect("diff state");
+                                if k != 0 {
+                                    collected.lock().expect("collected").push((i, j, k));
+                                    if alo < i && blo < j {
+                                        guard.stack.push((alo, i, blo, j));
+                                        guard.pending += 1;
+                                    }
+                                    if i + k < ahi && j + k < bhi {
+                                        guard.stack.push((i + k, ahi, j + k, bhi));
+                                        guard.pending += 1;
+                                    }
+                                }
+                                guard.pending -= 1;
+                                if guard.pending == 0 {
+                                    // No unprocessed windows anywhere: wake
+                                    // every waiter so they can exit.
+                                    cv.notify_all();
+                                }
+                            }
+                        });
                     }
-                    i1 = i2;
-                    j1 = j2;
-                    k1 = k2;
-                }
+                });
+                let blocks = collected.into_inner().expect("collected");
+                Self::finish_blocks(la, lb, blocks, &mut self.matching_blocks);
             }
-            if k1 != 0 {
-                non_adjacent.push((i1, j1, k1));
-            }
-            non_adjacent.push((la, lb, 0));
-            self.matching_blocks = Some(non_adjacent);
         }
         self.matching_blocks.as_deref().expect("computed above")
+    }
+
+    /// Sorts the collected blocks, merges adjacent equal runs, and appends
+    /// the `(len(a), len(b), 0)` sentinel (difflib.py:494-519).
+    fn finish_blocks(
+        la: usize,
+        lb: usize,
+        mut blocks: Vec<(usize, usize, usize)>,
+        out: &mut Option<Vec<(usize, usize, usize)>>,
+    ) {
+        blocks.sort_unstable();
+
+        // Collapse adjacent equal blocks.
+        let mut non_adjacent: Vec<(usize, usize, usize)> = Vec::new();
+        let (mut i1, mut j1, mut k1) = (0usize, 0usize, 0usize);
+        for &(i2, j2, k2) in &blocks {
+            if i1 + k1 == i2 && j1 + k1 == j2 {
+                k1 += k2;
+            } else {
+                if k1 != 0 {
+                    non_adjacent.push((i1, j1, k1));
+                }
+                i1 = i2;
+                j1 = j2;
+                k1 = k2;
+            }
+        }
+        if k1 != 0 {
+            non_adjacent.push((i1, j1, k1));
+        }
+        non_adjacent.push((la, lb, 0));
+        *out = Some(non_adjacent);
     }
 
     /// `get_opcodes` (difflib.py:522-562).
@@ -647,6 +788,123 @@ fn qformat(aline: char, bline: char, atags: &str, btags: &str) -> Vec<String> {
 mod tests {
     use super::*;
 
+    /// Differential fuzz: the original `HashMap`-per-iteration walk (the
+    /// pre-optimization implementation, kept verbatim here as the
+    /// reference) against the generation-stamped walk, over random
+    /// sequences and random windows. Any mismatch is a parity bug.
+    #[test]
+    /// Long (the reference is verbatim) and the LCG seeds are u64s
+    /// truncated to usize for indexing — both fine for a test.
+    #[allow(clippy::too_many_lines, clippy::cast_possible_truncation)]
+    fn difflib_fuzz_stamp_walk_matches_original() {
+        // The original implementation, kept verbatim as the oracle.
+        #[allow(clippy::needless_range_loop)]
+        #[allow(clippy::cast_possible_truncation)]
+        fn reference(
+            sm: &SequenceMatcher,
+            alo: usize,
+            ahi: usize,
+            blo: usize,
+            bhi: usize,
+        ) -> (usize, usize, usize) {
+            let (a, b) = (&sm.a, &sm.b);
+            let isbjunk = |c: char| sm.bjunk.contains(&c);
+            let (mut best_ai, mut bestj, mut bestsize) = (alo, blo, 0usize);
+            let mut j2len: HashMap<usize, usize> = HashMap::new();
+            for i in alo..ahi {
+                let mut newj2len: HashMap<usize, usize> = HashMap::new();
+                if let Some(indices) = sm.b2j.get(&a[i]) {
+                    for &j in indices {
+                        if j < blo {
+                            continue;
+                        }
+                        if j >= bhi {
+                            break;
+                        }
+                        let k = if j == 0 {
+                            1
+                        } else {
+                            j2len.get(&(j - 1)).copied().unwrap_or(0) + 1
+                        };
+                        newj2len.insert(j, k);
+                        if k > bestsize {
+                            best_ai = i + 1 - k;
+                            bestj = j + 1 - k;
+                            bestsize = k;
+                        }
+                    }
+                }
+                j2len = newj2len;
+            }
+            while best_ai > alo
+                && bestj > blo
+                && !isbjunk(b[bestj - 1])
+                && a[best_ai - 1] == b[bestj - 1]
+            {
+                best_ai -= 1;
+                bestj -= 1;
+                bestsize += 1;
+            }
+            while best_ai + bestsize < ahi
+                && bestj + bestsize < bhi
+                && !isbjunk(b[bestj + bestsize])
+                && a[best_ai + bestsize] == b[bestj + bestsize]
+            {
+                bestsize += 1;
+            }
+            while best_ai > alo
+                && bestj > blo
+                && isbjunk(b[bestj - 1])
+                && a[best_ai - 1] == b[bestj - 1]
+            {
+                best_ai -= 1;
+                bestj -= 1;
+                bestsize += 1;
+            }
+            while best_ai + bestsize < ahi
+                && bestj + bestsize < bhi
+                && isbjunk(b[bestj + bestsize])
+                && a[best_ai + bestsize] == b[bestj + bestsize]
+            {
+                bestsize += 1;
+            }
+            (best_ai, bestj, bestsize)
+        }
+
+        // Deterministic LCG so failures reproduce.
+        let mut seed: u64 = 0x1234_5678_9abc_def0;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        // Alphabet heavy on spaces/tabs/newlines (junk + autojunk interplay).
+        let alphabet = ['a', 'b', 'c', ' ', '\t', '\n', 'x'];
+        for case in 0..2000usize {
+            let la = (next() % 80) as usize;
+            let lb = (next() % 80) as usize;
+            let a: Vec<char> = (0..la)
+                .map(|_| alphabet[(next() as usize) % alphabet.len()])
+                .collect();
+            let b: Vec<char> = (0..lb)
+                .map(|_| alphabet[(next() as usize) % alphabet.len()])
+                .collect();
+            let sm = SequenceMatcher::new(None, &a, &b);
+            let alo = (next() as usize) % (la + 1);
+            let ahi = alo + (next() as usize) % (la - alo + 1);
+            let blo = (next() as usize) % (lb + 1);
+            let bhi = blo + (next() as usize) % (lb - blo + 1);
+            let mut scratch = MatchScratch::new(lb);
+            let got = sm.find_longest_match(alo, ahi, blo, bhi, &mut scratch);
+            let want = reference(&sm, alo, ahi, blo, bhi);
+            assert_eq!(
+                got, want,
+                "mismatch case {case}: a={a:?} b={b:?} window=({alo},{ahi},{blo},{bhi})"
+            );
+        }
+    }
+
     /// `CPython` doctest (difflib.py:396-401).
     #[test]
     fn find_longest_match_matches_doctest() {
@@ -655,7 +913,10 @@ mod tests {
             &" abcd".chars().collect::<Vec<_>>(),
             &"abcd abcd".chars().collect::<Vec<_>>(),
         );
-        assert_eq!(sm.find_longest_match(0, 5, 0, 9), (0, 4, 5));
+        assert_eq!(
+            sm.find_longest_match(0, 5, 0, 9, &mut MatchScratch::new(9)),
+            (0, 4, 5)
+        );
     }
 
     /// `CPython` doctest (difflib.py:468-472).
