@@ -258,39 +258,62 @@ fn run_tool_lenient(tool: &str, args: &[&str], source: &str) -> anyhow::Result<S
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-/// Tools whose lazy auto-provisioning was already attempted in this
-/// process (see [`ensure_backend`]). The first missing-tool occurrence
-/// per run triggers provisioning; later files in the same run skip
-/// straight to the missing-tool error when the first attempt failed.
-/// When an attempt succeeded, [`locate_tool`] finds the tool and the
-/// dedupe never matters.
+/// Tools whose auto-provisioning was already attempted in this
+/// process (see [`ensure_backends`]). Each missing tool of a run is
+/// attempted once; later files needing the same tool skip straight to
+/// the missing-tool error when the attempt failed. When an attempt
+/// succeeded, [`locate_tool`] finds the tool and the dedupe never
+/// matters.
 static PROVISION_ATTEMPTED: LazyLock<Mutex<HashSet<String>>> =
     LazyLock::new(|| Mutex::new(HashSet::new()));
 
-/// Attempts to lazily auto-provision `tool` into the u50 style cache
-/// exactly once per process: downloads it via the same uv library path
-/// `u50 --setup` uses (never through the formatter, so there is no
-/// recursion) and lets the caller's subsequent spawn fail naturally when
-/// provisioning did not help. Set `U50_STYLE_NO_PROVISION` in the
-/// environment to disable (used by hermetic tests).
-pub(crate) fn ensure_backend(tool: &str) {
+/// Attempts to lazily auto-provision the backends for `missing` — the
+/// `(pip package, tool)` pairs collected after the walk — exactly once
+/// per process: fetches every package **in parallel** via the same uv
+/// library path `u50 --setup` uses (never through the formatter, so
+/// there is no recursion) and lets the caller's subsequent spawn fail
+/// naturally when provisioning did not help. Set
+/// `U50_STYLE_NO_PROVISION` in the environment to disable (used by
+/// hermetic tests).
+pub(crate) fn ensure_backends(missing: &[(String, String)]) {
     if std::env::var_os("U50_STYLE_NO_PROVISION").is_some() {
         return;
     }
     let mut attempted = PROVISION_ATTEMPTED
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if !attempted.insert(tool.to_owned()) {
+    let pending: Vec<(String, String)> = missing
+        .iter()
+        .filter(|(_, tool)| attempted.insert(tool.clone()))
+        .cloned()
+        .collect();
+    drop(attempted);
+    if pending.is_empty() {
         return;
     }
-    drop(attempted);
+    let tools: Vec<&str> = pending.iter().map(|(_, tool)| tool.as_str()).collect();
     tracing::info!(
-        tool,
-        "formatter backend missing from the cache; auto-provisioning"
+        ?tools,
+        "formatter backends missing from the cache; auto-provisioning"
     );
-    if let Err(e) = crate::setup::ensure_backend(tool) {
-        tracing::warn!(tool, error = %e, "auto-provisioning failed");
+    if let Err(e) = crate::setup::install_backends(&pending) {
+        tracing::warn!(?tools, error = %e, "auto-provisioning failed");
     }
+}
+
+/// Attempts to lazily auto-provision the single backend `tool` (the
+/// per-file fallback in [`Cs50Formatter::format`]) by mapping it to its
+/// pip package and delegating to [`ensure_backends`].
+pub(crate) fn ensure_backend(tool: &str) {
+    let Some(package) = Language::ALL
+        .iter()
+        .find(|&&language| language.required_tool() == Some(tool))
+        .map(|language| language.pip_package())
+    else {
+        tracing::warn!(tool, "no known pip package provides this tool");
+        return;
+    };
+    ensure_backends(&[(package.to_owned(), tool.to_owned())]);
 }
 
 /// Formatter backed by the same per-language external formatters the

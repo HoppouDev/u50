@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use rayon::prelude::*;
 
-use crate::formatter::{Cs50Formatter, Formatter, ensure_backend, locate_tool};
+use crate::formatter::{Cs50Formatter, Formatter, ensure_backends, locate_tool};
 use crate::language::detect_language;
 use crate::render::json_document;
 use crate::renderer::{Renderer, builtin_renderer};
@@ -77,8 +77,8 @@ pub fn run_with(req: &Request, formatter: &dyn Formatter) -> Report {
 /// Processes already-expanded `files` (see [`expand_paths`]) into a
 /// [`Report`]: the per-file pass shared verbatim by [`run_with`] (check)
 /// and [`run_with_renderer`] (check + rendering), run in parallel with
-/// rayon — a serial cold-cache provisioning pre-pass
-/// ([`provision_backends`]) installs any missing backends first. Walk warnings are a
+/// rayon — a cold-cache provisioning pre-pass ([`provision_backends`])
+/// fetches every missing backend in parallel first. Walk warnings are a
 /// rendering concern: callers that render expand themselves (see
 /// [`run_with_renderer`]) or print the warnings engine-side (see
 /// [`fix_with`]); this helper never sees them.
@@ -106,14 +106,20 @@ fn check_files(files: &[PathBuf], formatter: &dyn Formatter) -> Report {
     Report { results, errors }
 }
 
-/// Cold-cache provisioning pre-pass for the parallel check: resolves
-/// each file's language backend and downloads any missing tool into the
-/// cache serially — before [`check_files`] fans out — so parallel
-/// first-use cannot race concurrent uv installs into the shared cache
-/// (see [`ensure_backend`]). Per-process dedupe and the
-/// `U50_STYLE_NO_PROVISION` escape hatch live in [`ensure_backend`].
+/// Cold-cache provisioning pre-pass: runs **after** the walk
+/// ([`expand_paths`] only classifies files — it never fetches) and
+/// collects the distinct missing `(pip package, tool)` pairs of the
+/// discovered files, then fetches them all **in parallel** through the
+/// same uv pipeline `u50 --setup` uses
+/// ([`crate::setup::install_backends`]: one fetch task per package, one
+/// serialized venv install) — before [`check_files`] or [`fix_with`]
+/// processes anything — so per-file first-use can never race concurrent
+/// uv installs into the shared cache. Per-process dedupe and the
+/// `U50_STYLE_NO_PROVISION` escape hatch live in
+/// [`crate::formatter::ensure_backends`].
 fn provision_backends(files: &[PathBuf]) {
     let mut seen = HashSet::new();
+    let mut missing: Vec<(String, String)> = Vec::new();
     for path in files {
         let Some(language) = detect_language(path) else {
             continue;
@@ -122,9 +128,10 @@ fn provision_backends(files: &[PathBuf]) {
             continue;
         };
         if seen.insert(tool) && locate_tool(tool).is_none() {
-            ensure_backend(tool);
+            missing.push((language.pip_package().to_owned(), tool.to_owned()));
         }
     }
+    ensure_backends(&missing);
 }
 
 /// Runs the style check like [`run_with`], then drives `renderer` over the
@@ -235,6 +242,10 @@ pub fn fix_with(req: &Request, formatter: &dyn Formatter, dry_run: bool) -> Repo
     for path in &skipped {
         eprintln!("unknown file type \"{}\", skipping...", path.display());
     }
+    // Same walk → provision → process pipeline as the check pass: the
+    // missing backends are fetched in parallel before the sequential
+    // (in-place) fix loop starts.
+    provision_backends(&files);
     let mut results = Vec::with_capacity(files.len());
     let mut errors = Vec::new();
     for path in &files {

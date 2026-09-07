@@ -21,7 +21,7 @@ Both `run_with` and `fix_with` call `expand_paths(&req.files)` before processing
 - Anything else (file, symlink to file, missing path) is kept **unchanged**, so explicit file arguments keep their per-file error semantics (unsupported extension → exit 3, missing → `could not read`).
 - A directory with zero supported files contributes nothing (no error — style50 likewise skips unknown types), but each skipped unsupported regular file it contains still gets the walk warning `unknown file type "<path>", skipping...` (see the first bullet); **unreadable directories are skipped silently** (also matches `os.walk`'s ignored-error default).
 - The final file list is **deduplicated** (a directory and a file inside it may both be named) and **sorted** for deterministic output, applied identically to check and `--fix`.
-- **Parallelism:** the check pass (`check_files`, shared by `run_with`/`run_with_renderer`) processes files in parallel with **rayon**; rayon preserves input order, so results, errors, and rendering stay byte-identical to a sequential run. A serial **cold-cache provisioning pre-pass** (`provision_backends`) resolves each file's backend and downloads any missing tool into the cache *before* the fan-out (parallel first-use would race concurrent uv installs into the shared cache); `fix_with` stays sequential (in-place writes). `run()` prints rendered output for every processed file to stdout (stdout stays pure diff/JSON), then writes each error to stderr as `error: <path>: <message>`. Formatter-level failures (e.g. missing clang-format) are therefore per-file skips, not whole-run bails.
+- **Parallelism:** the check pass (`check_files`, shared by `run_with`/`run_with_renderer`) processes files in parallel with **rayon**; rayon preserves input order, so results, errors, and rendering stay byte-identical to a sequential run. A **cold-cache provisioning pre-pass** (`provision_backends`) runs *after* the walk and *before* any file is processed (the walk itself only classifies files — it never fetches): it collects the distinct missing `(pip package, tool)` pairs of the discovered files and fetches them all **in parallel** through the same uv pipeline `--setup` uses (one fetch task per package, one serialized venv install — so parallel first-use cannot race concurrent uv installs into the shared cache). `fix_with` gets the same pre-pass and stays sequential for the in-place writes. `run()` prints rendered output for every processed file to stdout (stdout stays pure diff/JSON), then writes each error to stderr as `error: <path>: <message>`. Formatter-level failures (e.g. missing clang-format) are therefore per-file skips, not whole-run bails.
 
 ## In-place fix
 
@@ -206,12 +206,17 @@ missing-tool error instead of spawning. Cache hits spawn by resolved path.
 ### Lazy auto-provisioning
 
 When a language's backend is missing from the cache at format time, u50 auto-provisions
-it on first use: the tool is mapped to its pip package and installed via
+it on first use: the tools are mapped to their pip packages and installed via
 the same install core as `--setup` (uv library path — managed CPython 3.14
-if needed, venv, pinned wheel + transitive deps), deduplicated per process
-(`ensure_backend_once`: the first missing-tool occurrence per run triggers
-provisioning; later files in the same run skip straight to the error when
-the first attempt failed). Provisioning failures degrade to the standard
+if needed, venv, pinned wheels + transitive deps, one parallel fetch task
+per package). The check and fix passes batch **all** missing backends of
+the run — collected after the directory walk — into one parallel fetch
+before any file is processed (`provision_backends` →
+`formatter::ensure_backends`); the per-file hook in
+`Cs50Formatter::format` (`ensure_backend`) remains as a single-tool
+fallback, deduplicated per process (each missing tool of a run is
+attempted once; later files needing the same tool skip straight to the
+error when the attempt failed). Provisioning failures degrade to the standard
 per-file missing-tool error (exit 3). Set `U50_STYLE_NO_PROVISION=1` to
 disable auto-provisioning entirely (hermetic tests / CI).
 

@@ -239,34 +239,35 @@ pub fn setup_missing() -> Result<()> {
         println!("all formatter backends are already available");
         return Ok(());
     }
+    install_backends(&missing)
+}
+
+/// The shared install core, used by `u50 --setup` and by the engine's
+/// batched provisioning pre-pass: initializes uv's preview state,
+/// drives the async provisioning pipeline ([`provision_backends`]) on a
+/// local runtime — one parallel wheel-fetch task per package, one
+/// serialized venv install — prints the `installing N package(s)`
+/// banner and the per-package summary lines (`installed:` /
+/// `failed:`), and bails when anything failed.
+///
+/// # Errors
+/// Returns an error when uv provisioning fails or any package failed to
+/// install.
+pub(crate) fn install_backends(missing: &[(String, String)]) -> Result<()> {
+    // Several uv crates read the process-global preview state; initialize
+    // it before touching any uv API.
+    uv_preview::set(Preview::default()).context("preview init")?;
+
+    // Stays synchronous (the CLI and the engine pre-pass call this
+    // synchronously); the uv provisioning path is async, so drive it on a
+    // local runtime.
+    let runtime = Runtime::new().context("tokio runtime")?;
     let cache = cache_dir().context("resolve the u50 style cache directory")?;
     println!(
         "installing {} package(s) into {}",
         missing.len(),
         cache.display()
     );
-    install_backends(&missing)
-}
-
-/// The shared install core, used by `u50 --setup` and by the
-/// formatter's lazy auto-provisioning: initializes uv's preview state,
-/// drives the async provisioning pipeline ([`provision_backends`]) on a
-/// local runtime, prints the per-package summary lines (`installed:` /
-/// `failed:`), and bails when anything failed.
-///
-/// # Errors
-/// Returns an error when uv provisioning fails or any package failed to
-/// install.
-fn install_backends(missing: &[(String, String)]) -> Result<()> {
-    // Several uv crates read the process-global preview state; initialize
-    // it before touching any uv API.
-    uv_preview::set(Preview::default()).context("preview init")?;
-
-    // Stays synchronous (the CLI and the formatter hook call this
-    // synchronously); the uv provisioning path is async, so drive it on a
-    // local runtime.
-    let runtime = Runtime::new().context("tokio runtime")?;
-    let cache = cache_dir().context("resolve the u50 style cache directory")?;
     let outcomes = runtime.block_on(provision_backends(&cache, missing))?;
 
     let mut any_failure = false;
@@ -284,31 +285,6 @@ fn install_backends(missing: &[(String, String)]) -> Result<()> {
         bail!("one or more formatter backends failed to install")
     }
     Ok(())
-}
-
-/// Lazily auto-provisions a single formatter backend into the cache on
-/// first use: a no-op when `tool` already resolves from the cache,
-/// otherwise maps the tool to its pip package via [`Language::ALL`] and
-/// installs it (plus its transitive dependencies) through the same uv
-/// library path as `u50 --setup`. Called from the formatter hook —
-/// never from the provisioning path itself — so it cannot recurse.
-///
-/// # Errors
-/// Returns an error when no pip package is known for `tool` or when the
-/// install fails; the caller only warns and lets the spawn error happen
-/// naturally.
-pub(crate) fn ensure_backend(tool: &str) -> Result<()> {
-    if locate_tool(tool).is_some() {
-        return Ok(());
-    }
-    let package = Language::ALL
-        .iter()
-        .find(|&&language| language.required_tool() == Some(tool))
-        .map(|language| language.pip_package())
-        .with_context(|| format!("no known pip package provides tool `{tool}`"))?;
-    let cache = cache_dir().context("resolve the u50 style cache directory")?;
-    println!("installing 1 package(s) into {}", cache.display());
-    install_backends(&[(package.to_owned(), tool.to_owned())])
 }
 
 /// The async provisioning pipeline: uv cache, venv, parallel wheel
