@@ -85,13 +85,12 @@ pub(crate) fn line_diff<'a>(source: &'a str, formatted: &'a str) -> TextDiff<'a,
         .diff_lines(source, formatted)
 }
 
-/// The state of a character in the character-mode diff: common to both
-/// texts ([`CharState::Equal`]), present only in the source
-/// ([`CharState::Delete`]), or only in the styled text
-/// ([`CharState::Insert`]).
+/// The state of a character in the character-mode diff: present only in
+/// the source ([`CharState::Delete`]) or only in the styled text
+/// ([`CharState::Insert`]). Characters common to both texts carry no
+/// background and need no transition sequence.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum CharState {
-    Equal,
     Delete,
     Insert,
 }
@@ -105,13 +104,24 @@ const TAB_MARKER: &str = "\\t";
 impl CharState {
     /// The transition sequence entering `self`, style50's
     /// `color_transition`: a reset closing any previous background, then
-    /// the new background for Delete/Insert (or none for Equal).
+    /// the new background for Delete/Insert.
     fn transition(self) -> &'static str {
         match self {
-            CharState::Equal => RESET,
             CharState::Insert => "\u{1b}[0m\u{1b}[42m",
             CharState::Delete => "\u{1b}[0m\u{1b}[41m",
         }
+    }
+}
+
+/// style50's `color_transition(old_type, new_type)` keyed by the new delta
+/// tag: a reset closing any previous background, then the new background
+/// for `'-'`/`'+'`. For `' '` and the `'?'` guide tag `termcolor.colored("")`
+/// is empty, so only the reset remains.
+fn transition_to(tag: char) -> &'static str {
+    match tag {
+        '-' => CharState::Delete.transition(),
+        '+' => CharState::Insert.transition(),
+        _ => RESET,
     }
 }
 
@@ -154,10 +164,10 @@ fn strip_ansi(text: &str) -> String {
 /// the hint fired. With `color == false` no ANSI escape is emitted
 /// anywhere (markers and layout are identical).
 ///
-/// The character diff uses the `similar` crate where style50 uses Python's
-/// `difflib.ndiff`; both compute character-level edit scripts, but the
-/// chosen alignment may differ on ambiguous inputs — structure and colors
-/// are the parity contract, not byte-identical spans.
+/// The character diff consumes [`crate::difflib::ndiff_lines`] — a faithful
+/// port of `CPython`'s `difflib.ndiff` (autojunk included), the exact
+/// algorithm style50 feeds its `_char_diff` walk — so the delta alignment
+/// is identical and character mode is byte-compatible with style50.
 ///
 /// Like style50's own `ndiff`-based walk this is quadratic in the edit
 /// distance; on pathological large inputs character mode is the slowest
@@ -172,19 +182,20 @@ pub(crate) fn render_character(
     color: bool,
     hint_comments: bool,
 ) -> String {
-    // `line_diff` groups by lines; character mode needs char units (and
-    // pays the char-level cost that implies).
-    let diff = TextDiff::configure().diff_chars(source, formatted);
+    // style50 feeds `difflib.ndiff(old, new)` — the raw character
+    // sequences — to its walk and reads each delta unit as (d[0], d[2]).
+    let delta = crate::difflib::ndiff_lines(source, formatted);
 
-    // The visible diff state — kept exactly like style50's `dtype`: it is
-    // only reassigned when a diff unit's tag differs from it, and NOT
-    // touched by the newline handling (the newline branches emit their own
-    // transition pairs without changing `dtype`), so consecutive
-    // same-type newlines emit no spurious transitions.
-    let mut dtype: Option<CharState> = None;
+    // The visible diff state — kept exactly like style50's `dtype`: the
+    // raw delta tag char (' ', '-', '+', '?'), only reassigned when a
+    // delta unit's tag differs from it, and NOT touched by the newline
+    // handling (the newline branches emit their own transition pairs
+    // without changing `dtype`), so consecutive same-type newlines emit
+    // no spurious transitions.
+    let mut dtype: Option<char> = None;
     let mut line = String::new();
     let mut body = String::new();
-    let mut legend: Vec<(CharState, &'static str)> = Vec::new();
+    let mut legend: Vec<(char, &'static str)> = Vec::new();
 
     // `dtype` (Some(tag) of the current unit) drives transitions; `warn`
     // records a legend entry unless the (state, marker) pair is already
@@ -197,47 +208,39 @@ pub(crate) fn render_character(
         };
     }
 
-    for change in diff.iter_all_changes() {
-        let tag = match change.tag() {
-            ChangeTag::Equal => CharState::Equal,
-            ChangeTag::Delete => CharState::Delete,
-            ChangeTag::Insert => CharState::Insert,
-        };
-        for ch in change.value().chars() {
-            if dtype != Some(tag) {
-                if color {
-                    line.push_str(tag.transition());
-                }
-                dtype = Some(tag);
+    for &(tag, value) in &delta {
+        if dtype != Some(tag) {
+            if color {
+                line.push_str(transition_to(tag));
             }
-            if ch == '\n' {
-                if dtype != Some(CharState::Equal) {
-                    let state = dtype.expect("dtype is Some unless the tag was Equal");
-                    warn!(state, NEWLINE_MARKER);
-                    line.push_str(NEWLINE_MARKER);
-                    if color {
-                        line.push_str(CharState::Equal.transition());
-                    }
-                }
-                // An inserted (or common) newline ends the visible line;
-                // a deleted one merges the two lines (no yield).
-                if dtype != Some(CharState::Delete) {
-                    body.push_str(&line);
-                    body.push('\n');
-                    line.clear();
-                }
+            dtype = Some(tag);
+        }
+        let state = dtype.expect("dtype is Some from the first unit on");
+        if value == '\n' {
+            if state != ' ' {
+                warn!(state, NEWLINE_MARKER);
+                line.push_str(NEWLINE_MARKER);
                 if color {
-                    // Re-open the background for the text that follows
-                    // (style50's unconditional `transition(" ", dtype)`).
-                    line.push_str(tag.transition());
+                    line.push_str(RESET);
                 }
-            } else if dtype != Some(CharState::Equal) && ch == '\t' {
-                let state = dtype.expect("dtype is Some unless the tag was Equal");
-                warn!(state, TAB_MARKER);
-                line.push_str(TAB_MARKER);
-            } else {
-                line.push(ch);
             }
+            // An inserted (or common) newline ends the visible line; a
+            // deleted one merges the two lines (no yield).
+            if state != '-' {
+                body.push_str(&line);
+                body.push('\n');
+                line.clear();
+            }
+            if color {
+                // Re-open the background for the text that follows
+                // (style50's unconditional `transition(" ", dtype)`).
+                line.push_str(transition_to(state));
+            }
+        } else if state != ' ' && value == '\t' {
+            warn!(state, TAB_MARKER);
+            line.push_str(TAB_MARKER);
+        } else {
+            line.push(value);
         }
     }
     // Close any open background, then flush the pending line only if it
@@ -255,10 +258,13 @@ pub(crate) fn render_character(
     out.push_str(&body);
     out.push('\n');
     for (state, marker) in &legend {
-        let (background, verb) = match state {
-            CharState::Insert => (ON_GREEN, "insert"),
-            CharState::Delete => (ON_RED, "delete"),
-            CharState::Equal => continue,
+        let (background, verb) = match *state {
+            '+' => (ON_GREEN, "insert"),
+            '-' => (ON_RED, "delete"),
+            // Equal never warns; the '?' guide tag is unreachable in
+            // character mode (a synch pair only passes the similarity
+            // cutoff when the characters are equal).
+            _ => continue,
         };
         let noun = if *marker == NEWLINE_MARKER {
             "newline"
