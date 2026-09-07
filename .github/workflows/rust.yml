@@ -24,7 +24,7 @@ jobs:
         # plus six pinned backends into this cache; its contents are fully
         # determined by tests/tool-versions.txt, so key on that hash.
         if: runner.os == 'Linux'
-        uses: actions/cache@1bd1e32a3bdc45362d1a799c8c9d3fb16c3df0b1 # v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ~/.cache/u50/style50
           key: u50-style-cache-${{ runner.os }}-${{ hashFiles('u50_style/tests/tool-versions.txt') }}
