@@ -1,6 +1,6 @@
 #![warn(clippy::pedantic)]
 
-mod difflib;
+mod diff;
 mod engine;
 mod formatter;
 mod language;

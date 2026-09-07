@@ -209,7 +209,7 @@ fn strip_ansi(text: &str) -> String {
 /// the hint fired. With `color == false` no ANSI escape is emitted
 /// anywhere (markers and layout are identical).
 ///
-/// The character diff consumes [`crate::difflib::ndiff_lines`] — a faithful
+/// The character diff consumes [`crate::diff::ndiff_lines`] — a faithful
 /// port of `CPython`'s `difflib.ndiff` (autojunk included), the exact
 /// algorithm style50 feeds its `_char_diff` walk — so the delta alignment
 /// is identical and character mode is byte-compatible with style50.
@@ -229,7 +229,7 @@ pub(crate) fn render_character(
 ) -> String {
     // style50 feeds `difflib.ndiff(old, new)` — the raw character
     // sequences — to its walk and reads each delta unit as (d[0], d[2]).
-    let delta = crate::difflib::ndiff_lines(source, formatted);
+    let delta = crate::diff::ndiff_lines(source, formatted);
 
     // The visible diff state — kept exactly like style50's `dtype`: the
     // raw delta tag char (' ', '-', '+', '?'), only reassigned when a

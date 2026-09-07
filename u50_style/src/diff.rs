@@ -796,7 +796,7 @@ mod tests {
     /// Long (the reference is verbatim) and the LCG seeds are u64s
     /// truncated to usize for indexing — both fine for a test.
     #[allow(clippy::too_many_lines, clippy::cast_possible_truncation)]
-    fn difflib_fuzz_stamp_walk_matches_original() {
+    fn diff_fuzz_stamp_walk_matches_original() {
         // The original implementation, kept verbatim as the oracle.
         #[allow(clippy::needless_range_loop)]
         #[allow(clippy::cast_possible_truncation)]
