@@ -147,9 +147,12 @@ fn strip_ansi(text: &str) -> String {
 ///
 /// The returned per-file dirty block is: a blank line, the highlighted
 /// diff, a blank line, one legend line per unique (state, marker) in
-/// first-seen order, and a trailing blank line when any legend line was
-/// emitted. With `color == false` no ANSI escape is emitted anywhere
-/// (markers and layout are identical).
+/// first-seen order, then — when `hint_comments` is set (style50's
+/// `file["comments"]`: the comment ratio of the normalized original is
+/// under `COMMENT_MIN`) — a yellow `And consider adding more comments!`
+/// line, and a trailing blank line when any legend line was emitted or
+/// the hint fired. With `color == false` no ANSI escape is emitted
+/// anywhere (markers and layout are identical).
 ///
 /// The character diff uses the `similar` crate where style50 uses Python's
 /// `difflib.ndiff`; both compute character-level edit scripts, but the
@@ -159,7 +162,16 @@ fn strip_ansi(text: &str) -> String {
 /// Like style50's own `ndiff`-based walk this is quadratic in the edit
 /// distance; on pathological large inputs character mode is the slowest
 /// renderer by design.
-pub(crate) fn render_character(source: &str, formatted: &str, color: bool) -> String {
+// style50-parity character mode: the ndiff-style walk, the dtype
+// transition bookkeeping and the newline handling form one interleaved
+// pass — extracting helpers would scatter the state machine.
+#[allow(clippy::too_many_lines)]
+pub(crate) fn render_character(
+    source: &str,
+    formatted: &str,
+    color: bool,
+    hint_comments: bool,
+) -> String {
     // `line_diff` groups by lines; character mode needs char units (and
     // pays the char-level cost that implies).
     let diff = TextDiff::configure().diff_chars(source, formatted);
@@ -274,7 +286,17 @@ pub(crate) fn render_character(source: &str, formatted: &str, color: bool) -> St
         }
         out.push('\n');
     }
-    if !legend.is_empty() {
+    if hint_comments {
+        if color {
+            out.push_str(YELLOW);
+        }
+        out.push_str("And consider adding more comments!");
+        if color {
+            out.push_str(RESET);
+        }
+        out.push('\n');
+    }
+    if hint_comments || !legend.is_empty() {
         out.push('\n');
     }
     out

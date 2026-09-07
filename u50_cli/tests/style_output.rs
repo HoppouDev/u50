@@ -721,3 +721,75 @@ fn list_reports_missing_for_every_backend_when_cache_is_empty() {
 
     let _ = std::fs::remove_dir_all(&root);
 }
+
+// --- comments hint (style50 parity) ---
+
+/// Writes `contents` to a fresh `.c` temp file named after the test
+/// (plus the pid, so parallel test binaries never collide).
+#[cfg(unix)]
+fn temp_c(test: &str, contents: &str) -> PathBuf {
+    let path = std::env::temp_dir().join(format!(
+        "u50_style_output_{}_{}.c",
+        std::process::id(),
+        test
+    ));
+    std::fs::write(&path, contents).expect("write temp file");
+    path
+}
+
+#[test]
+#[cfg(unix)]
+fn character_mode_comments_hint_below_comment_min() {
+    // style50 parity (`file["comments"]`): in character mode a file whose
+    // comment ratio (comments / lines) is strictly below 0.10 gets the
+    // yellow `And consider adding more comments!` line after the legend;
+    // at or above 0.10 no hint. Hermetic: the upper-casing stub makes the
+    // file dirty, so character mode renders the diff block and the hint
+    // decision rides only on the file's own comment ratio — one comment
+    // over twelve lines is 0.083 < 0.10. (A clean file would take the
+    // score-renderer path and its `But consider...` variant instead.)
+    let cache = StubCache::new(UPPER);
+    let sparse = temp_c(
+        "hint_sparse",
+        "// c\nint a1;\nint a2;\nint a3;\nint a4;\nint a5;\nint a6;\nint a7;\nint a8;\nint a9;\nint a10;\nint a11;\nint a12;\n",
+    );
+    let p = sparse.to_str().expect("utf-8 temp path");
+    let out = Command::new(EXE)
+        .args(["style", p, "--color", "always"])
+        .env("XDG_CACHE_HOME", cache.root.join("cache"))
+        .env("U50_STYLE_NO_PROVISION", "1")
+        .output()
+        .expect("spawn u50");
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "dirty file must exit 1 (stderr: {})",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains("\x1b[33mAnd consider adding more comments!\x1b[0m"),
+        "ratio 1/12 < 0.10 must print the yellow hint: {stdout:?}"
+    );
+    cleanup(&sparse);
+
+    // Two comments over twelve lines is 0.167 >= 0.10: no hint line.
+    let dense = temp_c(
+        "hint_dense",
+        "// c\n// c\nint a1;\nint a2;\nint a3;\nint a4;\nint a5;\nint a6;\nint a7;\nint a8;\nint a9;\nint a10;\n",
+    );
+    let p = dense.to_str().expect("utf-8 temp path");
+    let out = Command::new(EXE)
+        .args(["style", p, "--color", "always"])
+        .env("XDG_CACHE_HOME", cache.root.join("cache"))
+        .env("U50_STYLE_NO_PROVISION", "1")
+        .output()
+        .expect("spawn u50");
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        !stdout.contains("consider adding"),
+        "ratio 2/12 >= 0.10 must print no hint: {stdout:?}"
+    );
+    cleanup(&dense);
+}

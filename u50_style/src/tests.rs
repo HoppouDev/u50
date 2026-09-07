@@ -14,6 +14,7 @@ fn numbered_lines(prefix: &str, n: usize) -> String {
     out
 }
 use crate::formatter::{cache_bin_dir, cache_dir, locate_tool, run_tool, venv_bin_dir};
+use crate::language::{Language, comment_hint, count_comments};
 use crate::render::{
     BOLD, BRIGHT_WHITE, CYAN, GREEN, ON_GREEN, ON_RED, RED, RESET, YELLOW, json_document,
     render_character, render_split, render_unified, select_algorithm,
@@ -236,10 +237,12 @@ fn character_output_renders_the_original_text_without_plus_minus_lines() {
     // style50 parity: a leading blank line, then the original text
     // re-rendered with the styled spans inlined (here the changes are pure
     // 4-space insertions, so the body IS the styled text), then a trailing
-    // blank line. Character mode has no +/- rows.
+    // blank line, then the comments hint (a 0-comment file has ratio
+    // 0 < 0.10, oracle-verified) and its trailing blank line. Character
+    // mode has no +/- rows.
     assert_eq!(
         rendered,
-        "\n    int main(void)\n    {\n    return 0;\n    }\n\n"
+        "\n    int main(void)\n    {\n    return 0;\n    }\n\nAnd consider adding more comments!\n\n"
     );
     assert!(
         !rendered
@@ -254,17 +257,17 @@ fn character_output_escapes_newline_and_tab_markers_with_legend() {
     // A deleted newline merges the two lines it joined and contributes a
     // legend line (marker escaped, style50's wording).
     assert_eq!(
-        render_character("a\nb\n", "ab\n", false),
+        render_character("a\nb\n", "ab\n", false, false),
         "\na\\nb\n\n\\n means that you should delete a newline.\n\n"
     );
     // An inserted newline ends the visible line where it is inserted.
     assert_eq!(
-        render_character("ab\n", "a\nb\n", false),
+        render_character("ab\n", "a\nb\n", false, false),
         "\na\\n\nb\n\n\\n means that you should insert a newline.\n\n"
     );
     // An inserted tab renders as the escaped marker plus its legend line.
     assert_eq!(
-        render_character("x\n", "\tx\n", false),
+        render_character("x\n", "\tx\n", false, false),
         "\n\\tx\n\n\\t means that you should insert a tab.\n\n"
     );
 }
@@ -523,7 +526,7 @@ fn error_in_later_file_preserves_earlier_results() {
 fn character_render_colored_uses_background_transitions_and_plain_has_no_ansi() {
     // A deleted newline: the deletion transition is reset+on-red, and the
     // legend line is an on-red marker followed by the yellow message.
-    let deleted = render_character("a\nb\n", "ab\n", true);
+    let deleted = render_character("a\nb\n", "ab\n", true, false);
     assert!(
         deleted.contains(&format!("{RESET}{ON_RED}")),
         "red deletion transition missing: {deleted:?}"
@@ -539,7 +542,7 @@ fn character_render_colored_uses_background_transitions_and_plain_has_no_ansi() 
         "no insertion background in a deletion-only diff: {deleted:?}"
     );
     // An inserted newline: reset+on-green transition, on-green legend.
-    let inserted = render_character("ab\n", "a\nb\n", true);
+    let inserted = render_character("ab\n", "a\nb\n", true, false);
     assert!(
         inserted.contains(&format!("{RESET}{ON_GREEN}")),
         "green insertion transition missing: {inserted:?}"
@@ -554,7 +557,7 @@ fn character_render_colored_uses_background_transitions_and_plain_has_no_ansi() 
     assert!(inserted.contains("\\n\u{1b}[0m"));
     // The non-colored renderings of the same diffs must not contain ANSI.
     for (source, formatted) in [("a\nb\n", "ab\n"), ("ab\n", "a\nb\n")] {
-        let plain = render_character(source, formatted, false);
+        let plain = render_character(source, formatted, false, false);
         assert!(!plain.contains('\u{1b}'), "unexpected ANSI: {plain:?}");
     }
 }
@@ -906,7 +909,7 @@ fn large_wholly_changed_input_renders_completely() {
     // inlined at the diff positions (no +/- rows): every one of the 5000
     // lines must carry both the deleted (red background) and inserted
     // (green background) span.
-    let character = render_character(&source, &formatted, true);
+    let character = render_character(&source, &formatted, true, false);
     let char_lines = character.lines().filter(|l| !l.is_empty()).count();
     assert_eq!(char_lines, 5000, "character body incomplete");
     assert_eq!(
@@ -919,7 +922,7 @@ fn large_wholly_changed_input_renders_completely() {
         5000,
         "character insertions incomplete"
     );
-    let plain = render_character(&source, &formatted, false);
+    let plain = render_character(&source, &formatted, false, false);
     assert_eq!(
         plain
             .lines()
@@ -1090,7 +1093,7 @@ fn console_renderer_matches_direct_rendering() {
     for color in [false, true] {
         assert_eq!(
             render_result(&result, Output::Character, color),
-            render_character(source, formatted, color),
+            render_character(source, formatted, color, comment_hint(source, Language::C)),
             "character mode, color={color}"
         );
         assert_eq!(
@@ -1114,14 +1117,16 @@ fn console_renderer_clean_file_is_looks_good_in_character_mode_only() {
         source: Some("return 0;\n".to_owned()),
         formatted: Some("return 0;\n".to_owned()),
     };
-    // Character mode (style50 parity): clean files get `Looks good!`.
+    // Character mode (style50 parity): clean files get `Looks good!`,
+    // followed by the comments hint (this source has no comments, ratio
+    // 0 < 0.10, oracle-verified).
     assert_eq!(
         render_result(&result, Output::Character, false),
-        "Looks good!\n"
+        "Looks good!\nBut consider adding more comments!\n"
     );
     assert_eq!(
         render_result(&result, Output::Character, true),
-        format!("{GREEN}Looks good!{RESET}\n")
+        format!("{GREEN}Looks good!{RESET}\n{YELLOW}But consider adding more comments!{RESET}\n")
     );
     // The other text modes stay silent for clean files.
     for output in [Output::Split, Output::Unified] {
@@ -1485,4 +1490,145 @@ fn score_end_to_end_via_run_with_renderer() {
     );
     std::fs::remove_file(&clean).expect("cleanup");
     std::fs::remove_file(&dirty).expect("cleanup");
+}
+
+// ===================== comments hint: per-language counters =====================
+// Marker: comments-hint-counting-tests. Expectations mirror style50 3.0.0's
+// `count_comments` per language, as probed against the live tool.
+
+#[test]
+fn c_count_comments_ignores_double_quoted_strings() {
+    assert_eq!(
+        count_comments("char *s = \"// not a comment\";\n", Language::C),
+        Some(0)
+    );
+}
+
+#[test]
+fn c_count_comments_counts_multiline_block_comments() {
+    assert_eq!(
+        count_comments("/* one\ntwo\nthree */\n", Language::C),
+        Some(1)
+    );
+}
+
+#[test]
+fn c_count_comments_slash_star_slash_never_closes() {
+    // `/*/` opens a block whose terminator search starts *after* the two
+    // opening characters, so the `*/` inside is the opener itself: the
+    // comment never closes and counts nothing.
+    assert_eq!(count_comments("/*/ still open\n", Language::C), Some(0));
+}
+
+#[test]
+fn c_count_comments_unclosed_block_counts_nothing() {
+    assert_eq!(
+        count_comments("int x; /* never closed\n", Language::C),
+        Some(0)
+    );
+}
+
+#[test]
+fn c_count_comments_char_literal_quirk_counts_slashes() {
+    // style50 strips only double-quoted strings: `'//'` survives the strip
+    // pass and counts one comment (live-probed quirk).
+    assert_eq!(count_comments("char c = '//';\n", Language::C), Some(1));
+}
+
+#[test]
+fn js_count_comments_multiline_single_quoted_string_later_line() {
+    // Js string literals are same-line only: the literal starting on line 1
+    // is abandoned at the newline, so the `//` on the later line counts.
+    assert_eq!(
+        count_comments("'multi\n// line'\n", Language::JavaScript),
+        Some(1)
+    );
+}
+
+#[test]
+fn js_count_comments_regex_literal_is_not_a_comment() {
+    // A regex literal is consumed to its closing `/`: the `\/\/` inside
+    // never surfaces as a `//` comment.
+    assert_eq!(
+        count_comments("var re = /a\\/\\/b/;\n", Language::JavaScript),
+        Some(0)
+    );
+}
+
+#[test]
+fn python_count_comments_module_and_function_docstrings() {
+    assert_eq!(
+        count_comments("\"\"\"Module doc.\"\"\"\n", Language::Python),
+        Some(1)
+    );
+    assert_eq!(
+        count_comments("def f():\n    \"\"\"Doc.\"\"\"\n", Language::Python),
+        Some(1)
+    );
+}
+
+#[test]
+fn python_count_comments_comment_line_then_docstring() {
+    // A comment-only line counts one comment and leaves `prev` AND the
+    // indent stack untouched, so the following indented docstring still
+    // sees an Indent transition and counts too (2 total).
+    assert_eq!(
+        count_comments(
+            "def f():\n    # note\n    \"\"\"Doc.\"\"\"\n",
+            Language::Python
+        ),
+        Some(2)
+    );
+}
+
+#[test]
+fn python_count_comments_fstring_docstring_never_counts() {
+    assert_eq!(
+        count_comments("f\"\"\"not a docstring\"\"\"\n", Language::Python),
+        Some(0)
+    );
+}
+
+#[test]
+fn python_count_comments_hash_inside_string_is_not_a_comment() {
+    assert_eq!(
+        count_comments("s = \"# not a comment\"\n", Language::Python),
+        Some(0)
+    );
+}
+
+// ===================== comments hint: ratio boundary =====================
+
+#[test]
+fn comment_hint_boundary_is_strictly_below_ten_percent() {
+    // 1 comment in 11 non-blank lines: 1/11 ≈ 0.0909 < 0.10 → hint.
+    assert!(comment_hint(
+        &format!("/* c */\n{}", numbered_lines("line", 10)),
+        Language::C
+    ));
+    // 1 comment in 10: exactly 0.10 is NOT strictly below the threshold.
+    assert!(!comment_hint(
+        &format!("/* c */\n{}", numbered_lines("line", 9)),
+        Language::C
+    ));
+}
+
+#[test]
+fn comment_hint_fires_for_comment_less_files() {
+    // ratio 0 < 0.10: style50 nags every comment-less file (oracle-checked
+    // live: `int main(void)\n{\nreturn 0;\n}` gets the hint).
+    assert!(comment_hint(
+        "int main(void)\n{\nreturn 0;\n}\n",
+        Language::C
+    ));
+}
+
+#[test]
+fn comment_hint_never_fires_without_a_counter() {
+    for language in [Language::Html, Language::Css, Language::Sql] {
+        assert!(
+            !comment_hint("<div>whatever</div>\n", language),
+            "{language:?} has no count_comments and must never hint"
+        );
+    }
 }
