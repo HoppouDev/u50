@@ -1,28 +1,76 @@
 //! Diff rendering for text and JSON output modes.
+//!
+//! The style50 palette is emitted through **crossterm**: every escape the
+//! renderers produce comes from a crossterm command's ANSI writer (see
+//! [`pinned`]), never from a hand-rolled byte string. Colored output is
+//! visually identical to the original's `termcolor` rendering; the bytes
+//! follow crossterm's SGR emission (8-bit `38;5;N`/`48;5;N` colors) rather
+//! than termcolor's 3-bit `30-37`/`40-47` codes.
 
 use std::path::Path;
+use std::sync::LazyLock;
 
+use crossterm::Command;
+use crossterm::style::{Attribute, Color, SetAttribute, SetBackgroundColor, SetForegroundColor};
 use similar::algorithms::Algorithm;
 use similar::{ChangeTag, DiffTag, TextDiff};
 
 use crate::request::Report;
 
-pub(crate) const RED: &str = "\u{1b}[31m";
-pub(crate) const GREEN: &str = "\u{1b}[32m";
-pub(crate) const BOLD: &str = "\u{1b}[1m";
-pub(crate) const YELLOW: &str = "\u{1b}[33m";
-pub(crate) const RESET: &str = "\u{1b}[0m";
-/// Cyan foreground (`termcolor` "cyan"): the per-file `::::::::::::::`
-/// header of character mode.
-pub(crate) const CYAN: &str = "\u{1b}[36m";
-/// Bright white foreground (`termcolor` "white"): the character-mode
-/// banner (which also carries [`BOLD`]).
-pub(crate) const BRIGHT_WHITE: &str = "\u{1b}[97m";
-/// Green background (`termcolor` "`on_green")`: character-mode insertions.
-pub(crate) const ON_GREEN: &str = "\u{1b}[42m";
-/// Red background (`termcolor` "`on_red")`: character-mode deletions.
-pub(crate) const ON_RED: &str = "\u{1b}[41m";
+/// Renders a crossterm command to its ANSI form once and pins it for the
+/// process lifetime: the style50 palette is a fixed set of sequences, so
+/// the pinned strings are bounded, and handing back `&'static str` keeps
+/// the character-mode hot path allocation-free.
+fn pinned(command: impl Command) -> &'static str {
+    let mut buf = String::new();
+    command
+        .write_ansi(&mut buf)
+        .expect("writing to a String cannot fail");
+    Box::leak(buf.into_boxed_str())
+}
 
+/// Declares one palette accessor whose sequence is emitted through
+/// crossterm's ANSI writer ([`pinned`]) on first use.
+macro_rules! palette {
+    ($($(#[$doc:meta])* $name:ident = $command:expr;)*) => {
+        $(
+            $(#[$doc])*
+            #[must_use]
+            pub(crate) fn $name() -> &'static str {
+                static SEQUENCE: LazyLock<&'static str> = LazyLock::new(|| pinned($command));
+                *SEQUENCE
+            }
+        )*
+    };
+}
+
+palette! {
+    /// Red foreground — termcolor's "red" (SGR 31): split-mode deletion
+    /// columns.
+    red = SetForegroundColor(Color::DarkRed);
+    /// Green foreground — termcolor's "green" (SGR 32): split-mode
+    /// insertion columns and character mode's `Looks good!`.
+    green = SetForegroundColor(Color::DarkGreen);
+    /// Yellow foreground — termcolor's "yellow" (SGR 33): the comments
+    /// hints and score-mode error lines.
+    yellow = SetForegroundColor(Color::DarkYellow);
+    /// Cyan foreground — termcolor's "cyan" (SGR 36): the per-file
+    /// `::::::::::::::` header of character mode.
+    cyan = SetForegroundColor(Color::DarkCyan);
+    /// Bright white foreground — termcolor's "white" (SGR 97): the
+    /// character-mode banner (which also carries [`bold`]).
+    bright_white = SetForegroundColor(Color::White);
+    /// Green background — termcolor's "on green" (SGR 42):
+    /// character-mode insertions.
+    on_green = SetBackgroundColor(Color::DarkGreen);
+    /// Red background — termcolor's "on red" (SGR 41): character-mode
+    /// deletions.
+    on_red = SetBackgroundColor(Color::DarkRed);
+    /// Reset all attributes (SGR 0).
+    reset = SetAttribute(Attribute::Reset);
+    /// Bold (SGR 1).
+    bold = SetAttribute(Attribute::Bold);
+}
 /// Context radius passed to `TextDiff::grouped_ops` to keep every change in
 /// a single group. Must satisfy `n * 2 <= usize::MAX` (see
 /// `similar::common::group_diff_ops`); `usize::MAX` itself would overflow.
@@ -85,43 +133,23 @@ pub(crate) fn line_diff<'a>(source: &'a str, formatted: &'a str) -> TextDiff<'a,
         .diff_lines(source, formatted)
 }
 
-/// The state of a character in the character-mode diff: present only in
-/// the source ([`CharState::Delete`]) or only in the styled text
-/// ([`CharState::Insert`]). Characters common to both texts carry no
-/// background and need no transition sequence.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum CharState {
-    Delete,
-    Insert,
-}
-
 /// The visible marker text for a warned character (style50 renders the
 /// literal two-character sequences `\n` / `\t` instead of the raw control
 /// characters).
 const NEWLINE_MARKER: &str = "\\n";
 const TAB_MARKER: &str = "\\t";
 
-impl CharState {
-    /// The transition sequence entering `self`, style50's
-    /// `color_transition`: a reset closing any previous background, then
-    /// the new background for Delete/Insert.
-    fn transition(self) -> &'static str {
-        match self {
-            CharState::Insert => "\u{1b}[0m\u{1b}[42m",
-            CharState::Delete => "\u{1b}[0m\u{1b}[41m",
-        }
-    }
-}
-
-/// style50's `color_transition(old_type, new_type)` keyed by the new delta
-/// tag: a reset closing any previous background, then the new background
-/// for `'-'`/`'+'`. For `' '` and the `'?'` guide tag `termcolor.colored("")`
-/// is empty, so only the reset remains.
-fn transition_to(tag: char) -> &'static str {
+/// Enters `tag`'s delta state onto `line`, style50's
+/// `color_transition(old_type, new_type)`: a reset closing any previous
+/// background, then the new background for `'-'`/`'+'`. For `' '` and the
+/// `'?'` guide tag `termcolor.colored("")` is empty, so only the reset
+/// remains.
+fn push_transition(line: &mut String, tag: char) {
+    line.push_str(reset());
     match tag {
-        '-' => CharState::Delete.transition(),
-        '+' => CharState::Insert.transition(),
-        _ => RESET,
+        '-' => line.push_str(on_red()),
+        '+' => line.push_str(on_green()),
+        _ => {}
     }
 }
 
@@ -211,7 +239,7 @@ pub(crate) fn render_character(
     for &(tag, value) in &delta {
         if dtype != Some(tag) {
             if color {
-                line.push_str(transition_to(tag));
+                push_transition(&mut line, tag);
             }
             dtype = Some(tag);
         }
@@ -221,7 +249,7 @@ pub(crate) fn render_character(
                 warn!(state, NEWLINE_MARKER);
                 line.push_str(NEWLINE_MARKER);
                 if color {
-                    line.push_str(RESET);
+                    line.push_str(reset());
                 }
             }
             // An inserted (or common) newline ends the visible line; a
@@ -234,7 +262,7 @@ pub(crate) fn render_character(
             if color {
                 // Re-open the background for the text that follows
                 // (style50's unconditional `transition(" ", dtype)`).
-                line.push_str(transition_to(state));
+                push_transition(&mut line, state);
             }
         } else if state != ' ' && value == '\t' {
             warn!(state, TAB_MARKER);
@@ -246,7 +274,7 @@ pub(crate) fn render_character(
     // Close any open background, then flush the pending line only if it
     // carries visible (non-ANSI) content — style50's EOF behavior.
     if color {
-        line.push_str(RESET);
+        line.push_str(reset());
     }
     if !strip_ansi(&line).is_empty() {
         body.push_str(&line);
@@ -259,8 +287,8 @@ pub(crate) fn render_character(
     out.push('\n');
     for (state, marker) in &legend {
         let (background, verb) = match *state {
-            '+' => (ON_GREEN, "insert"),
-            '-' => (ON_RED, "delete"),
+            '+' => (on_green(), "insert"),
+            '-' => (on_red(), "delete"),
             // Equal never warns; the '?' guide tag is unreachable in
             // character mode (a synch pair only passes the similarity
             // cutoff when the characters are equal).
@@ -274,14 +302,14 @@ pub(crate) fn render_character(
         if color {
             out.push_str(background);
             out.push_str(marker);
-            out.push_str(RESET);
-            out.push_str(YELLOW);
+            out.push_str(reset());
+            out.push_str(yellow());
             out.push_str(" means that you should ");
             out.push_str(verb);
             out.push_str(" a ");
             out.push_str(noun);
             out.push('.');
-            out.push_str(RESET);
+            out.push_str(reset());
         } else {
             out.push_str(marker);
             out.push_str(" means that you should ");
@@ -294,11 +322,11 @@ pub(crate) fn render_character(
     }
     if hint_comments {
         if color {
-            out.push_str(YELLOW);
+            out.push_str(yellow());
         }
         out.push_str("And consider adding more comments!");
         if color {
-            out.push_str(RESET);
+            out.push_str(reset());
         }
         out.push('\n');
     }
@@ -365,10 +393,10 @@ fn split_row(left: &str, deleted: bool, right: &str, inserted: bool, color: bool
         r.push(' ');
     }
     if color && deleted {
-        l = format!("{RED}{l}{RESET}");
+        l = format!("{}{l}{}", red(), reset());
     }
     if color && inserted {
-        r = format!("{GREEN}{r}{RESET}");
+        r = format!("{}{r}{}", green(), reset());
     }
     format!("{l} | {r}\n")
 }

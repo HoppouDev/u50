@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 anyhow = { workspace = true }
+crossterm = { workspace = true }
 fs-err = { workspace = true }
 indicatif = { workspace = true }
 leptos = { workspace = true }

@@ -42,7 +42,7 @@ Both `run_with` and `fix_with` call `expand_paths(&req.files)` before processing
   | 60k, 28 distinct common (earlier build)              | 32.5s   | 12.9s          |
   | 7.5k, 8 distinct common (earlier build)              | ~1s     | ~3s (collapse) |
 
-  The 1000x density multiplier is a **measured heuristic**, not a constant with first-principles meaning: the Lcs→Myers crossover lies between the 8-common@7.5k collapse and the 28-common@60k win, and `cargo run --release -p u50_style --example bench_diff` records the full matrix behind it. Patience was also measured and is worse than both on wholly-dirty input (1.09s @7.5k, 69.2s @60k). Note: outputs of `bench_diff` revisions printed before this note had the `patience`/`lcs` header labels swapped relative to the measured cell order `[Myers, Lcs, Patience]` (fixed in the harness; the algorithm attribution above is verified by a one-off probe: 7.5k wholly-dirty → Myers 518ms / Lcs 186ms / Patience 1.35s). The strategy is **display-only**: formatter results and clean/dirty decisions are unaffected; student-scale files and the committed goldens render sub-second either way.
+  The 1000x density multiplier is a **measured heuristic**, not a constant with first-principles meaning: the Lcs→Myers crossover lies between the <8-common@7.5k> collapse and the 28-common@60k win, and `cargo run --release -p u50_style --example bench_diff` records the full matrix behind it. Patience was also measured and is worse than both on wholly-dirty input (1.09s @7.5k, 69.2s @60k). Note: outputs of `bench_diff` revisions printed before this note had the `patience`/`lcs` header labels swapped relative to the measured cell order `[Myers, Lcs, Patience]` (fixed in the harness; the algorithm attribution above is verified by a one-off probe: 7.5k wholly-dirty → Myers 518ms / Lcs 186ms / Patience 1.35s). The strategy is **display-only**: formatter results and clean/dirty decisions are unaffected; student-scale files and the committed goldens render sub-second either way.
 
 ## Renderer abstraction
 
@@ -68,7 +68,7 @@ impl Renderer for HtmlRenderer {
 }
 ```
 
-`ScoreRenderer` (`Output::Score`) reproduces the original style50's score mode: per successfully processed file it accumulates half the inserted/deleted line count of the source-vs-styled line diff (the same `line_diff` machinery the display modes use) into `diffs`, and the styled text's non-blank line count into `lines`; `finish` prints one error line per errored file in order (bare message — no `error: ` prefix — yellow ANSI 33 when color is on, mirroring the original's unconditional termcolor), then the uncolored score `max(1 - diffs/lines, 0)` (`0.0` when nothing was checked successfully, i.e. only successful files contribute). A styled text with no non-blank lines contributes a `file is empty` error line instead of touching the sums (the original raises a per-file `Error` there). `lines` counts ALL lines of the styled text for Python (the original's
+`ScoreRenderer` (`Output::Score`) reproduces the original style50's score mode: per successfully processed file it accumulates half the inserted/deleted line count of the source-vs-styled line diff (the same `line_diff` machinery the display modes use) into `diffs`, and the styled text's non-blank line count into `lines`; `finish` prints one error line per errored file in order (bare message — no `error: ` prefix — crossterm `DarkYellow` foreground when color is on, mirroring the original's unconditional termcolor yellow; the palette itself is emitted through **crossterm** — see 'Terminal rendering'), then the uncolored score `max(1 - diffs/lines, 0)` (`0.0` when nothing was checked successfully, i.e. only successful files contribute). A styled text with no non-blank lines contributes a `file is empty` error line instead of touching the sums (the original raises a per-file `Error` there). `lines` counts ALL lines of the styled text for Python (the original's
 `Python.count_lines` counts blank lines too, per PEP 8) and non-blank lines
 for every other language — verified live: `py/dirty.py` → `0.9814814814814815`,
 `c/dirty.c` → `0.5036334275333064`, byte-identical to style50. The score
@@ -226,6 +226,10 @@ u50 auto-provisions the needed backend on first format and then formats
 correctly via the cache (`found (cache)` in `--status`), exercising both the
 managed CPython + venv provisioning and the standalone `clang-format`
 binary wheel.
+
+## Terminal rendering (crossterm)
+
+All colored output is emitted through the **crossterm** crate: every escape the renderers produce comes from a crossterm command's ANSI writer (`SetForegroundColor`/`SetBackgroundColor`/`SetAttribute`), rendered once per palette entry and pinned as `&'static str` for the hot character-mode path — never from a hand-rolled byte string. The palette maps style50's termcolor slots 1:1 (red/green/yellow/cyan → `DarkRed`/`DarkGreen`/`DarkYellow`/`DarkCyan`, "white" → `White`, `on_red`/`on_green` → the matching backgrounds, reset/bold → `Attribute::Reset`/`Bold`), so colored output is **visually identical** to the original's; the bytes follow crossterm's SGR emission (8-bit `38;5;N`/`48;5;N` color codes, e.g. yellow is `ESC[38;5;3m` not termcolor's `ESC[33m`) — a documented by-design divergence that does not affect any golden fixture, formatter byte, or uncolored output. crossterm is pulled in with `default-features = false` (pure ANSI emission; no event loop, no Windows console API).
 
 ## Input normalization (style50 3.0.0 semantics)
 

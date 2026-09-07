@@ -768,7 +768,7 @@ fn character_mode_comments_hint_below_comment_min() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(
-        stdout.contains("\x1b[33mAnd consider adding more comments!\x1b[0m"),
+        stdout.contains("\x1b[38;5;3mAnd consider adding more comments!\x1b[0m"),
         "ratio 1/12 < 0.10 must print the yellow hint: {stdout:?}"
     );
     cleanup(&sparse);
