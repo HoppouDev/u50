@@ -5,7 +5,7 @@ members = ["u50_check", "u50_cli", "u50_style", "u50_submit"]
 [workspace.dependencies]
 anyhow = "1"
 clap = { version = "4.6", features = ["derive"] }
-crossterm = { version = "0.29", default-features = false }
+crossterm = { version = "0.29", default-features = false, features = ["windows"] }
 fs-err = "3"
 git2 = { version = "0.21", features = ["ssh"] }
 indicatif = "0.17"
