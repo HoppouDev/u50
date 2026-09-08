@@ -301,10 +301,13 @@ clang-format >= 14 is required; when a formatter binary is missing the engine er
 - 1 — style violations found in the processed files (CLI maps `!Report::clean()` to 1).
 - 3 — any per-file error: unreadable file, unsupported extension, or formatter missing/failing. Files before the error are still checked and rendered (stdout); error lines go to stderr. Takes precedence: any error → 3 even if violations were also found.
 
+### HTML output mode (`-o html`, leptos-backed)
+
+Implemented with the **leptos** crate (the `ssr` feature): style50's `results.html` Jinja template is reproduced through leptos `view!` fragments serialized via `RenderHtml::to_html_with_buf` — the `<head>` (link/style/title), the per-file `<h3>` + styled `<div>` chunks, and the branch-resolved bodies (error / `Looks good!` / diff). Verified **byte-identical** against `style50 -o html` (which writes a temp file; u50 prints to stdout — documented divergence) for all 8 golden fixtures and a clean file, with style50's PATH pointed at u50's cache venv. Two escape flavors match the original: stdlib `html.escape` (`&quot;`/`&#x27;`) for the diff content, markupsafe (`&#34;`/`&#39;`) for template-interpolated names/errors. The template's container/row `<div>`s are never closed, so the body interior is assembled as raw HTML inside `<body inner_html>`; whitespace runs are dynamic text nodes (leptos strips macro whitespace). The styled `<pre>`s are raw strings — leptos' `style` serialization appends a trailing `;` the template lacks. Per-file entries render in input order (results and errors interleaved — the engine emits merged-order events; per-stream content is unchanged for every built-in renderer).
+
 ### Not yet implemented (present in the original; future work)
 
 - `--ignore` (the mechanism for excluding directories such as `node_modules` from the directory walk), `--clang-format-style` (custom style override).
-- `html` output mode (`score` is implemented — verified byte-parity with the original in [STYLE50_V3_CROSSCHECK.md](STYLE50_V3_CROSSCHECK.md)).
 
 ## Golden fixture tests
 
