@@ -13,7 +13,7 @@ use anyhow::{Context, Result, bail};
 use tokio::runtime::Runtime;
 use uv_preview::Preview;
 
-use crate::formatter::{cache_dir, locate_tool};
+use crate::format::{cache_dir, locate_tool};
 use crate::language::Language;
 use pipeline::provision_backends;
 

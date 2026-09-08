@@ -13,13 +13,18 @@ fn numbered_lines(prefix: &str, n: usize) -> String {
     }
     out
 }
-use crate::formatter::{cache_bin_dir, cache_dir, locate_tool, run_tool, venv_bin_dir};
+use crate::format::{cache_bin_dir, cache_dir, locate_tool, run_tool, venv_bin_dir};
 use crate::language::{Language, comment_hint, count_comments};
-use crate::render::{
-    bold, bright_white, cyan, green, json_document, on_green, on_red, red, render_character,
-    render_split, render_unified, reset, select_algorithm, yellow,
+use crate::rendering::character::render_character;
+use crate::rendering::line_diff::select_algorithm;
+use crate::rendering::palette::{
+    bold, bright_white, cyan, green, on_green, on_red, red, reset, yellow,
 };
-use crate::renderer::HEADER_RULE;
+use crate::rendering::renderer::HEADER_RULE;
+use crate::rendering::renderer::json::{json_document, json_pretty};
+use crate::rendering::renderer::score::py_str_f64;
+use crate::rendering::split::render_split;
+use crate::rendering::unified::render_unified;
 use similar::algorithms::Algorithm;
 
 /// Formatter that leaves the source untouched (models a clean file).
@@ -1342,7 +1347,7 @@ fn json_renderer_output_matches_json_document_plus_newline() {
     renderer.finish(&report);
     // Byte-identical to pretty-printing the document with a 4-space
     // indent (style50's JSON formatting) plus a trailing newline.
-    let mut expected = crate::renderer::json_pretty(&json_document(&report));
+    let mut expected = json_pretty(&json_document(&report));
     expected.push(b'\n');
     assert_eq!(
         String::from_utf8(sink.0.borrow().clone()).expect("utf8"),
@@ -1410,8 +1415,6 @@ fn json_renderer_write_target_is_used_not_stdout() {
 
 #[test]
 fn py_str_f64_matches_python_str() {
-    use crate::renderer::py_str_f64;
-
     assert_eq!(py_str_f64(1.0), "1.0");
     assert_eq!(py_str_f64(0.0), "0.0");
     assert_eq!(py_str_f64(0.5), "0.5");

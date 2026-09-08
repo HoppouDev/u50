@@ -6,7 +6,7 @@
 
 use std::fmt::Write as _;
 
-use crate::formatter::locate_tool;
+use crate::format::locate_tool;
 use crate::language::Language;
 
 /// Prints the language/binary/status table to stdout:

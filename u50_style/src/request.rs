@@ -14,10 +14,10 @@ pub enum Output {
     /// Machine-readable JSON (also present in the original via `-o json`).
     Json,
     /// Style50-compatible aggregate score, one line (see
-    /// [`crate::renderer::ScoreRenderer`]).
+    /// [`crate::rendering::renderer::ScoreRenderer`]).
     Score,
     /// HTML report rendered from style50's `results.html` template (see
-    /// [`crate::renderer::HtmlRenderer`]).
+    /// [`crate::rendering::renderer::HtmlRenderer`]).
     Html,
 }
 

@@ -2,11 +2,10 @@
 
 mod diff;
 mod engine;
-mod formatter;
+mod format;
 mod language;
 mod listing;
-mod render;
-mod renderer;
+mod rendering;
 mod request;
 mod setup;
 
@@ -14,10 +13,11 @@ mod setup;
 mod tests;
 
 pub use engine::{fix, fix_with, normalize_source, run, run_with, run_with_renderer};
-pub use formatter::{Cs50Formatter, Formatter, ToolOrigin, locate_tool};
+pub use format::locate_tool;
+pub use format::{Cs50Formatter, Formatter, ToolOrigin};
 pub use language::{Language, detect_language};
 pub use listing::list_languages;
-pub use renderer::{
+pub use rendering::renderer::{
     ConsoleRenderer, HtmlRenderer, JsonRenderer, Renderer, ScoreRenderer, builtin_renderer,
 };
 pub use request::{FileResult, Output, Report, Request};

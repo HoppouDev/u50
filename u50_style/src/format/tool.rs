@@ -1,4 +1,6 @@
-//! Formatter backend backed by external style tools.
+//! Formatter tool plumbing: cache paths, cache-only tool resolution,
+//! process spawning with timeouts, and lazy backend provisioning. No
+//! language-specific logic lives here.
 
 use std::collections::HashSet;
 use std::io::{Read, Write};
@@ -8,39 +10,7 @@ use std::sync::{LazyLock, Mutex};
 
 use crate::language::{Language, missing_tool_message};
 
-/// The clang-format style configuration CS50 uses for its style checks
-/// (recorded verbatim from the original `style50` source).
-const CS50_CLANG_FORMAT_CONFIG: &str = "{ \
-AllowShortFunctionsOnASingleLine: Empty, \
-BraceWrapping: { AfterCaseLabel: true, AfterControlStatement: true, \
-AfterFunction: true, AfterStruct: true, BeforeElse: true, BeforeWhile: true }, \
-BreakBeforeBraces: Custom, ColumnLimit: 100, IndentCaseLabels: true, \
-IndentWidth: 4, SpaceAfterCStyleCast: true, TabWidth: 4 }";
-
-/// Styles one file's source.
-pub trait Formatter: Sync {
-    /// Formats `source` per CS50 style.
-    ///
-    /// # Errors
-    /// Returns an error when the external formatter fails.
-    fn format(&self, source: &str, language: Language) -> anyhow::Result<String>;
-}
-
-/// Where a tool command came from: an explicit path, or u50's cache
-/// (installed by `u50 --setup` or auto-provisioned on first use).
-///
-/// u50 NEVER resolves its BUILT-IN formatter tools through the system
-/// `PATH`: bare tool names are looked up in the cache only, and missing
-/// backends are downloaded into it on first use. [`ToolOrigin::Path`]
-/// therefore only ever applies to explicit user-provided paths (see
-/// [`is_explicit_path`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ToolOrigin {
-    /// An explicit path command (see [`is_explicit_path`]), used as-is.
-    Path,
-    /// Found in the u50 style cache (`~/.cache/u50/style50`).
-    Cache,
-}
+use super::ToolOrigin;
 
 /// The u50 style cache root: the absolute `$XDG_CACHE_HOME` override
 /// when set (all platforms), else the platform cache base
@@ -173,7 +143,7 @@ fn is_explicit_path(tool: &str) -> bool {
 /// platform console-script file name, see [`tool_file_name`]) — the
 /// system `PATH` is never consulted. Returns `None`
 /// when the tool is not in the cache (the caller may then auto-provision
-/// it; see [`Cs50Formatter::format`]) or when the cache directory
+/// it; see [`crate::format::Cs50Formatter::format`]) or when the cache directory
 /// cannot be determined ([`cache_dir`]).
 #[must_use]
 pub fn locate_tool(tool: &str) -> Option<(PathBuf, ToolOrigin)> {
@@ -330,7 +300,7 @@ fn tool_failure(tool: &str, status: std::process::ExitStatus, stderr: &[u8]) -> 
 /// source comment is stale for it), so in practice the strict path is
 /// what runs — the leniency keeps u50 compatible with older djhtml
 /// versions too.
-fn run_tool_lenient(tool: &str, args: &[&str], source: &str) -> anyhow::Result<String> {
+pub(crate) fn run_tool_lenient(tool: &str, args: &[&str], source: &str) -> anyhow::Result<String> {
     let output = spawn_tool(tool, args, source)?;
     let reformatted_on_exit_1 = output.status.code() == Some(1) && !output.stdout.is_empty();
     if !output.status.success() && !reformatted_on_exit_1 {
@@ -383,7 +353,7 @@ pub(crate) fn ensure_backends(missing: &[(String, String)]) {
 }
 
 /// Attempts to lazily auto-provision the single backend `tool` (the
-/// per-file fallback in [`Cs50Formatter::format`]) by mapping it to its
+/// per-file fallback in [`crate::format::Cs50Formatter::format`]) by mapping it to its
 /// pip package and delegating to [`ensure_backends`].
 pub(crate) fn ensure_backend(tool: &str) {
     let Some(package) = Language::ALL
@@ -395,91 +365,4 @@ pub(crate) fn ensure_backend(tool: &str) {
         return;
     };
     ensure_backends(&[(package.to_owned(), tool.to_owned())]);
-}
-
-/// Formatter backed by the same per-language external formatters the
-/// original style50 (3.0.0) uses (`style50/languages.py`): clang-format
-/// for C/C++/Java, autopep8 for Python, js-beautify for JavaScript,
-/// djhtml for HTML, cssbeautifier for CSS, and sqlparse for SQL. The
-/// original calls the Python libraries directly (`autopep8`,
-/// `jsbeautifier`, `cssbeautifier`, `sqlparse`); u50 shells out to the
-/// corresponding pip-installed CLIs, which apply the same defaults. Exact
-/// options passed (flag names verified against the installed CLIs; they
-/// mirror the original's library options):
-///
-/// - Python: `autopep8 - --max-line-length=100 --ignore-local-config`
-/// - JavaScript: `js-beautify --end-with-newline --operator-position preserve-newline -w 100 --brace-style collapse,preserve-inline --keep-array-indentation -` — the short `-w 100` form is required because this CLI build declares the long `--wrap-line-length` as taking no argument, and the `-` stdin marker must come last because the CLI stops parsing options at the first positional
-/// - HTML: `djhtml -` via the lenient runner ([`run_tool_lenient`])
-/// - CSS: `css-beautify --indent-size 4 --end-with-newline -` — verified byte-identical to the `cssbeautifier.beautify` call the original makes with `indent_size = 4, end_with_newline = True`
-/// - SQL: `sqlformat -k upper -r --indent_width 4 -` with a `\n` appended when missing — verified byte-identical to the original's `sqlparse.format(code, reindent=True, keyword_case="upper", indent_width=4)` plus its trailing-newline fix-up
-#[derive(Debug, Clone, Default)]
-pub struct Cs50Formatter;
-
-impl Formatter for Cs50Formatter {
-    /// # Errors
-    /// Returns an error when the language's formatter is missing or exits
-    /// unsuccessfully.
-    fn format(&self, source: &str, language: Language) -> anyhow::Result<String> {
-        // style50 3.0.0 raises "file is empty" for empty/whitespace-only
-        // files before ever calling a formatter (engine.rs now implements
-        // that), so this short-circuit is only a safety net for direct
-        // `Formatter::format` callers; empty input no longer reaches it
-        // through the engine.
-        if source.trim().is_empty() {
-            return Ok(source.to_owned());
-        }
-        // Lazy auto-provisioning: bare tools resolve cache-only, so a
-        // missing backend is downloaded into the cache on first use. A
-        // failed attempt is only warned about — the `run_tool` call below
-        // then produces the usual per-file missing-tool error.
-        if let Some(tool) = language.required_tool()
-            && locate_tool(tool).is_none()
-        {
-            ensure_backend(tool);
-        }
-        match language {
-            Language::C | Language::Cpp | Language::Java => {
-                let assume = format!("--assume-filename={}", language.file_name());
-                let style = format!("-style={CS50_CLANG_FORMAT_CONFIG}");
-                run_tool("clang-format", &[assume.as_str(), style.as_str()], source)
-            }
-            Language::Python => run_tool(
-                "autopep8",
-                &["-", "--max-line-length=100", "--ignore-local-config"],
-                source,
-            ),
-            Language::JavaScript => run_tool(
-                "js-beautify",
-                &[
-                    "--end-with-newline",
-                    "--operator-position",
-                    "preserve-newline",
-                    "-w",
-                    "100",
-                    "--brace-style",
-                    "collapse,preserve-inline",
-                    "--keep-array-indentation",
-                    "-",
-                ],
-                source,
-            ),
-            Language::Html => run_tool_lenient("djhtml", &["-"], source),
-            Language::Css => run_tool(
-                "css-beautify",
-                &["--indent-size", "4", "--end-with-newline", "-"],
-                source,
-            ),
-            Language::Sql => {
-                let mut formatted = run_tool(
-                    "sqlformat",
-                    &["-k", "upper", "-r", "--indent_width", "4", "-"],
-                    source,
-                )?;
-                if !formatted.ends_with('\n') {
-                    formatted.push('\n');
-                }
-                Ok(formatted)
-            }
-        }
-    }
 }

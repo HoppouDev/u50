@@ -13,7 +13,7 @@ use uv_python::managed::{ManagedPythonInstallation, ManagedPythonInstallations};
 use uv_python::{Interpreter, PythonEnvironment, VersionRequest};
 use uv_virtualenv::{OnExisting, Prompt, Seed, create_venv};
 
-use crate::formatter::{tool_file_name, venv_bin_dir};
+use crate::format::{tool_file_name, venv_bin_dir};
 
 const PINNED_PYTHON: &str = "3.14";
 

@@ -1,4 +1,4 @@
-﻿//! The async provisioning pipeline: uv cache, venv, parallel wheel
+//! The async provisioning pipeline: uv cache, venv, parallel wheel
 //! fetches, one serialized install, and per-backend verification.
 
 use std::path::Path;
@@ -17,7 +17,7 @@ use super::BackendOutcome;
 use super::pins::{Role, transitive_deps, wheel_specs};
 use super::venv::ensure_venv;
 use super::wheels::fetch_wheel;
-use crate::formatter::{ToolOrigin, locate_tool};
+use crate::format::{ToolOrigin, locate_tool};
 
 pub(crate) async fn provision_backends(
     cache_root: &Path,

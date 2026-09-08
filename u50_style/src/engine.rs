@@ -5,10 +5,10 @@ use std::path::{Path, PathBuf};
 
 use rayon::prelude::*;
 
-use crate::formatter::{Cs50Formatter, Formatter, ensure_backends, locate_tool};
+use crate::format::{Cs50Formatter, Formatter, ensure_backends, locate_tool};
 use crate::language::detect_language;
-use crate::render::json_document;
-use crate::renderer::{Renderer, builtin_renderer};
+use crate::rendering::json_document;
+use crate::rendering::{Renderer, builtin_renderer};
 use crate::request::{FileResult, Output, Report, Request};
 
 /// One per-file outcome of the parallel check pass ([`check_files`]):
@@ -116,7 +116,7 @@ fn check_files(files: &[PathBuf], formatter: &dyn Formatter) -> Report {
 /// processes anything — so per-file first-use can never race concurrent
 /// uv installs into the shared cache. Per-process dedupe and the
 /// `U50_STYLE_NO_PROVISION` escape hatch live in
-/// [`crate::formatter::ensure_backends`].
+/// [`crate::format::ensure_backends`].
 fn provision_backends(files: &[PathBuf]) {
     let mut seen = HashSet::new();
     let mut missing: Vec<(String, String)> = Vec::new();
