@@ -38,9 +38,12 @@ u50_style/src/
 ├── language/                 ← was language.rs + the per-language arms of formatter.rs
 │   ├── mod.rs                Language enum, detect_language, missing_tool_message,
 │   │                         style50_count_lines, comment_hint, count_comments,
-│   │                         COMMENT_MIN, dispatch to per-language counters
-│   ├── c.rs                  C/C++/Java family: count_c_comments, c_strip_strings,
-│   │                         find_star_slash, CS50_CLANG_FORMAT_CONFIG,
+│   │                         COMMENT_MIN, the shared C-family comment counter
+│   │                         (count_c_comments + find_star_slash, used by the C
+│   │                         and JavaScript arms), dispatch to the per-language
+│   │                         counters
+│   ├── c.rs                  C/C++/Java family: c_strip_strings,
+│   │                         CS50_CLANG_FORMAT_CONFIG,
 │   │                         format() → clang-format invocation
 │   ├── python.rs             PyTok, PyStringUnit, python_comments,
 │   │                         single_quote_end, close_triple, string_start,
@@ -69,7 +72,7 @@ u50_style/src/
 │   ├── character.rs          render_character + push_transition + strip_ansi
 │   ├── split.rs              render_split + flush_split_rows + fit_column
 │   │                         + split_row + SPLIT_WIDTH/TAB_STOP
-│   ├── unified.rs            render_unified + patch
+│   ├── unified.rs            render_unified
 │   ├── html_diff.rs          render_html_diff + html_transition
 │   ├── line_diff.rs          select_algorithm + line_diff + line_diff_score
 │   │                         + ALL_IN_ONE_GROUP + trim_line + ADAPTIVE_MIN_LINES
@@ -80,6 +83,7 @@ u50_style/src/
 │       ├── console.rs        ConsoleRenderer + HEADER_RULE + file_hints
 │       │                     (drives character/split/unified)
 │       ├── json.rs           JsonRenderer + json_document + json_pretty
+│       │                     + patch (the JSON `patch` field)
 │       ├── html.rs           HtmlRenderer + HtmlFile + HTML_STYLE
 │       │                     + render_fragment + ws + html_file_chunk
 │       │                     + html_document
@@ -138,9 +142,11 @@ fn format(&self, source: &str, language: Language) -> anyhow::Result<String> {
 - **No language logic in `format/`**: that module is pure plumbing — tool
   resolution, cache paths, venv provisioning, process spawning, timeouts.
   It never needs to change when a language changes.
-- **Dependency direction**: `language/*` → `format/tool` (one-way). No
-  language module imports another, and `format/mod.rs` only imports the
-  language modules' `format` functions.
+- **Dependency direction**: `language/*` → `format/tool` for the tool
+  calls, plus one read-only metadata edge back (`format/tool.rs` reads
+  `missing_tool_message` and the `Language` metadata for provisioning).
+  No language module imports another, and `format/mod.rs` only imports
+  the language modules' `format` functions.
 - **Uniform surface**: one `format(source, language)` per language file —
   simpler than a `LanguageFormatter` trait with one impl per language, since
   each formatter is just a fixed CLI invocation.
@@ -181,7 +187,8 @@ pub(crate) fn json_pretty(document: &serde_json::Value) -> Vec<u8> { ... }
 - **Dependency direction** (one-way): `rendering/renderer/*` → the
   `rendering/`-level helpers: `console` → `character`/`split`/`unified`
   → `palette` + `line_diff` + the `mod.rs` markers; `html` →
-  `html_diff` + `doc_flavor`; no renderer imports a sibling renderer.
+  `html_diff` + `doc_flavor`; `json` → `unified` (the `patch` field's
+  unified diff); no renderer imports a sibling renderer.
   `engine.rs` touches only the `rendering/` re-exports (`Renderer`,
   `builtin_renderer`, `json_document`) — the `renderer/` submodule is
   invisible from outside `rendering/`.
@@ -267,23 +274,27 @@ Corrections to the earlier draft, verified against the current source:
 
 ## Verification checklist
 
-- [ ] cargo build --workspace — zero errors
-- [ ] cargo fmt --all -- --check — clean
-- [ ] cargo clippy --workspace --all-targets -- -Dwarnings — clean
-- [ ] cargo test --workspace — all pass (101 lib + 26 cli + goldens)
-- [ ] Character output byte-parity on dirty.c (12× perf target preserved)
-- [ ] HTML output byte-parity on all 8 fixtures
-- [ ] CI green (both OS legs)
-- [ ] No language-specific logic remains in `format/` (grep for tool names
+All gates ran green after the refactor landed (commit 59d011d); the
+isolation checks were grep-verified during the post-refactor review.
+
+- [x] cargo build --workspace — zero errors
+- [x] cargo fmt --all -- --check — clean
+- [x] cargo clippy --workspace --all-targets -- -Dwarnings — clean
+- [x] cargo test --workspace — all pass (103 lib + 26 cli + goldens)
+- [x] Character output byte-parity on dirty.c (12× perf target preserved)
+- [x] HTML output byte-parity on all 8 fixtures
+- [ ] CI green (both OS legs) — pending push
+- [x] No language-specific logic remains in `format/` (grep for tool names
       and configs outside `language/`)
-- [ ] Each `language/<lang>.rs` compiles without importing any sibling
+- [x] Each `language/<lang>.rs` compiles without importing any sibling
       language module (isolation check)
-- [ ] No renderer-specific logic remains in `rendering/mod.rs` (only
+- [x] No renderer-specific logic remains in `rendering/mod.rs` (only
       shared markers + re-exports) or in `rendering/renderer/mod.rs`
-      (only the trait + builtin_renderer)
-- [ ] No `rendering/*.rs` imports a sibling renderer module — shared
+      (only the trait + builtin_renderer; `HEADER_RULE` lives in
+      `renderer/console.rs`)
+- [x] No `rendering/*.rs` imports a sibling renderer module — shared
       plumbing only (isolation check)
-- [ ] No `rendering/renderer/<x>.rs` imports a sibling report renderer
+- [x] No `rendering/renderer/<x>.rs` imports a sibling report renderer
       (isolation check)
-- [ ] `engine.rs` references only the `rendering/` re-exports and never
+- [x] `engine.rs` references only the `rendering/` re-exports and never
       `rendering::renderer::…` paths directly

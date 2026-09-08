@@ -17,15 +17,10 @@ use crate::language::Language;
 /// C           c, h               clang-format   found (cache)
 /// ```
 ///
-/// # Panics
-/// Panics only if a supported language lacks a backing tool — impossible
-/// for the fixed language set.
 pub fn list_languages() {
     let mut rows: Vec<(String, String, String, String)> = Vec::new();
     for &language in &Language::ALL {
-        let tool = language
-            .required_tool()
-            .expect("every supported language has a backing tool");
+        let tool = language.required_tool();
         // Bare tool names resolve cache-only, so a hit is always a
         // cache hit (the status never claims `PATH` for these tools).
         let status = if locate_tool(tool).is_some() {

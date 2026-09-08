@@ -55,22 +55,28 @@ pub(crate) fn wheel_rank(filename: &str) -> u8 {
     WHEEL_RANK_REJECT
 }
 
-/// Computes the distinct missing pip packages, in first-seen language
-/// order: iterates [`Language::ALL`], skips languages whose backing tool
-/// `is_resolved`, and dedups by pip package (C/C++/Java all share
-/// `clang-format`, so they collapse to one entry). Pure decision logic so
-/// the missing-backend computation is unit-testable without any
-/// provisioning; the uv install path itself is exercised by manual smoke
-/// runs (it needs network access).
+/// Upper bound on one HTTP response body (`PyPI` JSON metadata or a wheel
+/// download): a hostile or misbehaving endpoint must not be able to
+/// exhaust memory. Every real artifact in the pinned set is far below
+/// this, and wheel bytes are digest-verified afterwards regardless.
+const MAX_RESPONSE_BYTES: u64 = 256 * 1024 * 1024;
+
 async fn pypi_json(client: &BaseClient, url: &DisplaySafeUrl, context: &str) -> Result<Value> {
-    let json: Value = client
+    let response = client
         .for_host(url)
         .get(url.as_str())
         .send()
         .await
         .with_context(|| format!("{context}: request failed"))?
         .error_for_status()
-        .with_context(|| format!("{context}: unexpected HTTP status"))?
+        .with_context(|| format!("{context}: unexpected HTTP status"))?;
+    // A declared body over the cap is refused before it is buffered.
+    if let Some(len) = response.content_length()
+        && len > MAX_RESPONSE_BYTES
+    {
+        bail!("{context}: response body of {len} bytes exceeds the {MAX_RESPONSE_BYTES} byte limit")
+    }
+    let json: Value = response
         .json()
         .await
         .with_context(|| format!("{context}: invalid JSON body"))?;
@@ -217,14 +223,22 @@ async fn download_and_extract_wheel(
     let display_url = DisplaySafeUrl::parse(&pick.url).context("wheel url")?;
     tokio::fs::create_dir_all(wheels_dir).await?;
     let wheel_path = wheels_dir.join(filename);
-    let bytes = client
+    let response = client
         .for_host(&display_url)
         .get(&pick.url)
         .send()
         .await
         .with_context(|| format!("wheel download request for {package}=={version}"))?
         .error_for_status()
-        .with_context(|| format!("wheel download for {package}=={version}"))?
+        .with_context(|| format!("wheel download for {package}=={version}"))?;
+    if let Some(len) = response.content_length()
+        && len > MAX_RESPONSE_BYTES
+    {
+        bail!(
+            "wheel download for {package}=={version}: response body of {len}              bytes exceeds the {MAX_RESPONSE_BYTES} byte limit"
+        );
+    }
+    let bytes = response
         .bytes()
         .await
         .with_context(|| format!("wheel download body for {package}=={version}"))?;

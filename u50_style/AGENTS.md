@@ -32,7 +32,7 @@ Both `run_with` and `fix_with` call `expand_paths(&req.files)` before processing
 - Printing policy (in `fix`, engine-side like `run()`): plain fix prints per file `fixed: <path>` or `already clean: <path>` to stdout; dry run prints `would fix: <path>` or `already clean: <path>` instead (nothing is written, no diff is rendered, and the exit code 1 signals what would have changed). Errors always go to stderr as `error: <path>: <message>`.
 - Exit-code contract (implemented in u50_cli): **0** — plain fix succeeded (every file fixed or already clean); **1** — dry run with at least one would-fix (check-style convention); **3** — any per-file error (unreadable/unsupported/empty/formatter/write failure), taking precedence.
 - The CLI exposes this as `u50 style --fix [--dry-run]`; `--dry-run` requires `--fix`, and `--fix` conflicts with `-o/--output` (fix output is the fixed/already-clean lines or the dry-run diff, not a chosen render mode).
-- **Adaptive diff strategy** (`render::select_algorithm`): diff rendering defaults to Myers but engages the Lcs algorithm for large, low-overlap pairs — inputs where the larger side has ≥ 1024 lines **and** the distinct shared lines number fewer than `max_lines / 1000` (a `HashSet` intersection probe, linear). Measured (release, unified render, `examples/bench_diff.rs`):
+- **Adaptive diff strategy** (`rendering::line_diff::select_algorithm`): diff rendering defaults to Myers but engages the Lcs algorithm for large, low-overlap pairs — inputs where the larger side has ≥ 1024 lines **and** the distinct shared lines number fewer than `max_lines / 1000` (a `HashSet` intersection probe, linear). Measured (release, unified render, `examples/bench_diff.rs`):
 
   | input                                                | Myers   | Lcs            |
   | ---------------------------------------------------- | ------- | -------------- |
@@ -219,7 +219,7 @@ if needed, venv, pinned wheels + transitive deps, one parallel fetch task
 per package). The check and fix passes batch **all** missing backends of
 the run — collected after the directory walk — into one parallel fetch
 before any file is processed (`provision_backends` →
-`formatter::ensure_backends`); the per-file hook in
+`format::ensure_backends`); the per-file hook in
 `Cs50Formatter::format` (`ensure_backend`) remains as a single-tool
 fallback, deduplicated per process (each missing tool of a run is
 attempted once; later files needing the same tool skip straight to the

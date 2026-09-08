@@ -17,10 +17,6 @@ pub use html::HtmlRenderer;
 pub use json::JsonRenderer;
 pub use score::ScoreRenderer;
 
-/// The 14-colon rule of style50's per-file header ("Use same header as
-/// more.").
-pub(crate) const HEADER_RULE: &str = "::::::::::::::";
-
 /// A sink for the events of a style check.
 ///
 /// Event order: [`begin`](Renderer::begin), then one

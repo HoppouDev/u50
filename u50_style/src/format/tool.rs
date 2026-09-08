@@ -4,7 +4,7 @@
 
 use std::collections::HashSet;
 use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{LazyLock, Mutex};
 
@@ -120,20 +120,22 @@ fn is_executable_file(path: &Path) -> bool {
 }
 
 /// Whether `tool` names an explicit path rather than a bare tool name:
-/// true when it contains either path separator, or parses as a path
-/// with a root or non-empty parent component (drive prefix, `..`, a
-/// subdirectory). Bare names (`clang-format`) stay cache-only on all
-/// platforms, so a hostile or unrelated same-named binary on `PATH`
-/// can never be picked up.
+/// true when it contains either path separator, or its first path
+/// component is not a plain name — a Windows drive/UNC prefix (which
+/// `Path::join` would let replace the cache dir entirely), `..`, or
+/// `.`. Bare names (`clang-format`) stay cache-only on all platforms,
+/// so a hostile or unrelated same-named binary on `PATH` can never be
+/// picked up.
 fn is_explicit_path(tool: &str) -> bool {
     if tool.contains('/') || tool.contains('\\') {
         return true;
     }
-    let path = Path::new(tool);
-    path.has_root()
-        || path
-            .parent()
-            .is_some_and(|parent| !parent.as_os_str().is_empty())
+    match Path::new(tool).components().next() {
+        Some(Component::Normal(_)) | None => false,
+        Some(
+            Component::Prefix(_) | Component::RootDir | Component::CurDir | Component::ParentDir,
+        ) => true,
+    }
 }
 
 /// Resolves `tool` to its location, cache-only: an explicit path (see
@@ -143,7 +145,8 @@ fn is_explicit_path(tool: &str) -> bool {
 /// platform console-script file name, see [`tool_file_name`]) — the
 /// system `PATH` is never consulted. Returns `None`
 /// when the tool is not in the cache (the caller may then auto-provision
-/// it; see [`crate::format::Cs50Formatter::format`]) or when the cache directory
+/// it; see [`Cs50Formatter::format`](crate::format::Cs50Formatter::format))
+/// or when the cache directory
 /// cannot be determined ([`cache_dir`]).
 #[must_use]
 pub fn locate_tool(tool: &str) -> Option<(PathBuf, ToolOrigin)> {
@@ -185,13 +188,21 @@ fn spawn_tool(tool: &str, args: &[&str], source: &str) -> anyhow::Result<std::pr
     // PYTHONHOME breaks site initialization and a stray PYTHONPATH can
     // shadow the pinned transitive deps. Strip them (see AGENTS.md,
     // "self-contained").
-    for var in [
-        "PYTHONHOME",
-        "PYTHONPATH",
-        "PYTHONSTARTUP",
-        "PYTHONPYCACHEPREFIX",
-    ] {
-        command.env_remove(var);
+    // Strip every inherited `PYTHON*` variable (not just the four
+    // classic ones): the venv scripts are self-contained, and any of
+    // PYTHONHOME/PYTHONPATH/PYTHONUSERBASE/PYTHONSAFEPATH/... can alter
+    // the interpreter's import resolution.
+    for (var, _) in std::env::vars_os() {
+        if var.to_string_lossy().starts_with("PYTHON") {
+            command.env_remove(var);
+        }
+    }
+    // Own process group: on timeout a whole backend process tree dies
+    // instead of surviving grandchildren holding the pipes open.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+        command.process_group(0);
     }
     let mut child = command
         .args(args)
@@ -211,24 +222,16 @@ fn spawn_tool(tool: &str, args: &[&str], source: &str) -> anyhow::Result<std::pr
     // Drain both pipes on separate threads and wait under a deadline: a
     // hung backend must not hang the whole (rayon-parallel) run.
     // style50 waits forever — documented divergence.
-    let mut stdout_pipe = child
+    let stdout_pipe = child
         .stdout
         .take()
         .ok_or_else(|| anyhow::anyhow!("could not attach stdout to `{tool}`"))?;
-    let mut stderr_pipe = child
+    let stderr_pipe = child
         .stderr
         .take()
         .ok_or_else(|| anyhow::anyhow!("could not attach stderr to `{tool}`"))?;
-    let stdout_reader = std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        let _ = stdout_pipe.read_to_end(&mut buf);
-        buf
-    });
-    let stderr_reader = std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        let _ = stderr_pipe.read_to_end(&mut buf);
-        buf
-    });
+    let stdout_reader = std::thread::spawn(move || read_capped(stdout_pipe));
+    let stderr_reader = std::thread::spawn(move || read_capped(stderr_pipe));
     let started = std::time::Instant::now();
     let deadline = tool_timeout();
     let status = loop {
@@ -237,7 +240,15 @@ fn spawn_tool(tool: &str, args: &[&str], source: &str) -> anyhow::Result<std::pr
             None if started.elapsed() >= deadline => {
                 let _ = child.kill();
                 let _ = child.wait();
-                let _ = writer.join();
+                // The dead child closed its pipe ends; give the readers
+                // a short grace period to observe EOF. A straggler
+                // grandchild still holding a pipe open (see the process
+                // group above) must not hang the run — the reader
+                // thread is then abandoned (a bounded leak per
+                // timeout).
+                let _ = join_bounded(writer);
+                let _ = join_bounded(stdout_reader);
+                let _ = join_bounded(stderr_reader);
                 anyhow::bail!("`{tool}` timed out after {}s", deadline.as_secs());
             }
             None => std::thread::sleep(std::time::Duration::from_millis(25)),
@@ -265,6 +276,42 @@ fn tool_timeout() -> std::time::Duration {
         .and_then(|v| v.into_string().ok())
         .and_then(|v| v.parse::<u64>().ok())
         .map_or(DEFAULT, std::time::Duration::from_secs)
+}
+
+/// Upper bound on how much backend output is buffered: a backend that
+/// echoes pathological input must not exhaust memory. Output past the
+/// budget is still drained (so the child never blocks on a full pipe)
+/// but dropped — a run that large fails anyway.
+const MAX_PIPE_BYTES: usize = 64 * 1024 * 1024;
+
+fn read_capped(mut pipe: impl Read) -> Vec<u8> {
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 8192];
+    loop {
+        match pipe.read(&mut chunk) {
+            Ok(0) | Err(_) => return buf,
+            Ok(n) => {
+                if buf.len() + n <= MAX_PIPE_BYTES {
+                    buf.extend_from_slice(&chunk[..n]);
+                }
+            }
+        }
+    }
+}
+
+/// Joins a spawned thread with a bounded grace period; a thread still
+/// running after the deadline is abandoned (leaked) rather than waited
+/// on indefinitely.
+fn join_bounded<T>(handle: std::thread::JoinHandle<T>) -> Option<T> {
+    const GRACE: std::time::Duration = std::time::Duration::from_secs(2);
+    let deadline = std::time::Instant::now() + GRACE;
+    while !handle.is_finished() {
+        if std::time::Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    handle.join().ok()
 }
 
 pub(crate) fn run_tool(tool: &str, args: &[&str], source: &str) -> anyhow::Result<String> {
@@ -353,12 +400,13 @@ pub(crate) fn ensure_backends(missing: &[(String, String)]) {
 }
 
 /// Attempts to lazily auto-provision the single backend `tool` (the
-/// per-file fallback in [`crate::format::Cs50Formatter::format`]) by mapping it to its
+/// per-file fallback in
+/// [`Cs50Formatter::format`](crate::format::Cs50Formatter::format)) by mapping it to its
 /// pip package and delegating to [`ensure_backends`].
 pub(crate) fn ensure_backend(tool: &str) {
     let Some(package) = Language::ALL
         .iter()
-        .find(|&&language| language.required_tool() == Some(tool))
+        .find(|&&language| language.required_tool() == tool)
         .map(|language| language.pip_package())
     else {
         tracing::warn!(tool, "no known pip package provides this tool");

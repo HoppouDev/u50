@@ -3,9 +3,6 @@
 
 /// Python `html.escape(s, quote=True)`: escapes `&`, `<`, `>`, `"` and
 /// `'` (in that order — `&` first, so already-escaped text is never
-/// double-escaped).
-/// Python `html.escape(s, quote=True)`: escapes `&`, `<`, `>`, `"` and
-/// `'` (in that order — `&` first, so already-escaped text is never
 /// double-escaped). Used for the diff content (`html_diff`'s `fmt`).
 pub(crate) fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;")

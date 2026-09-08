@@ -22,4 +22,6 @@ pub(crate) use renderer::{Renderer, builtin_renderer};
 /// literal two-character sequences `\n` / `\t` instead of the raw control
 /// characters), shared by the character and HTML diff renderers.
 const NEWLINE_MARKER: &str = "\\n";
+/// The visible marker text for a warned tab, paired with
+/// [`NEWLINE_MARKER`].
 const TAB_MARKER: &str = "\\t";

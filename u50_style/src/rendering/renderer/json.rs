@@ -5,10 +5,24 @@ use std::path::Path;
 
 use serde::Serialize;
 
-use crate::rendering::unified::patch;
-use crate::request::Report;
+use crate::rendering::unified::render_unified;
+use crate::request::{FileResult, Report};
 
 use super::Renderer;
+
+/// The `patch` field for one file of the JSON document: `null` for clean
+/// files (legacy schema), otherwise the unified diff of the normalized
+/// source against the styled content.
+fn patch(result: &FileResult) -> Option<String> {
+    if result.clean {
+        return None;
+    }
+    result
+        .source
+        .as_ref()
+        .zip(result.formatted.as_ref())
+        .map(|(source, formatted)| render_unified(source, formatted, &result.path))
+}
 
 /// Writes the machine-readable JSON document (one entry per file, with the
 /// unified patch for dirty files) in [`finish`](Renderer::finish), plus

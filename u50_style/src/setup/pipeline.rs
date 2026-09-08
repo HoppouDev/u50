@@ -32,7 +32,7 @@ pub(crate) async fn provision_backends(
     let client = client_builder.build().context("http client build")?;
     // Python distribution downloads retry internally (`fetch_with_retry`),
     // so their client disables middleware retries to avoid double-retrying
-    // â€” mirroring uv's own `installation.rs`.
+    // — mirroring uv's own `installation.rs`.
     let download_client = client_builder
         .clone()
         .retries(0)
@@ -53,7 +53,7 @@ pub(crate) async fn provision_backends(
     let multi = MultiProgress::new();
     let style = ProgressStyle::with_template("{spinner:.green} {msg}")
         .expect("static spinner template")
-        .tick_chars("â ‹â ™â ¹â ¸â ¼â ´â ¦â §â ‡â  ");
+        .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏ ");
     let wheels_dir = cache_root.join("wheels");
     let handles: Vec<_> = specs
         .clone()

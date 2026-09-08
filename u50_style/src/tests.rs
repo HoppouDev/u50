@@ -20,7 +20,7 @@ use crate::rendering::line_diff::select_algorithm;
 use crate::rendering::palette::{
     bold, bright_white, cyan, green, on_green, on_red, red, reset, yellow,
 };
-use crate::rendering::renderer::HEADER_RULE;
+use crate::rendering::renderer::console::HEADER_RULE;
 use crate::rendering::renderer::json::{json_document, json_pretty};
 use crate::rendering::renderer::score::py_str_f64;
 use crate::rendering::split::render_split;
@@ -81,8 +81,14 @@ fn fix_with_records_write_failures_and_keeps_the_original() {
     // The original is byte-for-byte intact â€” never truncated.
     assert_eq!(std::fs::read_to_string(&c).expect("read"), DIRTY_C);
     assert!(report.results.is_empty());
-    // No temp sibling is left behind.
-    assert!(!root.join("dirty.c.u50-tmp").exists());
+    // No temp sibling of any naming scheme may survive a failed fix.
+    assert!(
+        !root
+            .read_dir()
+            .unwrap_or_else(|_| panic!("temp dir {} vanished", root.display()))
+            .filter_map(Result::ok)
+            .any(|e| e.file_name().to_string_lossy().contains(".u50-"))
+    );
     std::fs::set_permissions(&c, std::fs::Permissions::from_mode(0o644)).expect("restore perms");
     std::fs::remove_dir_all(&root).expect("cleanup");
 }
@@ -212,14 +218,14 @@ fn detect_language_maps_extensions() {
 #[test]
 fn required_tool_maps_every_language() {
     let cases = [
-        (Language::C, Some("clang-format")),
-        (Language::Cpp, Some("clang-format")),
-        (Language::Java, Some("clang-format")),
-        (Language::Python, Some("autopep8")),
-        (Language::JavaScript, Some("js-beautify")),
-        (Language::Html, Some("djhtml")),
-        (Language::Css, Some("css-beautify")),
-        (Language::Sql, Some("sqlformat")),
+        (Language::C, "clang-format"),
+        (Language::Cpp, "clang-format"),
+        (Language::Java, "clang-format"),
+        (Language::Python, "autopep8"),
+        (Language::JavaScript, "js-beautify"),
+        (Language::Html, "djhtml"),
+        (Language::Css, "css-beautify"),
+        (Language::Sql, "sqlformat"),
     ];
     for (language, tool) in cases {
         assert_eq!(language.required_tool(), tool, "for {language:?}");

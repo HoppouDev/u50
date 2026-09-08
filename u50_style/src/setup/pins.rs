@@ -73,7 +73,15 @@ pub(crate) fn wheel_specs(missing: &[(String, String)]) -> Vec<(String, Option<S
         }
         for &dep in transitive_deps(package) {
             if !specs.iter().any(|(name, _, _)| name == dep) {
-                specs.push((dep.to_owned(), None, Role::Dependency));
+                // Dependencies are pinned too: an unpinned dep would
+                // silently install whatever was latest on PyPI at
+                // provision time, defeating the reproducibility the
+                // primary pins exist for.
+                specs.push((
+                    dep.to_owned(),
+                    pinned_version(dep).map(str::to_owned),
+                    Role::Dependency,
+                ));
             }
         }
     }

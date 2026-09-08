@@ -45,15 +45,13 @@ pub enum ToolOrigin {
 /// djhtml for HTML, cssbeautifier for CSS, and sqlparse for SQL. The
 /// original calls the Python libraries directly (`autopep8`,
 /// `jsbeautifier`, `cssbeautifier`, `sqlparse`); u50 shells out to the
-/// corresponding pip-installed CLIs, which apply the same defaults. Exact
-/// options passed (flag names verified against the installed CLIs; they
-/// mirror the original's library options):
-///
-/// - Python: `autopep8 - --max-line-length=100 --ignore-local-config`
-/// - JavaScript: `js-beautify --end-with-newline --operator-position preserve-newline -w 100 --brace-style collapse,preserve-inline --keep-array-indentation -` — the short `-w 100` form is required because this CLI build declares the long `--wrap-line-length` as taking no argument, and the `-` stdin marker must come last because the CLI stops parsing options at the first positional
-/// - HTML: `djhtml -` via the lenient runner (`run_tool_lenient`)
-/// - CSS: `css-beautify --indent-size 4 --end-with-newline -` — verified byte-identical to the `cssbeautifier.beautify` call the original makes with `indent_size = 4, end_with_newline = True`
-/// - SQL: `sqlformat -k upper -r --indent_width 4 -` with a `\n` appended when missing — verified byte-identical to the original's `sqlparse.format(code, reindent=True, keyword_case="upper", indent_width=4)` plus its trailing-newline fix-up
+/// corresponding pip-installed CLIs, which apply the same defaults. The
+/// exact invocation for each backend — its flags, the CLI quirks they
+/// work around, and the byte-parity verification against the original's
+/// library calls — is documented on the backend itself:
+/// [`crate::language::c`], [`crate::language::python`],
+/// [`crate::language::javascript`], [`crate::language::html`],
+/// [`crate::language::css`], and [`crate::language::sql`].
 #[derive(Debug, Clone, Default)]
 pub struct Cs50Formatter;
 
@@ -75,9 +73,8 @@ impl Formatter for Cs50Formatter {
         // failed attempt is only warned about — the `run_tool` call in
         // the language module then produces the usual per-file
         // missing-tool error.
-        if let Some(tool) = language.required_tool()
-            && locate_tool(tool).is_none()
-        {
+        let tool = language.required_tool();
+        if locate_tool(tool).is_none() {
             ensure_backend(tool);
         }
         match language {

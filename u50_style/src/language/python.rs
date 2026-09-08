@@ -30,6 +30,20 @@ enum PyTok {
     Other,
 }
 
+/// Applies a completed string token to the walk state: an `FString`
+/// never counts; a `String` token counts exactly when `prev` is
+/// `Indent` (the docstring rule), then `prev` becomes the token.
+fn push_string_token(fstring: bool, prev: &mut PyTok, count: &mut u32) {
+    if !fstring && *prev == PyTok::Indent {
+        *count += 1;
+    }
+    *prev = if fstring {
+        PyTok::FString
+    } else {
+        PyTok::String
+    };
+}
+
 /// A triple-quoted string still open at end of line.
 struct PyStringUnit {
     fstring: bool,
@@ -67,15 +81,7 @@ pub(crate) fn python_comments(code: &str) -> u32 {
         if let Some(unit) = open.take() {
             continued_string = true;
             if let Some(end) = close_triple(&chars, 0, &unit) {
-                let tok = if unit.fstring {
-                    PyTok::FString
-                } else {
-                    PyTok::String
-                };
-                if tok == PyTok::String && prev == PyTok::Indent {
-                    count += 1;
-                }
-                prev = tok;
+                push_string_token(unit.fstring, &mut prev, &mut count);
                 i = end;
             } else {
                 open = Some(unit);
@@ -145,15 +151,7 @@ pub(crate) fn python_comments(code: &str) -> u32 {
                         quote,
                     };
                     if let Some(end) = close_triple(&chars, j + 3, &unit) {
-                        let tok = if fstring {
-                            PyTok::FString
-                        } else {
-                            PyTok::String
-                        };
-                        if tok == PyTok::String && prev == PyTok::Indent {
-                            count += 1;
-                        }
-                        prev = tok;
+                        push_string_token(fstring, &mut prev, &mut count);
                         i = end;
                     } else {
                         open = Some(unit);
@@ -162,15 +160,7 @@ pub(crate) fn python_comments(code: &str) -> u32 {
                     continue;
                 }
                 // Single-quoted: to the closing quote or end of line.
-                let tok = if fstring {
-                    PyTok::FString
-                } else {
-                    PyTok::String
-                };
-                if tok == PyTok::String && prev == PyTok::Indent {
-                    count += 1;
-                }
-                prev = tok;
+                push_string_token(fstring, &mut prev, &mut count);
                 i = single_quote_end(&chars, j + 1, quote, raw).unwrap_or(chars.len());
                 continue;
             }

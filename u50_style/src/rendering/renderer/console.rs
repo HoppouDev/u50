@@ -3,19 +3,22 @@
 use std::io::Write;
 use std::path::Path;
 
-use crate::language::{comment_hint, detect_language};
+use crate::language::comment_hinted;
 use crate::rendering::character::render_character;
 use crate::rendering::palette::{bold, bright_white, cyan, green, reset, yellow};
 use crate::rendering::split::render_split;
 use crate::rendering::unified::render_unified;
 use crate::request::{FileResult, Output, Request};
 
-use super::HEADER_RULE;
+/// The 14-colon rule of style50's per-file header ("Use same header as
+/// more.").
+pub(crate) const HEADER_RULE: &str = "::::::::::::::";
+
 use super::Renderer;
 
 /// Writes the style50 3.0.0-parity per-file console output and
 /// `error: <path>: <message>` lines to stderr. JSON-mode requests are
-/// served by [`JsonRenderer`] instead; if a JSON output is requested of
+/// served by [`JsonRenderer`](super::json::JsonRenderer) instead; if a JSON output is requested of
 /// this renderer directly, it falls back to the unified diff.
 ///
 /// Character mode reproduces the original's `to_ansi` presentation: a
@@ -133,11 +136,6 @@ impl ConsoleRenderer {
     /// `to_ansi`): `file["comments"]`, i.e. the comment ratio is strictly
     /// under 0.10. HTML/CSS/SQL are never hinted (no `count_comments`).
     fn file_hints(&self, result: &FileResult) -> bool {
-        matches!(self.output, Output::Character)
-            && result
-                .source
-                .as_deref()
-                .zip(detect_language(&result.path))
-                .is_some_and(|(source, language)| comment_hint(source, language))
+        matches!(self.output, Output::Character) && comment_hinted(result)
     }
 }

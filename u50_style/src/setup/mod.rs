@@ -17,12 +17,17 @@ use crate::format::{cache_dir, locate_tool};
 use crate::language::Language;
 use pipeline::provision_backends;
 
+/// Computes the distinct missing pip packages, in first-seen language
+/// order: iterates [`Language::ALL`], skips languages whose backing tool
+/// `is_resolved`, and dedups by pip package (C/C++/Java all share
+/// `clang-format`, so they collapse to one entry). Pure decision logic so
+/// the missing-backend computation is unit-testable without any
+/// provisioning; the uv install path itself is exercised by manual smoke
+/// runs (it needs network access).
 fn missing_backends(is_resolved: impl Fn(&str) -> bool) -> Vec<(String, String)> {
     let mut missing: Vec<(String, String)> = Vec::new();
     for &language in &Language::ALL {
-        let Some(tool) = language.required_tool() else {
-            continue;
-        };
+        let tool = language.required_tool();
         if is_resolved(tool) {
             continue;
         }
@@ -78,7 +83,7 @@ pub fn setup_missing() -> Result<()> {
 /// Where provisioning progress lines go: the explicit `u50 --setup`
 /// path owns stdout (the report IS the output); the lazy
 /// auto-provisioning path runs mid-style-check, where stdout must stay
-/// pure diff/JSON (AGENTS.md), so its progress reports on stderr Ã¢â‚¬â€
+/// pure diff/JSON (AGENTS.md), so its progress reports on stderr —
 /// failures would already surface as per-file missing-tool errors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 
@@ -90,8 +95,8 @@ pub(crate) enum ProgressTarget {
 /// The shared install core, used by `u50 --setup` and by the engine's
 /// batched provisioning pre-pass: initializes uv's preview state, drives
 /// the async provisioning pipeline ([`provision_backends`]) on a local
-/// runtime Ã¢â‚¬â€ one parallel wheel-fetch task per package, one serialized
-/// venv install Ã¢â‚¬â€ reports the `installing N package(s)` banner and the
+/// runtime — one parallel wheel-fetch task per package, one serialized
+/// venv install — reports the `installing N package(s)` banner and the
 /// per-package summary lines (`installed:` / `failed:`) on
 /// [`ProgressTarget`], and bails when anything failed.
 ///
@@ -150,9 +155,6 @@ pub(crate) fn install_backends(missing: &[(String, String)], target: ProgressTar
     Ok(())
 }
 
-/// The async provisioning pipeline: uv cache, venv, parallel wheel
-/// fetches, install, and per-backend verification. Returns one
-/// [`BackendOutcome`] per entry in `missing`.
 #[cfg(test)]
 mod tests {
     use sha2::{Digest, Sha256};
@@ -259,7 +261,13 @@ mod tests {
                     Some("2.3.2".to_owned()),
                     Role::Primary
                 ),
-                ("pycodestyle".to_owned(), None, Role::Dependency),
+                // Dependencies are pinned too (PINNED_VERSIONS), so a
+                // cold start cannot silently install a newer release.
+                (
+                    "pycodestyle".to_owned(),
+                    Some("2.14.0".to_owned()),
+                    Role::Dependency
+                ),
             ]
         );
     }

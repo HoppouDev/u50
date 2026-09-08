@@ -1,9 +1,13 @@
 //! Language detection, per-language metadata, and the per-language
 //! comment counters. Each language's tokenizer and formatter live in the
-//! language's own module (`c.rs`, `python.rs`, ...); this file holds only
-//! the shared enum, detection, and dispatch.
+//! language's own module (`c.rs`, `python.rs`, ...); this file holds the
+//! shared enum, detection, the comment-hint arithmetic, the shared
+//! C-family comment counter, and the dispatch to the per-language
+//! counters.
 
 use std::path::Path;
+
+use crate::request::FileResult;
 
 pub(crate) mod c;
 pub(crate) mod css;
@@ -62,16 +66,17 @@ impl Language {
 
     /// The external formatter binary this language's style check depends
     /// on — the same tools (or their CLI counterparts) the original
-    /// style50 invokes per `languages.py`.
+    /// style50 invokes per `languages.py`. Every supported language has
+    /// one, so this is total.
     #[must_use]
-    pub fn required_tool(self) -> Option<&'static str> {
+    pub(crate) fn required_tool(self) -> &'static str {
         match self {
-            Self::C | Self::Cpp | Self::Java => Some("clang-format"),
-            Self::Python => Some("autopep8"),
-            Self::JavaScript => Some("js-beautify"),
-            Self::Html => Some("djhtml"),
-            Self::Css => Some("css-beautify"),
-            Self::Sql => Some("sqlformat"),
+            Self::C | Self::Cpp | Self::Java => "clang-format",
+            Self::Python => "autopep8",
+            Self::JavaScript => "js-beautify",
+            Self::Html => "djhtml",
+            Self::Css => "css-beautify",
+            Self::Sql => "sqlformat",
         }
     }
 
@@ -80,7 +85,7 @@ impl Language {
     /// binary wheel, the rest are pure-Python packages with console
     /// scripts).
     #[must_use]
-    pub fn pip_package(self) -> &'static str {
+    pub(crate) fn pip_package(self) -> &'static str {
         match self {
             Self::C | Self::Cpp | Self::Java => "clang-format",
             Self::Python => "autopep8",
@@ -170,6 +175,18 @@ pub(crate) fn comment_hint(code: &str, language: Language) -> bool {
         }
         None => false,
     }
+}
+
+/// Whether style50's comments hint fires for a processed file: the
+/// [`comment_hint`] ratio rule applied to the file's normalized original.
+/// Shared by the console and HTML renderers so both use the identical
+/// rule.
+pub(crate) fn comment_hinted(result: &FileResult) -> bool {
+    result
+        .source
+        .as_deref()
+        .zip(detect_language(&result.path))
+        .is_some_and(|(source, language)| comment_hint(source, language))
 }
 
 /// The shared C-family comment-count pass over string-stripped text

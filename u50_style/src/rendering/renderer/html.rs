@@ -7,7 +7,7 @@ use std::path::Path;
 use leptos::prelude::*;
 use leptos::tachys::view::Position;
 
-use crate::language::{comment_hint, detect_language};
+use crate::language::comment_hinted;
 use crate::rendering::doc_flavor::markup_escape;
 use crate::rendering::html_diff::render_html_diff;
 use crate::request::{FileResult, Report};
@@ -173,7 +173,7 @@ fn html_document(entries: &[HtmlFile]) -> String {
 /// results and errors interleaved, exactly like style50's `files` list.
 /// The report goes to stdout; style50 instead writes a temp file and opens
 /// a browser (documented divergence). Skipped walk warnings have no
-/// element in the template and are ignored (as in [`JsonRenderer`]).
+/// element in the template and are ignored (as in [`JsonRenderer`](super::json::JsonRenderer)).
 pub struct HtmlRenderer {
     pub(crate) entries: Vec<HtmlFile>,
     pub(crate) out: Box<dyn Write>,
@@ -182,11 +182,7 @@ pub struct HtmlRenderer {
 impl Renderer for HtmlRenderer {
     fn file(&mut self, result: &FileResult) {
         let name = result.path.display().to_string();
-        let comments = result
-            .source
-            .as_deref()
-            .zip(detect_language(&result.path))
-            .is_some_and(|(source, language)| comment_hint(source, language));
+        let comments = comment_hinted(result);
         if result.clean {
             self.entries.push(HtmlFile::Clean { name, comments });
             return;

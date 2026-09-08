@@ -77,13 +77,13 @@ pub fn run_with(req: &Request, formatter: &dyn Formatter) -> Report {
 /// Processes already-expanded `files` (see [`expand_paths`]) into a
 /// [`Report`]: the per-file pass shared verbatim by [`run_with`] (check)
 /// and [`run_with_renderer`] (check + rendering), run in parallel with
-/// rayon — a cold-cache provisioning pre-pass ([`provision_backends`])
+/// rayon — a cold-cache provisioning pre-pass ([`provision_missing_backends`])
 /// fetches every missing backend in parallel first. Walk warnings are a
 /// rendering concern: callers that render expand themselves (see
 /// [`run_with_renderer`]) or print the warnings engine-side (see
 /// [`fix_with`]); this helper never sees them.
 fn check_files(files: &[PathBuf], formatter: &dyn Formatter) -> Report {
-    provision_backends(files);
+    provision_missing_backends(files);
     // Rayon preserves input order in the collect, so results and errors
     // come out exactly as the sequential loop did (deterministic output).
     let outcomes: Vec<Outcome> = files
@@ -117,16 +117,14 @@ fn check_files(files: &[PathBuf], formatter: &dyn Formatter) -> Report {
 /// uv installs into the shared cache. Per-process dedupe and the
 /// `U50_STYLE_NO_PROVISION` escape hatch live in
 /// [`crate::format::ensure_backends`].
-fn provision_backends(files: &[PathBuf]) {
+fn provision_missing_backends(files: &[PathBuf]) {
     let mut seen = HashSet::new();
     let mut missing: Vec<(String, String)> = Vec::new();
     for path in files {
         let Some(language) = detect_language(path) else {
             continue;
         };
-        let Some(tool) = language.required_tool() else {
-            continue;
-        };
+        let tool = language.required_tool();
         if seen.insert(tool) && locate_tool(tool).is_none() {
             missing.push((language.pip_package().to_owned(), tool.to_owned()));
         }
@@ -201,6 +199,14 @@ pub fn run_with_renderer(
 /// Returns an error when the file cannot be read, has an unsupported
 /// extension, is empty after normalization, or the formatter fails.
 fn process_file(path: &Path, formatter: &dyn Formatter) -> anyhow::Result<FileResult> {
+    // Cap input size: a walked directory may hide a huge file, and both
+    // the read and the later (quadratic) char-diff would otherwise
+    // exhaust memory. Fail with a clear per-file error instead.
+    const MAX_INPUT_BYTES: u64 = 64 * 1024 * 1024;
+    let size = std::fs::metadata(path).map_or(0, |m| m.len());
+    if size > MAX_INPUT_BYTES {
+        anyhow::bail!("file is too large ({size} bytes; the limit is {MAX_INPUT_BYTES})");
+    }
     let source = std::fs::read_to_string(path)
         .map_err(|e| anyhow::anyhow!("could not read `{}`: {e}", path.display()))?;
     let Some(language) = detect_language(path) else {
@@ -261,7 +267,7 @@ pub fn fix_with(req: &Request, formatter: &dyn Formatter, dry_run: bool) -> Repo
     // Same walk → provision → process pipeline as the check pass: the
     // missing backends are fetched in parallel before the sequential
     // (in-place) fix loop starts.
-    provision_backends(&files);
+    provision_missing_backends(&files);
     let mut results = Vec::with_capacity(files.len());
     let mut errors = Vec::new();
     for path in &files {
@@ -421,21 +427,41 @@ fn classify_file(
 /// successful one is all-or-nothing (`std::fs::write` would truncate at
 /// open, before the first byte lands).
 fn write_atomic(path: &Path, styled: &str) -> std::io::Result<()> {
+    use std::io::Write as _;
     // A read-only target fails BEFORE anything is written. `std::fs::write`
     // used to fail with EACCES at open; the rename below would silently
     // replace a read-only file (rename needs directory, not file, write
     // permission) — so the mode is checked up front to keep the old
     // failure semantics under the new atomicity.
-    if std::fs::metadata(path).is_ok_and(|meta| meta.permissions().readonly()) {
+    let meta = std::fs::metadata(path)?;
+    if meta.permissions().readonly() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
             "file is read-only",
         ));
     }
+    // A randomized, exclusively-created sibling temp (O_EXCL) instead of
+    // a predictable fixed name: a pre-planted symlink at a predictable
+    // `<path>.u50-tmp` could otherwise redirect the write through the
+    // follow-symlinking `fs::write`. The original mode is copied onto
+    // the temp before the rename so a private (e.g. 0600) file does not
+    // silently become world-readable.
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.subsec_nanos());
     let mut temp_name = path.as_os_str().to_owned();
-    temp_name.push(".u50-tmp");
+    temp_name.push(format!(".u50-{}-{nanos}.tmp", std::process::id()));
     let temp = PathBuf::from(temp_name);
-    let result = std::fs::write(&temp, styled).and_then(|()| std::fs::rename(&temp, path));
+    let result = (|| -> std::io::Result<()> {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp)?;
+        file.write_all(styled.as_bytes())?;
+        file.set_permissions(meta.permissions())?;
+        drop(file);
+        std::fs::rename(&temp, path)
+    })();
     if result.is_err() {
         // Never leave the temp sibling behind on a failed write or rename.
         let _ = std::fs::remove_file(&temp);
