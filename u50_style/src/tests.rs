@@ -1556,6 +1556,63 @@ fn score_renderer_non_python_still_counts_non_blank() {
 }
 
 #[test]
+fn html_renderer_matches_style50_structure() {
+    // The html renderer drives the style50 `results.html` template: the
+    // branch-resolved pre elements, the markupsafe-escaped names, and the
+    // raw diff HTML (verified byte-identical against `style50 -o html` for
+    // every golden fixture; this test pins the structure at the unit
+    // level, including the two distinct escape flavors: markupsafe for
+    // names/errors, stdlib html.escape for the diff).
+    let req = Request {
+        files: vec![],
+        output: Output::Html,
+        color: false,
+    };
+    let clean = FileResult {
+        path: PathBuf::from("a.c"),
+        clean: true,
+        source: Some("return 0;\n".to_owned()),
+        formatted: Some("return 0;\n".to_owned()),
+    };
+    let dirty = FileResult {
+        path: PathBuf::from("b.c"),
+        clean: false,
+        source: Some("return 0;\n".to_owned()),
+        formatted: Some("    return 0;\n".to_owned()),
+    };
+    let sink = SharedBuf::default();
+    {
+        let mut renderer = builtin_renderer(Output::Html, false, Box::new(sink.clone()));
+        renderer.begin(&req);
+        renderer.file(&clean);
+        renderer.file(&dirty);
+        renderer.file_error(Path::new("e'x\"y.c"), "unsupported file type");
+        renderer.finish(&Report::default());
+    }
+    let text = String::from_utf8(sink.0.borrow().clone()).expect("utf8");
+    assert!(text.starts_with("<!DOCTYPE html>\n<html>"));
+    assert!(text.contains("<h3> a.c </h3>"), "clean entry: {text:?}");
+    assert!(
+        text.contains("<pre style=\"color: #32cf55\">Looks good!</pre>"),
+        "clean branch: {text:?}"
+    );
+    assert!(
+        text.contains("<pre><pre><ins>    </ins> return 0;"),
+        "dirty diff inserted as raw HTML: {text:?}"
+    );
+    // markupsafe flavor for the escaped error-path name (NOT &quot;).
+    assert!(
+        text.contains("<h3> e&#39;x&#34;y.c </h3>"),
+        "name escaped with markupsafe: {text:?}"
+    );
+    assert!(
+        text.contains("<pre style=\"color: yellow\">unsupported file type</pre>"),
+        "error branch: {text:?}"
+    );
+    assert!(text.ends_with("</body>\n\n</html>"));
+}
+
+#[test]
 fn score_renderer_errors_only_is_zero_and_yellow() {
     assert_eq!(
         score_output(

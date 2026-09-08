@@ -98,7 +98,7 @@ struct StyleArgs {
     #[arg(short = 'o', long, value_enum, default_value_t = StyleOutput::Character)]
     output: StyleOutput,
 
-    /// Rewrite files in place with style50 formatting
+    /// Rewrite files in place with u50 formatting
     #[arg(long, conflicts_with = "output")]
     fix: bool,
 
@@ -169,8 +169,8 @@ enum StyleOutput {
     Split,
     Unified,
     Json,
-    /// Style50-compatible aggregate score (e.g. 0.85)
     Score,
+    Html,
 }
 
 fn main() -> ExitCode {
@@ -328,6 +328,7 @@ fn map_style_output(output: StyleOutput) -> u50_style::Output {
         StyleOutput::Unified => u50_style::Output::Unified,
         StyleOutput::Json => u50_style::Output::Json,
         StyleOutput::Score => u50_style::Output::Score,
+        StyleOutput::Html => u50_style::Output::Html,
     }
 }
 

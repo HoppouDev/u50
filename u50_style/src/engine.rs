@@ -1,6 +1,6 @@
 //! Style-check driver: reads files, formats, and builds the report.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use rayon::prelude::*;
@@ -163,11 +163,27 @@ pub fn run_with_renderer(
     for path in &skipped {
         renderer.skipped(path);
     }
-    for result in &report.results {
-        renderer.file(result);
-    }
-    for (path, message) in &report.errors {
-        renderer.file_error(path, message);
+    // Per-file events in input order (results and errors interleaved, the
+    // order style50's `files` list carries — the HTML report renders each
+    // file at its position). Per-stream content is unchanged for every
+    // built-in renderer: results go to stdout, errors to stderr, and both
+    // sequences keep their report order.
+    let results: HashMap<&Path, &FileResult> = report
+        .results
+        .iter()
+        .map(|result| (result.path.as_path(), result))
+        .collect();
+    let errors: HashMap<&Path, &String> = report
+        .errors
+        .iter()
+        .map(|(path, message)| (path.as_path(), message))
+        .collect();
+    for path in &files {
+        if let Some(result) = results.get(path.as_path()) {
+            renderer.file(result);
+        } else if let Some(message) = errors.get(path.as_path()) {
+            renderer.file_error(path.as_path(), message.as_str());
+        }
     }
     renderer.finish(&report);
     report

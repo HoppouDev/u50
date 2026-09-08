@@ -17,6 +17,8 @@ pub use engine::{fix, fix_with, normalize_source, run, run_with, run_with_render
 pub use formatter::{Cs50Formatter, Formatter, ToolOrigin, locate_tool};
 pub use language::{Language, detect_language};
 pub use listing::list_languages;
-pub use renderer::{ConsoleRenderer, JsonRenderer, Renderer, ScoreRenderer, builtin_renderer};
+pub use renderer::{
+    ConsoleRenderer, HtmlRenderer, JsonRenderer, Renderer, ScoreRenderer, builtin_renderer,
+};
 pub use request::{FileResult, Output, Report, Request};
 pub use setup::setup_missing;

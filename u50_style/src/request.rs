@@ -16,6 +16,9 @@ pub enum Output {
     /// Style50-compatible aggregate score, one line (see
     /// [`crate::renderer::ScoreRenderer`]).
     Score,
+    /// HTML report rendered from style50's `results.html` template (see
+    /// [`crate::renderer::HtmlRenderer`]).
+    Html,
 }
 
 /// Parameters for a `u50 style` invocation.
