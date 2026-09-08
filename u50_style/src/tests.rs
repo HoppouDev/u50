@@ -54,7 +54,7 @@ impl Formatter for Reindent {
 struct Rstrip;
 
 /// A dirty file whose in-place write fails (read-only permissions) must
-/// be reported as `could not write` — and the ORIGINAL must survive
+/// be reported as `could not write` â€” and the ORIGINAL must survive
 /// byte-for-byte: the styled content is written to a sibling temp file
 /// and renamed, so a failing write never truncates the target.
 #[test]
@@ -73,7 +73,7 @@ fn fix_with_records_write_failures_and_keeps_the_original() {
         "unexpected error: {:?}",
         report.errors[0]
     );
-    // The original is byte-for-byte intact — never truncated.
+    // The original is byte-for-byte intact â€” never truncated.
     assert_eq!(std::fs::read_to_string(&c).expect("read"), DIRTY_C);
     assert!(report.results.is_empty());
     // No temp sibling is left behind.
@@ -841,7 +841,7 @@ fn expand_paths_symlink_parity_follows_operands_not_subdirs() {
     #[cfg(unix)]
     {
         // Inside a walked tree: a symlinked directory is never descended
-        // into (os.walk followlinks=false) — but a symlinked regular file
+        // into (os.walk followlinks=false) â€” but a symlinked regular file
         // IS collected like any file (style50 filters by name).
         let subdir_link = root.join("sublink");
         std::os::unix::fs::symlink(&other, &subdir_link).expect("create symlink");
@@ -876,7 +876,7 @@ fn expand_paths_dedupes_by_canonical_path() {
     assert_eq!(files, vec![c.clone()]);
     assert!(skipped.is_empty(), "walk warnings deduped too: {skipped:?}");
     // Explicit unsupported operands still dedupe (they stay in `files`
-    // — explicit arguments keep their per-file error semantics).
+    // â€” explicit arguments keep their per-file error semantics).
     let txt = write_in(&root, "note.txt", "hi\n");
     let (files, skipped) = expand_paths(&[txt.clone(), root.join("note.txt")]);
     assert_eq!(files, vec![txt.clone()]);
@@ -1055,7 +1055,7 @@ fn locate_tool_passes_through_explicit_paths() {
         locate_tool("/bin/sh").map(|(path, _)| path).as_deref(),
         Some(std::path::Path::new("/bin/sh"))
     );
-    // Absolute paths are reported even when the file does not exist —
+    // Absolute paths are reported even when the file does not exist â€”
     // the exec failure surfaces through the normal spawn error path.
     assert_eq!(
         locate_tool("/nonexistent/u50-probe-xyz")
@@ -1139,7 +1139,7 @@ fn run_with_renderer_emits_events_in_order() {
 fn run_with_renderer_emits_skipped_for_walk_warnings() {
     // A directory operand with an unsupported regular file: the walk
     // warning surfaces as a `skipped` event between `total_files` and
-    // the per-file events — and never for explicit file arguments (the
+    // the per-file events â€” and never for explicit file arguments (the
     // other tests pass explicit operands and record no `skipped`).
     let root = temp_dir("renderer-skipped");
     let dirty = write_in(&root, "dirty.c", DIRTY_C);
@@ -1392,7 +1392,7 @@ fn json_renderer_output_matches_json_document_plus_newline() {
 #[test]
 fn json_renderer_output_is_pretty_printed_with_four_space_indent() {
     // style50 pretty-prints its JSON with indent 4; u50 must match the
-    // formatting (the schema itself stays u50's own — documented as a
+    // formatting (the schema itself stays u50's own â€” documented as a
     // by-design divergence in STYLE50_V3_CROSSCHECK.md).
     let dirty = temp_file("jsonpretty.c", DIRTY_C);
     let req = Request {
@@ -1597,7 +1597,7 @@ fn html_renderer_matches_style50_structure() {
         "clean branch: {text:?}"
     );
     assert!(
-        text.contains("<pre><pre><ins>    </ins> return 0;"),
+        text.contains("<pre><pre>\n<ins>    </ins>return 0;"),
         "dirty diff inserted as raw HTML: {text:?}"
     );
     // markupsafe flavor for the escaped error-path name (NOT &quot;).
@@ -1801,7 +1801,7 @@ fn python_count_comments_hash_inside_string_is_not_a_comment() {
 
 #[test]
 fn comment_hint_boundary_is_strictly_below_ten_percent() {
-    // 1 comment in 11 non-blank lines: 1/11 ≈ 0.0909 < 0.10 → hint.
+    // 1 comment in 11 non-blank lines: 1/11 â‰ˆ 0.0909 < 0.10 â†’ hint.
     assert!(comment_hint(
         &format!("/* c */\n{}", numbered_lines("line", 10)),
         Language::C
