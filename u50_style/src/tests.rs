@@ -166,6 +166,16 @@ fn fix_request(files: Vec<PathBuf>) -> Request {
     }
 }
 
+/// A default unified-mode request over `files` (the mode used by the
+/// majority of the engine tests).
+fn unified_request(files: Vec<PathBuf>) -> Request {
+    Request {
+        files,
+        output: Output::Unified,
+        color: false,
+    }
+}
+
 fn temp_file(name: &str, contents: &str) -> PathBuf {
     let path = std::env::temp_dir().join(format!("u50_style_test_{}_{name}", std::process::id()));
     std::fs::write(&path, contents).expect("write temp file");
@@ -221,11 +231,7 @@ fn run_tool_missing_binary_names_the_tool() {
 #[test]
 fn clean_file_is_reported_clean() {
     let path = temp_file("clean.c", "int main(void)\n{\n    return 0;\n}\n");
-    let req = Request {
-        files: vec![path.clone()],
-        output: Output::Unified,
-        color: false,
-    };
+    let req = unified_request(vec![path.clone()]);
     let report = run_with(&req, &Identity);
     assert!(report.clean());
     assert!(!report.has_errors());
@@ -239,11 +245,7 @@ fn clean_file_is_reported_clean() {
 #[test]
 fn dirty_file_unified_has_plus_and_minus_lines() {
     let path = temp_file("dirty.c", "int main(void)\n{\nreturn 0;\n}\n");
-    let req = Request {
-        files: vec![path.clone()],
-        output: Output::Unified,
-        color: false,
-    };
+    let req = unified_request(vec![path.clone()]);
     let report = run_with(&req, &Reindent);
     assert!(!report.clean());
     let rendered = render_result(&report.results[0], Output::Unified, false);
@@ -384,11 +386,7 @@ fn formatter_short_circuits_on_empty_and_whitespace_only_source() {
 #[test]
 fn empty_file_is_a_per_file_error() {
     let path = temp_file("empty.js", "");
-    let req = Request {
-        files: vec![path.clone()],
-        output: Output::Unified,
-        color: false,
-    };
+    let req = unified_request(vec![path.clone()]);
     let report = run_with(&req, &Identity);
     assert!(report.has_errors());
     assert!(report.results.is_empty());
@@ -401,11 +399,7 @@ fn empty_file_is_a_per_file_error() {
 #[test]
 fn whitespace_only_file_is_a_per_file_error() {
     let path = temp_file("blank.js", " \n\t\n");
-    let req = Request {
-        files: vec![path.clone()],
-        output: Output::Unified,
-        color: false,
-    };
+    let req = unified_request(vec![path.clone()]);
     let report = run_with(&req, &Identity);
     assert!(report.has_errors());
     assert!(report.results.is_empty());
@@ -420,11 +414,7 @@ fn normalization_trailing_whitespace_is_not_flagged() {
     // whitespace never makes a file dirty (Rstrip's output equals the
     // normalized input).
     let path = temp_file("trailing.js", "x = 1   \ny = 2\t\n");
-    let req = Request {
-        files: vec![path.clone()],
-        output: Output::Unified,
-        color: false,
-    };
+    let req = unified_request(vec![path.clone()]);
     let report = run_with(&req, &Rstrip);
     assert!(!report.has_errors());
     assert_eq!(report.results.len(), 1);
@@ -437,11 +427,7 @@ fn normalization_trailing_whitespace_is_not_flagged() {
 #[test]
 fn normalization_appends_missing_trailing_newline() {
     let path = temp_file("nonewline.js", "x = 1");
-    let req = Request {
-        files: vec![path.clone()],
-        output: Output::Unified,
-        color: false,
-    };
+    let req = unified_request(vec![path.clone()]);
     let report = run_with(&req, &Identity);
     assert!(!report.has_errors());
     assert!(report.results[0].clean);
@@ -451,11 +437,7 @@ fn normalization_appends_missing_trailing_newline() {
 #[test]
 fn normalization_converts_crlf_to_lf() {
     let path = temp_file("crlf.js", "x = 1\r\ny = 2\r\n");
-    let req = Request {
-        files: vec![path.clone()],
-        output: Output::Unified,
-        color: false,
-    };
+    let req = unified_request(vec![path.clone()]);
     let report = run_with(&req, &Identity);
     assert!(!report.has_errors());
     assert!(report.results[0].clean);
@@ -464,11 +446,7 @@ fn normalization_converts_crlf_to_lf() {
 
 #[test]
 fn empty_request_is_clean() {
-    let req = Request {
-        files: vec![],
-        output: Output::Unified,
-        color: false,
-    };
+    let req = unified_request(vec![]);
     let report = run_with(&req, &Identity);
     assert!(report.clean());
     assert!(!report.has_errors());
@@ -479,11 +457,7 @@ fn empty_request_is_clean() {
 #[test]
 fn unsupported_extension_errors_with_path() {
     let path = temp_file("bad.rb", "puts 1\n");
-    let req = Request {
-        files: vec![path.clone()],
-        output: Output::Unified,
-        color: false,
-    };
+    let req = unified_request(vec![path.clone()]);
     let report = run_with(&req, &Identity);
     assert!(report.has_errors());
     assert!(report.results.is_empty());
@@ -498,11 +472,7 @@ fn unsupported_extension_errors_with_path() {
 fn missing_file_errors_with_path() {
     let path =
         std::env::temp_dir().join(format!("u50_style_test_{}_missing.c", std::process::id()));
-    let req = Request {
-        files: vec![path.clone()],
-        output: Output::Unified,
-        color: false,
-    };
+    let req = unified_request(vec![path.clone()]);
     let report = run_with(&req, &Identity);
     assert!(report.has_errors());
     assert!(report.results.is_empty());
@@ -515,11 +485,7 @@ fn missing_file_errors_with_path() {
 #[test]
 fn formatter_failure_is_recorded_per_file() {
     let path = temp_file("failing.c", "int main(void)\n{\n    return 0;\n}\n");
-    let req = Request {
-        files: vec![path.clone()],
-        output: Output::Unified,
-        color: false,
-    };
+    let req = unified_request(vec![path.clone()]);
     let report = run_with(&req, &Failing);
     assert!(report.has_errors());
     assert!(report.results.is_empty());
@@ -534,11 +500,7 @@ fn error_in_later_file_preserves_earlier_results() {
     let dirty = temp_file("stream.c", "int main(void)\n{\nreturn 0;\n}\n");
     let missing =
         std::env::temp_dir().join(format!("u50_style_test_{}_gone.c", std::process::id()));
-    let req = Request {
-        files: vec![dirty.clone(), missing.clone()],
-        output: Output::Unified,
-        color: false,
-    };
+    let req = unified_request(vec![dirty.clone(), missing.clone()]);
     let report = run_with(&req, &Reindent);
     assert!(report.has_errors());
     assert_eq!(report.results.len(), 1);
