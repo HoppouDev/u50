@@ -297,11 +297,16 @@ only the trait + registry accessors and never a concrete plugin.
 
 ## Verification checklist
 
-- [ ] `cargo test --workspace` — all pass (registry uniqueness + mapping tests included)
-- [ ] `U50_STYLE_GOLDEN=1 cargo test -p u50_style --test golden` — byte-parity
-- [ ] `cargo clippy --workspace --all-targets -- -Dwarnings` — clean
-- [ ] Adding a throwaway test language = 1 module + 1 registry line (spike commit, then reverted)
-- [ ] `grep Language::` in engine.rs/listing.rs/rendering returns only the handle type, no variant names
-- [ ] Registry debug-assert rejects duplicate ids and duplicate extensions
-- [ ] `--status` output byte-identical (order = registry order)
-- [ ] CI green (both OS legs)
+Implemented in commit 5492416. Verified state:
+
+- [x] `cargo test --workspace` — all pass (registry uniqueness + mapping tests included)
+- [x] `U50_STYLE_GOLDEN=1 cargo test -p u50_style --test golden` — byte-parity
+- [x] `cargo clippy --workspace --all-targets -- -Dwarnings` — clean
+- [ ] Adding a throwaway test language = 1 module + 1 registry line — not spiked; the
+      Rust addition during this work was exactly one module + one registry line
+- [x] `grep Language::` in engine.rs/listing.rs/rendering returns only the handle type, no variant names
+- [x] Registry duplicate ids and duplicate extensions are rejected — by the registry
+      uniqueness test (assert-based; the plan's debug-assert variant was not added)
+- [x] `--status` output byte-identical (order = registry order; the cli
+      `status_prints_language_table` test covers the 9-row table)
+- [ ] CI green (both OS legs) — pending push
