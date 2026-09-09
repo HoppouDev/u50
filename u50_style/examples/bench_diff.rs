@@ -24,11 +24,7 @@ const ALL_IN_ONE_GROUP: usize = usize::MAX / 2;
 /// are skipped (printed as `skip`) instead of stalling the whole run.
 const ROW_BUDGET_SECS: u64 = 90;
 
-fn build_diff<'a>(
-    source: &'a str,
-    formatted: &'a str,
-    alg: Algorithm,
-) -> TextDiff<'a, 'a, 'a, str> {
+fn build_diff<'a>(source: &'a str, formatted: &'a str, alg: Algorithm) -> TextDiff<'a, 'a, str> {
     TextDiff::configure()
         .algorithm(alg)
         .diff_lines(source, formatted)

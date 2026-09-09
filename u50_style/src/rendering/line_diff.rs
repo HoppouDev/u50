@@ -60,7 +60,7 @@ pub(crate) fn select_algorithm(source: &str, formatted: &str) -> Algorithm {
 }
 
 /// Diffs the two texts line-wise with the measured algorithm strategy.
-pub(crate) fn line_diff<'a>(source: &'a str, formatted: &'a str) -> TextDiff<'a, 'a, 'a, str> {
+pub(crate) fn line_diff<'a>(source: &'a str, formatted: &'a str) -> TextDiff<'a, 'a, str> {
     TextDiff::configure()
         .algorithm(select_algorithm(source, formatted))
         .diff_lines(source, formatted)
@@ -69,10 +69,7 @@ pub(crate) fn line_diff<'a>(source: &'a str, formatted: &'a str) -> TextDiff<'a,
 /// Line diff for the score renderer: Myers **unconditionally**. The
 /// adaptive Lcs switch is display-only — the score sums the change count
 /// and must match style50's ndiff-based value on every input.
-pub(crate) fn line_diff_score<'a>(
-    source: &'a str,
-    formatted: &'a str,
-) -> TextDiff<'a, 'a, 'a, str> {
+pub(crate) fn line_diff_score<'a>(source: &'a str, formatted: &'a str) -> TextDiff<'a, 'a, str> {
     TextDiff::configure()
         .algorithm(Algorithm::Myers)
         .diff_lines(source, formatted)
