@@ -10,8 +10,6 @@ use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{LazyLock, Mutex};
 
-use crate::language::{Language, missing_tool_message};
-
 use super::ToolOrigin;
 
 /// The u50 style cache root: the absolute `$XDG_CACHE_HOME` override
@@ -142,7 +140,11 @@ pub fn locate_tool(tool: &str) -> Option<(PathBuf, ToolOrigin)> {
     // Tools that cannot be pip-provisioned (rustfmt) resolve from the
     // user's Rust toolchain — deterministic install locations, still
     // never `PATH`.
-    if let Some(path) = crate::language::rust::toolchain_tool(tool) {
+    if let Some(path) = crate::registry::languages()
+        .iter()
+        .find(|plugin| plugin.required_tool() == tool)
+        .and_then(|plugin| plugin.resolve_tool(tool))
+    {
         return Some((path, ToolOrigin::Toolchain));
     }
     None
@@ -164,13 +166,22 @@ pub fn locate_tool(tool: &str) -> Option<(PathBuf, ToolOrigin)> {
 /// missing-tool message) and any error while attaching stdin or waiting
 /// on the child.
 fn spawn_tool(tool: &str, args: &[&str], source: &str) -> anyhow::Result<std::process::Output> {
-    let resolved = locate_tool(tool).map(|(path, _)| path).ok_or_else(|| {
-        anyhow::anyhow!(
-            "{} (not found in {})",
-            missing_tool_message(tool),
-            crate::language::tool_search_scope(tool)
-        )
-    })?;
+    // The owning plugin provides the missing-tool message and the search
+    // scope; tools unknown to the registry keep the generic defaults.
+    let owner = crate::registry::languages()
+        .iter()
+        .copied()
+        .find(|&plugin| plugin.required_tool() == tool);
+    let missing = owner.map_or_else(
+        || format!("`{tool}` is required"),
+        super::super::language::LanguagePlugin::missing_tool_message,
+    );
+    let scope = owner
+        .map_or("the u50 style cache", |plugin| plugin.tool_search_scope())
+        .to_owned();
+    let resolved = locate_tool(tool)
+        .map(|(path, _)| path)
+        .ok_or_else(|| anyhow::anyhow!("{missing} (not found in {scope})"))?;
     let mut command = Command::new(&resolved);
     // The venv console scripts are self-contained, but the interpreter
     // they launch still honors inherited Python env vars: a user's
@@ -199,7 +210,7 @@ fn spawn_tool(tool: &str, args: &[&str], source: &str) -> anyhow::Result<std::pr
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| anyhow::anyhow!("{}: {e}", missing_tool_message(tool)))?;
+        .map_err(|e| anyhow::anyhow!("{missing}: {e}"))?;
     let mut stdin = child
         .stdin
         .take()
@@ -393,10 +404,10 @@ pub(crate) fn ensure_backends(missing: &[(String, String)]) {
 /// [`Cs50Formatter::format`](crate::format::Cs50Formatter::format)) by mapping it to its
 /// pip package and delegating to [`ensure_backends`].
 pub(crate) fn ensure_backend(tool: &str) {
-    let Some(package) = Language::ALL
+    let Some(package) = crate::registry::languages()
         .iter()
-        .find(|&&language| language.required_tool() == tool)
-        .and_then(|language| language.pip_package())
+        .find(|plugin| plugin.required_tool() == tool)
+        .and_then(|plugin| plugin.pip_package())
     else {
         tracing::warn!(tool, "no known pip package provides this tool");
         return;

@@ -10,9 +10,10 @@ use leptos::tachys::view::Position;
 use crate::language::comment_hinted;
 use crate::rendering::doc_flavor::markup_escape;
 use crate::rendering::html_diff::render_html_diff;
-use crate::request::{FileResult, Report};
+use crate::request::{FileResult, Output, Report};
 
 use super::Renderer;
+use super::RendererPlugin;
 
 /// One per-file entry of the HTML report: the template's
 /// `{% if "error" in file %}` / `{% elif file.score == 1.0 %}` / else
@@ -163,6 +164,27 @@ fn html_document(entries: &[HtmlFile]) -> String {
             </head>{ws("\n    ")}<body inner_html = body></body>{ws("\n\n")}</html>
     });
     format!("<!DOCTYPE html>\n{doc}")
+}
+
+/// The HTML report renderer plugin.
+pub(crate) struct HtmlPlugin;
+pub(crate) static PLUGIN: HtmlPlugin = HtmlPlugin;
+
+impl RendererPlugin for HtmlPlugin {
+    fn outputs(&self) -> &'static [Output] {
+        &[Output::Html]
+    }
+
+    fn name(&self) -> &'static str {
+        "html"
+    }
+
+    fn create(&self, _output: Output, _color: bool, out: Box<dyn Write>) -> Box<dyn Renderer> {
+        Box::new(HtmlRenderer {
+            entries: Vec::new(),
+            out,
+        })
+    }
 }
 
 /// Writes the style50-compatible HTML report (style50's `results.html`

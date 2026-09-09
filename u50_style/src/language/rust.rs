@@ -4,7 +4,8 @@
 
 use std::path::PathBuf;
 
-use super::Language;
+use super::LanguagePlugin;
+use super::count_c_family_comments;
 use crate::format::run_tool;
 use crate::format::tool::{is_executable_file, tool_file_name};
 
@@ -29,7 +30,7 @@ const EDITION_ARGS_2021: [&str; 4] = ["--edition", "2021", "--emit", "stdout"];
 /// # Errors
 /// Returns an error when `rustfmt` is missing or fails (e.g. a parse
 /// error).
-pub(crate) fn format(source: &str, _language: Language) -> anyhow::Result<String> {
+fn format_rustfmt(source: &str) -> anyhow::Result<String> {
     match run_tool("rustfmt", &EDITION_ARGS_2024, source) {
         // rustfmt < 1.85: clap rejects the `2024` value before any
         // parsing happens; 2021 still formats the file.
@@ -65,17 +66,7 @@ pub(crate) fn format(source: &str, _language: Language) -> anyhow::Result<String
 /// rooted-but-prefix-less override (e.g. `\\evil`) passes the absolute
 /// filter and resolves against the working directory's drive — it
 /// requires control of the user's environment and is accepted.
-pub(crate) fn toolchain_tool(tool: &str) -> Option<PathBuf> {
-    // Only tools that cannot be pip-provisioned resolve from the
-    // toolchain (derived from [`Language::pip_package`], not a hardcoded
-    // tool name).
-    let language = Language::ALL
-        .iter()
-        .copied()
-        .find(|&language| language.required_tool() == tool)?;
-    if language.pip_package().is_some() {
-        return None;
-    }
+fn toolchain_tool(tool: &str) -> Option<PathBuf> {
     let name = tool_file_name(tool);
     if let Some(rustup) = rustup_home() {
         let mut dirs: Vec<PathBuf> = match std::fs::read_dir(rustup.join("toolchains")) {
@@ -144,4 +135,56 @@ fn rustup_home() -> Option<PathBuf> {
     dirs::home_dir()
         .filter(|home| home.is_absolute())
         .map(|home| home.join(".rustup"))
+}
+
+/// The Rust language plugin (a u50 addition — style50 has no Rust
+/// support): the rustfmt backend and the Rust-toolchain tool
+/// resolution, both owned entirely by this module.
+pub(crate) struct RustPlugin;
+pub(crate) static PLUGIN: RustPlugin = RustPlugin;
+
+impl LanguagePlugin for RustPlugin {
+    fn id(&self) -> &'static str {
+        "rust"
+    }
+
+    fn display_name(&self) -> &'static str {
+        "Rust"
+    }
+
+    fn extensions(&self) -> &'static [&'static str] {
+        &["rs"]
+    }
+
+    fn required_tool(&self) -> &'static str {
+        "rustfmt"
+    }
+
+    fn count_comments(&self, code: &str) -> Option<u32> {
+        // Rust shares the C-family counter (line/block/doc comments;
+        // nested block comments count once, raw strings are not
+        // stripped — documented quirks).
+        Some(count_c_family_comments(code))
+    }
+
+    // rustfmt is not pip-installable: it resolves from the Rust
+    // toolchain (see `resolve_tool`) and is never auto-provisioned.
+    fn missing_tool_message(&self) -> String {
+        "`rustfmt` is required to check Rust style (install it with: `rustup component add rustfmt`)".to_owned()
+    }
+
+    fn format(&self, source: &str) -> anyhow::Result<String> {
+        format_rustfmt(source)
+    }
+
+    fn resolve_tool(&self, tool: &str) -> Option<std::path::PathBuf> {
+        if tool != self.required_tool() {
+            return None;
+        }
+        toolchain_tool(tool)
+    }
+
+    fn tool_search_scope(&self) -> &'static str {
+        "the u50 style cache and the Rust toolchain"
+    }
 }

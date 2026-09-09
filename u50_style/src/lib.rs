@@ -5,6 +5,7 @@ mod engine;
 mod format;
 mod language;
 mod listing;
+mod registry;
 mod rendering;
 mod request;
 mod setup;

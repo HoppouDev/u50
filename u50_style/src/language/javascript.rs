@@ -1,6 +1,7 @@
 //! JavaScript: the string-strip pass, and the js-beautify backend.
 
-use super::Language;
+use super::LanguagePlugin;
+use super::count_c_comments;
 use crate::format::run_tool;
 
 /// Formats JavaScript source with `js-beautify` (the short `-w 100` form
@@ -11,7 +12,7 @@ use crate::format::run_tool;
 ///
 /// # Errors
 /// Returns an error when `js-beautify` is missing or fails.
-pub(crate) fn format(source: &str, _language: Language) -> anyhow::Result<String> {
+fn format_js_beautify(source: &str) -> anyhow::Result<String> {
     run_tool(
         "js-beautify",
         &[
@@ -93,4 +94,43 @@ fn same_line_close(
         j += 1;
     }
     None
+}
+
+/// The JavaScript language plugin: the string-strip pass (this module),
+/// the shared C-family comment counter, and the js-beautify backend.
+pub(crate) struct JavaScriptPlugin;
+pub(crate) static PLUGIN: JavaScriptPlugin = JavaScriptPlugin;
+
+impl LanguagePlugin for JavaScriptPlugin {
+    fn id(&self) -> &'static str {
+        "javascript"
+    }
+
+    fn display_name(&self) -> &'static str {
+        "JavaScript"
+    }
+
+    fn extensions(&self) -> &'static [&'static str] {
+        &["js"]
+    }
+
+    fn required_tool(&self) -> &'static str {
+        "js-beautify"
+    }
+
+    fn pip_package(&self) -> Option<&'static str> {
+        Some("jsbeautifier")
+    }
+
+    fn count_comments(&self, code: &str) -> Option<u32> {
+        Some(count_c_comments(&js_strip_strings(code)))
+    }
+
+    fn missing_tool_message(&self) -> String {
+        "`js-beautify` is required to check JavaScript style (pip install jsbeautifier)".to_owned()
+    }
+
+    fn format(&self, source: &str) -> anyhow::Result<String> {
+        format_js_beautify(source)
+    }
 }

@@ -15,6 +15,32 @@ use crate::request::{FileResult, Output, Request};
 pub(crate) const HEADER_RULE: &str = "::::::::::::::";
 
 use super::Renderer;
+use super::RendererPlugin;
+
+/// The console renderer plugin: serves the three text modes
+/// (character/split/unified) through [`ConsoleRenderer`].
+pub(crate) struct ConsolePlugin;
+pub(crate) static PLUGIN: ConsolePlugin = ConsolePlugin;
+
+impl RendererPlugin for ConsolePlugin {
+    fn outputs(&self) -> &'static [Output] {
+        &[Output::Character, Output::Split, Output::Unified]
+    }
+
+    fn name(&self) -> &'static str {
+        "console"
+    }
+
+    fn create(&self, output: Output, color: bool, out: Box<dyn Write>) -> Box<dyn Renderer> {
+        Box::new(ConsoleRenderer {
+            output,
+            color,
+            out,
+            banner_emitted: false,
+            total_files: 0,
+        })
+    }
+}
 
 /// Writes the style50 3.0.0-parity per-file console output and
 /// `error: <path>: <message>` lines to stderr. JSON-mode requests are

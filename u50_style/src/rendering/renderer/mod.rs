@@ -105,32 +105,41 @@ pub trait Renderer {
     fn finish(&mut self, _report: &Report) {}
 }
 
-/// Returns the built-in renderer for `output`: [`JsonRenderer`] for
-/// [`Output::Json`], [`ScoreRenderer`] for [`Output::Score`],
-/// [`HtmlRenderer`] for [`Output::Html`], and [`ConsoleRenderer`] for the
-/// text modes. `out` receives the rendered bytes (stderr output is always
-/// written directly).
+/// One output format, self-contained: builds the [`Renderer`] serving
+/// its outputs. Implemented by a zero-sized struct in the renderer's
+/// own module and registered in `crate::registry::renderers()`.
+pub(crate) trait RendererPlugin: Sync {
+    /// The output formats this plugin serves.
+    fn outputs(&self) -> &'static [Output];
+
+    /// Diagnostics name (`"console"`, `"json"`, ...).
+    fn name(&self) -> &'static str;
+
+    /// Builds the renderer for one run.
+    fn create(&self, output: Output, color: bool, out: Box<dyn Write>) -> Box<dyn Renderer>;
+}
+
+/// Returns the built-in renderer for `output`, looked up in the
+/// renderer registry (one plugin per [`Output`]; the console plugin
+/// serves the three text modes). `out` receives the rendered bytes
+/// (stderr output is always written directly).
+///
+/// # Panics
+/// Panics when no plugin is registered for `output` — impossible for
+/// the compiled-in set, guarded by the registry tests.
 #[must_use]
 pub fn builtin_renderer(output: Output, color: bool, out: Box<dyn Write>) -> Box<dyn Renderer> {
-    match output {
-        Output::Json => Box::new(JsonRenderer { out }),
-        Output::Html => Box::new(HtmlRenderer {
-            entries: Vec::new(),
-            out,
-        }),
-        Output::Score => Box::new(ScoreRenderer {
-            color,
-            out,
-            errors: Vec::new(),
-            diffs: 0.0,
-            lines: 0,
-        }),
-        Output::Character | Output::Split | Output::Unified => Box::new(ConsoleRenderer {
-            output,
-            color,
-            out,
-            banner_emitted: false,
-            total_files: 0,
-        }),
+    if let Some(plugin) = crate::registry::renderers()
+        .iter()
+        .find(|plugin| plugin.outputs().contains(&output))
+    {
+        plugin.create(output, color, out)
+    } else {
+        let known = crate::registry::renderers()
+            .iter()
+            .map(|plugin| plugin.name())
+            .collect::<Vec<_>>()
+            .join(", ");
+        panic!("no renderer plugin registered for {output:?} (registered: {known})")
     }
 }

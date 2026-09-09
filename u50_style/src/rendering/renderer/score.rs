@@ -8,9 +8,10 @@ use similar::ChangeTag;
 use crate::language::{detect_language, style50_count_lines};
 use crate::rendering::line_diff::line_diff_score;
 use crate::rendering::palette::{reset, yellow};
-use crate::request::{FileResult, Report};
+use crate::request::{FileResult, Output, Report};
 
 use super::Renderer;
+use super::RendererPlugin;
 
 /// Formats an `f64` the way Python's `str()` formats style scores: the
 /// shortest decimal string that round-trips, always with a decimal point
@@ -22,6 +23,30 @@ use super::Renderer;
 #[must_use]
 pub(crate) fn py_str_f64(value: f64) -> String {
     format!("{value:?}")
+}
+
+/// The aggregate score renderer plugin.
+pub(crate) struct ScorePlugin;
+pub(crate) static PLUGIN: ScorePlugin = ScorePlugin;
+
+impl RendererPlugin for ScorePlugin {
+    fn outputs(&self) -> &'static [Output] {
+        &[Output::Score]
+    }
+
+    fn name(&self) -> &'static str {
+        "score"
+    }
+
+    fn create(&self, _output: Output, color: bool, out: Box<dyn Write>) -> Box<dyn Renderer> {
+        Box::new(ScoreRenderer {
+            color,
+            out,
+            errors: Vec::new(),
+            diffs: 0.0,
+            lines: 0,
+        })
+    }
 }
 
 /// Writes the style50-compatible aggregate score — a single line such as

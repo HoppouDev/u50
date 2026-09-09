@@ -1,7 +1,7 @@
 //! Python: the tokenize-mirroring comment counter, and the autopep8
 //! backend.
 
-use super::Language;
+use super::LanguagePlugin;
 use crate::format::run_tool;
 
 /// Formats Python source with `autopep8` (the original's library options:
@@ -9,7 +9,7 @@ use crate::format::run_tool;
 ///
 /// # Errors
 /// Returns an error when `autopep8` is missing or fails.
-pub(crate) fn format(source: &str, _language: Language) -> anyhow::Result<String> {
+fn format_autopep8(source: &str) -> anyhow::Result<String> {
     run_tool(
         "autopep8",
         &["-", "--max-line-length=100", "--ignore-local-config"],
@@ -246,4 +246,49 @@ fn string_start(chars: &[char], i: usize) -> Option<(usize, bool, bool, char)> {
         return None;
     }
     Some((j - i, saw_fstring, saw_raw, quote))
+}
+
+/// The Python language plugin: the tokenize-mirroring comment counter
+/// (this module) and the autopep8 backend.
+pub(crate) struct PythonPlugin;
+pub(crate) static PLUGIN: PythonPlugin = PythonPlugin;
+
+impl LanguagePlugin for PythonPlugin {
+    fn id(&self) -> &'static str {
+        "python"
+    }
+
+    fn display_name(&self) -> &'static str {
+        "Python"
+    }
+
+    fn extensions(&self) -> &'static [&'static str] {
+        &["py"]
+    }
+
+    fn required_tool(&self) -> &'static str {
+        "autopep8"
+    }
+
+    fn pip_package(&self) -> Option<&'static str> {
+        Some("autopep8")
+    }
+
+    fn count_comments(&self, code: &str) -> Option<u32> {
+        Some(python_comments(code))
+    }
+
+    // style50's `Python.count_lines` counts ALL lines (blank lines are
+    // relevant to style per PEP 8).
+    fn count_lines(&self, code: &str) -> usize {
+        code.lines().count()
+    }
+
+    fn missing_tool_message(&self) -> String {
+        "`autopep8` is required to check Python style (pip install autopep8)".to_owned()
+    }
+
+    fn format(&self, source: &str) -> anyhow::Result<String> {
+        format_autopep8(source)
+    }
 }

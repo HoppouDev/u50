@@ -1,8 +1,9 @@
 //! The formatter abstraction: the [`Formatter`] trait and the CS50
-//! formatter dispatching to the per-language backends under
-//! [`crate::language`] (which own their tools' invocations).
+//! formatter, which resolves the language's registered plugin from
+//! [`crate::registry`] and delegates to it (the plugin owns its tools'
+//! invocations).
 
-use crate::language::{Language, c, css, html, javascript, python, rust, sql};
+use crate::language::Language;
 
 pub(crate) mod tool;
 
@@ -51,13 +52,12 @@ pub enum ToolOrigin {
 /// `jsbeautifier`, `cssbeautifier`, `sqlparse`); u50 shells out to the
 /// corresponding pip-installed CLIs, which apply the same defaults — plus
 /// rustfmt for Rust (a u50 addition; resolved from the Rust toolchain,
-/// never auto-provisioned). The exact invocation for each backend — its
-/// flags, the CLI quirks they work around, and the byte-parity
-/// verification against the original's library calls — is documented on
-/// the backend itself: [`crate::language::c`], [`crate::language::python`],
-/// [`crate::language::javascript`], [`crate::language::html`],
-/// [`crate::language::css`], [`crate::language::sql`], and
-/// [`crate::language::rust`].
+/// never auto-provisioned). The formatter itself is registry-driven: it
+/// resolves the language's plugin via [`crate::registry::languages`] and
+/// delegates. The exact invocation for each backend — its flags, the CLI
+/// quirks they work around, and the byte-parity verification against the
+/// original's library calls — is documented on the backend plugin module
+/// itself (see [`crate::language`]).
 #[derive(Debug, Clone, Default)]
 pub struct Cs50Formatter;
 
@@ -83,14 +83,6 @@ impl Formatter for Cs50Formatter {
         if locate_tool(tool).is_none() {
             ensure_backend(tool);
         }
-        match language {
-            Language::C | Language::Cpp | Language::Java => c::format(source, language),
-            Language::Python => python::format(source, language),
-            Language::JavaScript => javascript::format(source, language),
-            Language::Html => html::format(source, language),
-            Language::Css => css::format(source, language),
-            Language::Sql => sql::format(source, language),
-            Language::Rust => rust::format(source, language),
-        }
+        language.plugin().format(source)
     }
 }

@@ -14,7 +14,7 @@ fn numbered_lines(prefix: &str, n: usize) -> String {
     out
 }
 use crate::format::{cache_bin_dir, cache_dir, locate_tool, run_tool, venv_bin_dir};
-use crate::language::{Language, comment_hint, count_comments, tool_search_scope};
+use crate::language::{Language, LanguagePlugin, comment_hint, count_comments};
 use crate::rendering::character::render_character;
 use crate::rendering::line_diff::select_algorithm;
 use crate::rendering::palette::{
@@ -26,6 +26,19 @@ use crate::rendering::renderer::score::py_str_f64;
 use crate::rendering::split::render_split;
 use crate::rendering::unified::render_unified;
 use similar::algorithms::Algorithm;
+
+/// A registered language by its machine id (the registry is the single
+/// source of language identity now — there is no enum to name).
+fn lang(id: &str) -> Language {
+    match crate::registry::languages()
+        .iter()
+        .copied()
+        .find(|&p| p.id() == id)
+    {
+        Some(plugin) => Language(plugin),
+        None => panic!("language not registered: {id}"),
+    }
+}
 
 /// Formatter that leaves the source untouched (models a clean file).
 struct Identity;
@@ -196,19 +209,19 @@ fn temp_file(name: &str, contents: &str) -> PathBuf {
 #[test]
 fn detect_language_maps_extensions() {
     let cases = [
-        ("a.c", Some(Language::C)),
-        ("a.h", Some(Language::C)),
-        ("a.cpp", Some(Language::Cpp)),
-        ("a.hpp", Some(Language::Cpp)),
+        ("a.c", Some(lang("c"))),
+        ("a.h", Some(lang("c"))),
+        ("a.cpp", Some(lang("cpp"))),
+        ("a.hpp", Some(lang("cpp"))),
         ("a.cc", None),
         ("a.cxx", None),
-        ("a.java", Some(Language::Java)),
-        ("a.py", Some(Language::Python)),
-        ("a.js", Some(Language::JavaScript)),
-        ("a.html", Some(Language::Html)),
-        ("a.css", Some(Language::Css)),
-        ("a.sql", Some(Language::Sql)),
-        ("a.rs", Some(Language::Rust)),
+        ("a.java", Some(lang("java"))),
+        ("a.py", Some(lang("python"))),
+        ("a.js", Some(lang("javascript"))),
+        ("a.html", Some(lang("html"))),
+        ("a.css", Some(lang("css"))),
+        ("a.sql", Some(lang("sql"))),
+        ("a.rs", Some(lang("rust"))),
         ("a", None),
     ];
     for (name, expected) in cases {
@@ -219,15 +232,15 @@ fn detect_language_maps_extensions() {
 #[test]
 fn required_tool_maps_every_language() {
     let cases = [
-        (Language::C, "clang-format"),
-        (Language::Cpp, "clang-format"),
-        (Language::Java, "clang-format"),
-        (Language::Python, "autopep8"),
-        (Language::JavaScript, "js-beautify"),
-        (Language::Html, "djhtml"),
-        (Language::Css, "css-beautify"),
-        (Language::Sql, "sqlformat"),
-        (Language::Rust, "rustfmt"),
+        (lang("c"), "clang-format"),
+        (lang("cpp"), "clang-format"),
+        (lang("java"), "clang-format"),
+        (lang("python"), "autopep8"),
+        (lang("javascript"), "js-beautify"),
+        (lang("html"), "djhtml"),
+        (lang("css"), "css-beautify"),
+        (lang("sql"), "sqlformat"),
+        (lang("rust"), "rustfmt"),
     ];
     for (language, tool) in cases {
         assert_eq!(language.required_tool(), tool, "for {language:?}");
@@ -390,7 +403,7 @@ fn json_document_multi_file_mixed_clean_and_dirty() {
 
 #[test]
 fn formatter_short_circuits_on_empty_and_whitespace_only_source() {
-    for language in [Language::JavaScript, Language::Python] {
+    for language in [lang("javascript"), lang("python")] {
         assert_eq!(Cs50Formatter.format("", language).expect("ok"), "");
         assert_eq!(Cs50Formatter.format("\n  ", language).expect("ok"), "\n  ");
     }
@@ -991,27 +1004,38 @@ fn large_wholly_changed_input_renders_completely() {
 #[test]
 fn pip_package_maps_every_language_to_its_backend() {
     let cases = [
-        (Language::C, "clang-format"),
-        (Language::Cpp, "clang-format"),
-        (Language::Java, "clang-format"),
-        (Language::Python, "autopep8"),
-        (Language::JavaScript, "jsbeautifier"),
-        (Language::Html, "djhtml"),
-        (Language::Css, "cssbeautifier"),
-        (Language::Sql, "sqlparse"),
+        (lang("c"), "clang-format"),
+        (lang("cpp"), "clang-format"),
+        (lang("java"), "clang-format"),
+        (lang("python"), "autopep8"),
+        (lang("javascript"), "jsbeautifier"),
+        (lang("html"), "djhtml"),
+        (lang("css"), "cssbeautifier"),
+        (lang("sql"), "sqlparse"),
     ];
     for (language, package) in cases {
         assert_eq!(language.pip_package(), Some(package));
     }
     // Rust's rustfmt is not pip-installable: it resolves from the
     // Rust toolchain instead.
-    assert_eq!(Language::Rust.pip_package(), None);
-    // ALL covers every variant exactly once (9 entries, no duplicates).
-    assert_eq!(Language::ALL.len(), 9);
-    let mut seen: Vec<Language> = Vec::new();
-    for &language in &Language::ALL {
-        assert!(!seen.contains(&language), "duplicate in ALL: {language:?}");
-        seen.push(language);
+    assert_eq!(lang("rust").pip_package(), None);
+    // The registry covers every language exactly once (9 entries, no
+    // duplicates), and no two languages claim the same extension.
+    let registry = crate::registry::languages();
+    assert_eq!(registry.len(), 9);
+    let mut seen_ids: Vec<&str> = Vec::new();
+    let mut seen_exts: Vec<&str> = Vec::new();
+    for plugin in registry {
+        assert!(
+            !seen_ids.contains(&plugin.id()),
+            "duplicate id: {}",
+            plugin.id()
+        );
+        seen_ids.push(plugin.id());
+        for ext in plugin.extensions() {
+            assert!(!seen_exts.contains(ext), "duplicate extension: {ext}");
+            seen_exts.push(ext);
+        }
     }
 }
 
@@ -1175,7 +1199,7 @@ fn console_renderer_matches_direct_rendering() {
     for color in [false, true] {
         assert_eq!(
             render_result(&result, Output::Character, color),
-            render_character(source, formatted, color, comment_hint(source, Language::C)),
+            render_character(source, formatted, color, comment_hint(source, lang("c"))),
             "character mode, color={color}"
         );
         assert_eq!(
@@ -1675,7 +1699,7 @@ fn score_end_to_end_via_run_with_renderer() {
 #[test]
 fn c_count_comments_ignores_double_quoted_strings() {
     assert_eq!(
-        count_comments("char *s = \"// not a comment\";\n", Language::C),
+        count_comments("char *s = \"// not a comment\";\n", lang("c")),
         Some(0)
     );
 }
@@ -1683,7 +1707,7 @@ fn c_count_comments_ignores_double_quoted_strings() {
 #[test]
 fn c_count_comments_counts_multiline_block_comments() {
     assert_eq!(
-        count_comments("/* one\ntwo\nthree */\n", Language::C),
+        count_comments("/* one\ntwo\nthree */\n", lang("c")),
         Some(1)
     );
 }
@@ -1693,13 +1717,13 @@ fn c_count_comments_slash_star_slash_never_closes() {
     // `/*/` opens a block whose terminator search starts *after* the two
     // opening characters, so the `*/` inside is the opener itself: the
     // comment never closes and counts nothing.
-    assert_eq!(count_comments("/*/ still open\n", Language::C), Some(0));
+    assert_eq!(count_comments("/*/ still open\n", lang("c")), Some(0));
 }
 
 #[test]
 fn c_count_comments_unclosed_block_counts_nothing() {
     assert_eq!(
-        count_comments("int x; /* never closed\n", Language::C),
+        count_comments("int x; /* never closed\n", lang("c")),
         Some(0)
     );
 }
@@ -1708,21 +1732,21 @@ fn c_count_comments_unclosed_block_counts_nothing() {
 fn rust_count_comments_uses_the_c_family_counter() {
     // Rust shares the C-family counter: line comments, block comments,
     // and doc comments (which are just `//` variants) all count.
-    assert_eq!(count_comments("fn main() {}\n", Language::Rust), Some(0));
+    assert_eq!(count_comments("fn main() {}\n", lang("rust")), Some(0));
     assert_eq!(
-        count_comments("// hi\nfn main() {}\n", Language::Rust),
+        count_comments("// hi\nfn main() {}\n", lang("rust")),
         Some(1)
     );
     assert_eq!(
-        count_comments("/// doc comment\nfn f() {}\n", Language::Rust),
+        count_comments("/// doc comment\nfn f() {}\n", lang("rust")),
         Some(1)
     );
     assert_eq!(
-        count_comments("//! inner doc\n// plain\n", Language::Rust),
+        count_comments("//! inner doc\n// plain\n", lang("rust")),
         Some(2)
     );
     assert_eq!(
-        count_comments("/* one */ fn f() {}\n", Language::Rust),
+        count_comments("/* one */ fn f() {}\n", lang("rust")),
         Some(1)
     );
 }
@@ -1755,18 +1779,32 @@ fn rust_toolchain_sort_prefers_stable_then_newest() {
 fn rust_toolchain_tool_only_resolves_unprovisioned_tools() {
     // pip-provisioned tools never resolve here, and neither do unknown
     // ones — no filesystem access, so the test is hermetic.
-    assert_eq!(crate::language::rust::toolchain_tool("clang-format"), None);
-    assert_eq!(crate::language::rust::toolchain_tool("no-such-tool"), None);
+    assert_eq!(
+        crate::language::rust::PLUGIN.resolve_tool("clang-format"),
+        None
+    );
+    assert_eq!(
+        crate::language::rust::PLUGIN.resolve_tool("no-such-tool"),
+        None
+    );
 }
 
 #[test]
 fn rust_tool_search_scope_splits_pip_from_toolchain() {
-    assert_eq!(tool_search_scope("autopep8"), "the u50 style cache");
+    // The scope and message are plugin-owned: pip-provisioned backends
+    // keep the cache-only default, rustfmt adds the Rust toolchain.
     assert_eq!(
-        tool_search_scope("rustfmt"),
+        lang("python").plugin().tool_search_scope(),
+        "the u50 style cache"
+    );
+    assert_eq!(
+        lang("rust").plugin().tool_search_scope(),
         "the u50 style cache and the Rust toolchain"
     );
-    assert_eq!(tool_search_scope("no-such-tool"), "the u50 style cache");
+    assert_eq!(
+        lang("rust").plugin().missing_tool_message(),
+        "`rustfmt` is required to check Rust style (install it with: `rustup component add rustfmt`)"
+    );
 }
 
 #[test]
@@ -1775,7 +1813,7 @@ fn rust_count_comments_nested_block_counts_once() {
     // closes at the first `*/`, so a nest counts one comment and the
     // trailing `*/` is inert. Documented behavior, not a bug.
     assert_eq!(
-        count_comments("/* one /* two */ */\n", Language::Rust),
+        count_comments("/* one /* two */ */\n", lang("rust")),
         Some(1)
     );
 }
@@ -1783,21 +1821,21 @@ fn rust_count_comments_nested_block_counts_once() {
 #[test]
 fn rust_count_comments_ignores_double_quoted_strings() {
     assert_eq!(
-        count_comments("let s = \"// not a comment\";\n", Language::Rust),
+        count_comments("let s = \"// not a comment\";\n", lang("rust")),
         Some(0)
     );
     assert_eq!(
-        count_comments("let s = \"/* also not */\";\n", Language::Rust),
+        count_comments("let s = \"/* also not */\";\n", lang("rust")),
         Some(0)
     );
 }
 
 #[test]
 fn rust_comment_hint_fires_like_the_c_family() {
-    assert!(comment_hint("fn main() {}\n", Language::Rust));
+    assert!(comment_hint("fn main() {}\n", lang("rust")));
     assert!(!comment_hint(
         "// documented\n/// twice\nfn f() {}\n",
-        Language::Rust
+        lang("rust")
     ));
 }
 
@@ -1805,7 +1843,7 @@ fn rust_comment_hint_fires_like_the_c_family() {
 fn c_count_comments_char_literal_quirk_counts_slashes() {
     // style50 strips only double-quoted strings: `'//'` survives the strip
     // pass and counts one comment (live-probed quirk).
-    assert_eq!(count_comments("char c = '//';\n", Language::C), Some(1));
+    assert_eq!(count_comments("char c = '//';\n", lang("c")), Some(1));
 }
 
 #[test]
@@ -1813,7 +1851,7 @@ fn js_count_comments_multiline_single_quoted_string_later_line() {
     // Js string literals are same-line only: the literal starting on line 1
     // is abandoned at the newline, so the `//` on the later line counts.
     assert_eq!(
-        count_comments("'multi\n// line'\n", Language::JavaScript),
+        count_comments("'multi\n// line'\n", lang("javascript")),
         Some(1)
     );
 }
@@ -1823,7 +1861,7 @@ fn js_count_comments_regex_literal_is_not_a_comment() {
     // A regex literal is consumed to its closing `/`: the `\/\/` inside
     // never surfaces as a `//` comment.
     assert_eq!(
-        count_comments("var re = /a\\/\\/b/;\n", Language::JavaScript),
+        count_comments("var re = /a\\/\\/b/;\n", lang("javascript")),
         Some(0)
     );
 }
@@ -1831,11 +1869,11 @@ fn js_count_comments_regex_literal_is_not_a_comment() {
 #[test]
 fn python_count_comments_module_and_function_docstrings() {
     assert_eq!(
-        count_comments("\"\"\"Module doc.\"\"\"\n", Language::Python),
+        count_comments("\"\"\"Module doc.\"\"\"\n", lang("python")),
         Some(1)
     );
     assert_eq!(
-        count_comments("def f():\n    \"\"\"Doc.\"\"\"\n", Language::Python),
+        count_comments("def f():\n    \"\"\"Doc.\"\"\"\n", lang("python")),
         Some(1)
     );
 }
@@ -1848,7 +1886,7 @@ fn python_count_comments_comment_line_then_docstring() {
     assert_eq!(
         count_comments(
             "def f():\n    # note\n    \"\"\"Doc.\"\"\"\n",
-            Language::Python
+            lang("python")
         ),
         Some(2)
     );
@@ -1857,7 +1895,7 @@ fn python_count_comments_comment_line_then_docstring() {
 #[test]
 fn python_count_comments_fstring_docstring_never_counts() {
     assert_eq!(
-        count_comments("f\"\"\"not a docstring\"\"\"\n", Language::Python),
+        count_comments("f\"\"\"not a docstring\"\"\"\n", lang("python")),
         Some(0)
     );
 }
@@ -1865,7 +1903,7 @@ fn python_count_comments_fstring_docstring_never_counts() {
 #[test]
 fn python_count_comments_hash_inside_string_is_not_a_comment() {
     assert_eq!(
-        count_comments("s = \"# not a comment\"\n", Language::Python),
+        count_comments("s = \"# not a comment\"\n", lang("python")),
         Some(0)
     );
 }
@@ -1877,12 +1915,12 @@ fn comment_hint_boundary_is_strictly_below_ten_percent() {
     // 1 comment in 11 non-blank lines: 1/11 â‰ˆ 0.0909 < 0.10 â†’ hint.
     assert!(comment_hint(
         &format!("/* c */\n{}", numbered_lines("line", 10)),
-        Language::C
+        lang("c")
     ));
     // 1 comment in 10: exactly 0.10 is NOT strictly below the threshold.
     assert!(!comment_hint(
         &format!("/* c */\n{}", numbered_lines("line", 9)),
-        Language::C
+        lang("c")
     ));
 }
 
@@ -1890,15 +1928,12 @@ fn comment_hint_boundary_is_strictly_below_ten_percent() {
 fn comment_hint_fires_for_comment_less_files() {
     // ratio 0 < 0.10: style50 nags every comment-less file (oracle-checked
     // live: `int main(void)\n{\nreturn 0;\n}` gets the hint).
-    assert!(comment_hint(
-        "int main(void)\n{\nreturn 0;\n}\n",
-        Language::C
-    ));
+    assert!(comment_hint("int main(void)\n{\nreturn 0;\n}\n", lang("c")));
 }
 
 #[test]
 fn comment_hint_never_fires_without_a_counter() {
-    for language in [Language::Html, Language::Css, Language::Sql] {
+    for language in [lang("html"), lang("css"), lang("sql")] {
         assert!(
             !comment_hint("<div>whatever</div>\n", language),
             "{language:?} has no count_comments and must never hint"

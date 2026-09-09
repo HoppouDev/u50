@@ -8,6 +8,7 @@ use std::fmt::Write as _;
 
 use crate::format::{ToolOrigin, locate_tool};
 use crate::language::Language;
+use crate::registry;
 
 /// Prints the language/binary/status table to stdout:
 ///
@@ -19,7 +20,8 @@ use crate::language::Language;
 ///
 pub fn list_languages() {
     let mut rows: Vec<(String, String, String, String)> = Vec::new();
-    for &language in &Language::ALL {
+    for &plugin in registry::languages() {
+        let language = Language(plugin);
         let tool = language.required_tool();
         // Bare tool names resolve cache-only (plus the Rust toolchain
         // for rustfmt); the status never claims `PATH` for these tools.

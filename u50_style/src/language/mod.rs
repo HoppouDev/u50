@@ -1,12 +1,12 @@
-//! Language detection, per-language metadata, and the per-language
-//! comment counters. Each language's tokenizer and formatter live in the
-//! language's own module (`c.rs`, `python.rs`, ...); this file holds the
-//! shared enum, detection, the comment-hint arithmetic, the shared
-//! C-family comment counter, and the dispatch to the per-language
-//! counters.
+//! Language plugins and the shared comment-hint arithmetic. Each
+//! language is one module implementing [`LanguagePlugin`] and
+//! registering its `PLUGIN` in [`crate::registry`]; this file holds the
+//! trait, the [`Language`] handle, detection, the comment-hint
+//! arithmetic, and the shared C-family comment counter.
 
 use std::path::Path;
 
+use crate::registry;
 use crate::request::FileResult;
 
 pub(crate) mod c;
@@ -17,157 +17,181 @@ pub(crate) mod python;
 pub(crate) mod rust;
 pub(crate) mod sql;
 
-/// A language whose style can be checked.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Language {
-    /// C (`.c`, `.h`).
-    C,
-    /// C++ (`.cpp`, `.hpp`).
-    Cpp,
-    /// Java (`.java`).
-    Java,
-    /// Python (`.py`).
-    Python,
-    /// JavaScript (`.js`).
-    JavaScript,
-    /// HTML (`.html`).
-    Html,
-    /// CSS (`.css`).
-    Css,
-    /// SQL (`.sql`).
-    Sql,
-    /// Rust (`.rs`) — a u50 addition; the original style50 3.0.0 has no
-    /// Rust support.
-    Rust,
+/// One language, fully self-contained: metadata, detection inputs, the
+/// comment counter, and the formatting backend. Implemented by a
+/// zero-sized struct in the language's own module and registered in
+/// `registry::languages()` — the single core file that names plugins
+/// (the `gate.AddPlugin` analog). Every method has a sensible default
+/// so a minimal plugin implements only the identity methods and
+/// [`LanguagePlugin::format`].
+pub(crate) trait LanguagePlugin: Sync {
+    /// Stable machine id (`"rust"`), also the registry lookup key and
+    /// the [`Language`] equality basis.
+    fn id(&self) -> &'static str;
+
+    /// Human-readable name for `--status` / listings (`"Rust"`).
+    fn display_name(&self) -> &'static str;
+
+    /// File extensions detected for this language.
+    fn extensions(&self) -> &'static [&'static str];
+
+    /// The backing binary; every language has exactly one.
+    fn required_tool(&self) -> &'static str;
+
+    /// The pip package provisioning
+    /// [`required_tool`](Self::required_tool), or `None` when it cannot
+    /// be pip-provisioned (rustfmt resolves from the Rust toolchain
+    /// instead and is never auto-provisioned).
+    fn pip_package(&self) -> Option<&'static str> {
+        None
+    }
+
+    /// Canonical file name passed to tools that lex by filename
+    /// (clang-format's `--assume-filename`); `None` = not applicable.
+    fn assume_filename(&self) -> Option<&'static str> {
+        None
+    }
+
+    /// Comment counter mirroring style50's per-language
+    /// `count_comments`; `None` = the language is never comment-hinted
+    /// (HTML/CSS/SQL).
+    fn count_comments(&self, _code: &str) -> Option<u32> {
+        None
+    }
+
+    /// The style-check line-count rule used as the comment-hint and
+    /// score denominator (default: non-blank lines only).
+    fn count_lines(&self, code: &str) -> usize {
+        code.lines().filter(|line| !line.trim().is_empty()).count()
+    }
+
+    /// Formats normalized source with this language's backend.
+    ///
+    /// # Errors
+    /// Returns an error when the backend is missing or fails.
+    fn format(&self, source: &str) -> anyhow::Result<String>;
+
+    /// Optional fallback resolution for tools that cannot be located
+    /// cache-only (rustfmt resolves from the Rust toolchain); only ever
+    /// called for the plugin owning `tool`. `None` = not resolvable
+    /// here.
+    fn resolve_tool(&self, _tool: &str) -> Option<std::path::PathBuf> {
+        None
+    }
+
+    /// Where a missing [`required_tool`](Self::required_tool) is
+    /// searched, for the not-found error message.
+    fn tool_search_scope(&self) -> &'static str {
+        "the u50 style cache"
+    }
+
+    /// The actionable message shown when
+    /// [`required_tool`](Self::required_tool) is missing.
+    fn missing_tool_message(&self) -> String {
+        format!("`{}` is required", self.required_tool())
+    }
+}
+
+/// A cheap handle to a registered language plugin: `Copy`, compared by
+/// plugin id, and the type [`detect_language`] returns. The plugin
+/// dispatch lives behind the handle — core code never matches on
+/// specific languages.
+#[derive(Clone, Copy)]
+pub struct Language(pub(crate) &'static dyn LanguagePlugin);
+
+impl Language {
+    /// The registered plugin behind this handle.
+    #[must_use]
+    pub(crate) fn plugin(self) -> &'static dyn LanguagePlugin {
+        self.0
+    }
+
+    /// The backing binary (see [`LanguagePlugin::required_tool`]).
+    #[must_use]
+    pub(crate) fn required_tool(self) -> &'static str {
+        self.0.required_tool()
+    }
+
+    /// The pip package (see [`LanguagePlugin::pip_package`]).
+    #[must_use]
+    pub(crate) fn pip_package(self) -> Option<&'static str> {
+        self.0.pip_package()
+    }
+
+    /// The human-readable name (see [`LanguagePlugin::display_name`]).
+    #[must_use]
+    pub(crate) fn display_name(self) -> &'static str {
+        self.0.display_name()
+    }
+
+    /// The detected extensions (see [`LanguagePlugin::extensions`]).
+    #[must_use]
+    pub(crate) fn extensions(self) -> &'static [&'static str] {
+        self.0.extensions()
+    }
 }
 
 impl Language {
-    /// Every supported language, in listing order (C, C++, Java, Python,
-    /// JavaScript, HTML, CSS, SQL — the style50 3.0.0 set — plus Rust, a
-    /// u50 addition).
-    pub(crate) const ALL: [Language; 9] = [
-        Self::C,
-        Self::Cpp,
-        Self::Java,
-        Self::Python,
-        Self::JavaScript,
-        Self::Html,
-        Self::Css,
-        Self::Sql,
-        Self::Rust,
-    ];
-
-    /// Canonical file name used with `--assume-filename` so clang-format
-    /// picks the right lexer for the language (only meaningful for the
-    /// clang-format-backed languages).
+    /// Looks up a registered language plugin by its machine id — the
+    /// plugin-registry analog of gate's plugin lookup by name. `None`
+    /// when no plugin with that id is registered.
     #[must_use]
-    pub(crate) fn file_name(self) -> &'static str {
-        match self {
-            Self::C => "foo.c",
-            Self::Cpp => "foo.cpp",
-            Self::Java => "foo.java",
-            _ => unreachable!("clang-format backend only handles C, C++, and Java"),
-        }
+    pub fn from_id(id: &str) -> Option<Language> {
+        crate::registry::languages()
+            .iter()
+            .copied()
+            .find(|&plugin| plugin.id() == id)
+            .map(Language)
     }
+}
 
-    /// The external formatter binary this language's style check depends
-    /// on — the same tools (or their CLI counterparts) the original
-    /// style50 invokes per `languages.py`. Every supported language has
-    /// one, so this is total.
-    #[must_use]
-    pub(crate) fn required_tool(self) -> &'static str {
-        match self {
-            Self::C | Self::Cpp | Self::Java => "clang-format",
-            Self::Python => "autopep8",
-            Self::JavaScript => "js-beautify",
-            Self::Html => "djhtml",
-            Self::Css => "css-beautify",
-            Self::Sql => "sqlformat",
-            Self::Rust => "rustfmt",
-        }
+impl PartialEq for Language {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.id() == other.0.id()
     }
+}
 
-    /// The pip package that provides this language's formatter backend,
-    /// when one exists: `clang-format` ships a standalone binary wheel,
-    /// the rest are pure-Python packages with console scripts. Rust's
-    /// `rustfmt` is NOT pip-installable — it resolves from the Rust
-    /// toolchain instead (see [`rust::toolchain_tool`]) and cannot be
-    /// auto-provisioned.
-    #[must_use]
-    pub(crate) fn pip_package(self) -> Option<&'static str> {
-        match self {
-            Self::C | Self::Cpp | Self::Java => Some("clang-format"),
-            Self::Python => Some("autopep8"),
-            Self::JavaScript => Some("jsbeautifier"),
-            Self::Html => Some("djhtml"),
-            Self::Css => Some("cssbeautifier"),
-            Self::Sql => Some("sqlparse"),
-            Self::Rust => None,
-        }
-    }
+impl Eq for Language {}
 
-    /// Human-readable name used in listings.
-    #[must_use]
-    pub(crate) fn display_name(self) -> &'static str {
-        match self {
-            Self::C => "C",
-            Self::Cpp => "C++",
-            Self::Java => "Java",
-            Self::Python => "Python",
-            Self::JavaScript => "JavaScript",
-            Self::Html => "HTML",
-            Self::Css => "CSS",
-            Self::Sql => "SQL",
-            Self::Rust => "Rust",
-        }
+impl std::fmt::Debug for Language {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Language({})", self.0.id())
     }
+}
 
-    /// File extensions this language is detected from.
-    #[must_use]
-    pub(crate) fn extensions(self) -> &'static [&'static str] {
-        match self {
-            Self::C => &["c", "h"],
-            Self::Cpp => &["cpp", "hpp"],
-            Self::Java => &["java"],
-            Self::Python => &["py"],
-            Self::JavaScript => &["js"],
-            Self::Html => &["html"],
-            Self::Css => &["css"],
-            Self::Sql => &["sql"],
-            Self::Rust => &["rs"],
-        }
-    }
+/// Detects the language of `path` from its file extension, searching
+/// the registered plugins in registry order (c/h -> C, cpp/hpp -> Cpp,
+/// java -> Java, py -> Python, js -> JavaScript, html -> Html,
+/// css -> Css, sql -> Sql, rs -> Rust).
+#[must_use]
+pub fn detect_language(path: &Path) -> Option<Language> {
+    let ext = path.extension()?.to_str()?;
+    registry::languages()
+        .iter()
+        .copied()
+        .find(|plugin| plugin.extensions().contains(&ext))
+        .map(Language)
 }
 
 /// style50 3.0.0's `COMMENT_MIN`: a file is comment-hinted when its
 /// comment ratio is *strictly* below 0.10.
 const COMMENT_MIN: f64 = 0.10;
 
-/// Counts the lines style50's hint arithmetic uses for `language`: ALL
-/// lines for Python (the original's `Python.count_lines` counts blank
-/// lines too, per PEP 8), non-blank lines only for every other language.
-/// Shared by [`ScoreRenderer`](crate::rendering::renderer::ScoreRenderer) and
+/// Counts the lines style50's hint arithmetic uses for `language`:
+/// the plugin's [`LanguagePlugin::count_lines`] rule (ALL lines for
+/// Python — the original counts blank lines there, per PEP 8 —
+/// non-blank lines only for every other language). Shared by
+/// [`ScoreRenderer`](crate::rendering::renderer::ScoreRenderer) and
 /// [`comment_hint`] so both use the identical denominator.
 pub(crate) fn style50_count_lines(code: &str, language: Language) -> usize {
-    if language == Language::Python {
-        code.lines().count()
-    } else {
-        code.lines().filter(|line| !line.trim().is_empty()).count()
-    }
+    language.plugin().count_lines(code)
 }
 
 /// Counts the comments of `code` the way style50 3.0.0's per-language
-/// `count_comments` does; `None` for languages whose base class has no
-/// counter (HTML, CSS, SQL — those files are never comment-hinted).
+/// `count_comments` does; `None` for languages without a counter
+/// (HTML, CSS, SQL — those files are never comment-hinted).
 pub(crate) fn count_comments(code: &str, language: Language) -> Option<u32> {
-    match language {
-        Language::C | Language::Cpp | Language::Java | Language::Rust => {
-            Some(count_c_comments(&c::c_strip_strings(code)))
-        }
-        Language::JavaScript => Some(count_c_comments(&javascript::js_strip_strings(code))),
-        Language::Python => Some(python::python_comments(code)),
-        Language::Html | Language::Css | Language::Sql => None,
-    }
+    language.plugin().count_comments(code)
 }
 
 /// Whether style50's comments hint fires for `code`: the ratio of comments
@@ -201,14 +225,66 @@ pub(crate) fn comment_hinted(result: &FileResult) -> bool {
         .is_some_and(|(source, language)| comment_hint(source, language))
 }
 
+/// The C/C++/Java/Rust string-strip pass (comment-unaware, linear): removes
+/// every *closed* double-quoted string literal including its quotes.
+/// Escapes (`\x`) skip the next character and literals may span newlines;
+/// an unterminated quote removes nothing and the scan continues right
+/// after the quote character (matching `re.sub` restart semantics: only a
+/// closed `"(?:\\.|[^"\\])*"` match is removed). Single-quoted char
+/// literals are deliberately NOT stripped (style50 quirk, probed:
+/// `char c = '//'` counts one comment) — Rust lifetimes (`'a`) are
+/// therefore safe too.
+pub(crate) fn c_strip_strings(code: &str) -> String {
+    let chars: Vec<char> = code.chars().collect();
+    let mut out = String::with_capacity(code.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '"' {
+            // Try to consume `"(?:\\.|[^"\\])*"` starting here.
+            let mut j = i + 1;
+            let mut closed = false;
+            while j < chars.len() {
+                if chars[j] == '\\' {
+                    if j + 1 >= chars.len() {
+                        break; // dangling escape: the literal cannot close
+                    }
+                    j += 2;
+                } else if chars[j] == '"' {
+                    closed = true;
+                    break;
+                } else {
+                    j += 1;
+                }
+            }
+            if closed {
+                i = j + 1; // remove the literal including both quotes
+            } else {
+                out.push('"');
+                i += 1;
+            }
+        } else {
+            out.push(chars[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Counts the comments of string-stripped C-family text: strip with
+/// [`c_strip_strings`], count with [`count_c_comments`]. One helper so
+/// the C/C++/Java and Rust plugins share the identical pipeline.
+pub(crate) fn count_c_family_comments(code: &str) -> u32 {
+    count_c_comments(&c_strip_strings(code))
+}
+
 /// The shared C-family comment-count pass over string-stripped text
 /// (linear): at `/*` the first `*/` is searched starting *after* the two
 /// opening characters (`/*/` never closes), a found pair resumes scanning
 /// after it and counts one comment, an unclosed `/*` counts nothing and
 /// resumes just after the `/*`; at `//` one comment is counted and the
 /// scan skips to the next newline (or EOF); anything else advances one
-/// character.
-fn count_c_comments(code: &str) -> u32 {
+/// character. Shared by the C/C++/Java and Rust plugins.
+pub(crate) fn count_c_comments(code: &str) -> u32 {
     let chars: Vec<char> = code.chars().collect();
     let mut count = 0;
     let mut i = 0;
@@ -236,70 +312,4 @@ fn count_c_comments(code: &str) -> u32 {
 /// Index of the first `*/` in `haystack`.
 fn find_star_slash(haystack: &[char]) -> Option<usize> {
     (0..haystack.len().saturating_sub(1)).find(|&k| haystack[k] == '*' && haystack[k + 1] == '/')
-}
-
-/// Detects the language of `path` from its file extension
-/// (c/h -> C, cpp/hpp -> Cpp, java -> Java, py -> Python,
-/// js -> JavaScript, html -> Html, css -> Css, sql -> Sql,
-/// rs -> Rust).
-#[must_use]
-pub fn detect_language(path: &Path) -> Option<Language> {
-    let ext = path.extension()?.to_str()?;
-    match ext {
-        "c" | "h" => Some(Language::C),
-        "cpp" | "hpp" => Some(Language::Cpp),
-        "java" => Some(Language::Java),
-        "py" => Some(Language::Python),
-        "js" => Some(Language::JavaScript),
-        "html" => Some(Language::Html),
-        "css" => Some(Language::Css),
-        "sql" => Some(Language::Sql),
-        "rs" => Some(Language::Rust),
-        _ => None,
-    }
-}
-
-/// The actionable message shown when the formatter binary `tool` is
-/// missing (per language, with an install hint).
-pub(crate) fn missing_tool_message(tool: &str) -> String {
-    match tool {
-        "clang-format" => "clang-format is required (>= 14) to check C/C++/Java style".to_owned(),
-        "autopep8" => {
-            "`autopep8` is required to check Python style (pip install autopep8)".to_owned()
-        }
-        "js-beautify" => {
-            "`js-beautify` is required to check JavaScript style (pip install jsbeautifier)"
-                .to_owned()
-        }
-        "djhtml" => "`djhtml` is required to check HTML style (pip install djhtml)".to_owned(),
-        "css-beautify" => {
-            "`css-beautify` is required to check CSS style (pip install cssbeautifier)".to_owned()
-        }
-        "sqlformat" => {
-            "`sqlformat` is required to check SQL style (pip install sqlparse)".to_owned()
-        }
-        "rustfmt" => {
-            "`rustfmt` is required to check Rust style (install it with: `rustup component add rustfmt`)"
-                .to_owned()
-        }
-        other => format!("`{other}` is required"),
-    }
-}
-
-/// Where a missing tool is searched, for the not-found error message:
-/// the u50 style cache for the pip-provisioned backends, plus the Rust
-/// toolchain for the unprovisioned ones (`rustfmt` — derived from
-/// [`Language::pip_package`], not a hardcoded name). Unknown tools keep
-/// the cache-only default.
-pub(crate) fn tool_search_scope(tool: &str) -> &'static str {
-    match Language::ALL
-        .iter()
-        .copied()
-        .find(|&language| language.required_tool() == tool)
-    {
-        Some(language) if language.pip_package().is_none() => {
-            "the u50 style cache and the Rust toolchain"
-        }
-        _ => "the u50 style cache",
-    }
 }

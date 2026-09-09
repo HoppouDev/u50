@@ -15,10 +15,12 @@ use uv_preview::Preview;
 
 use crate::format::{cache_dir, locate_tool};
 use crate::language::Language;
+use crate::registry;
 use pipeline::provision_backends;
 
 /// Computes the distinct missing pip packages, in first-seen language
-/// order: iterates [`Language::ALL`], skips languages whose backing tool
+/// order: iterates the registered language plugins ([`crate::registry`]),
+/// skips languages whose backing tool
 /// `is_resolved`, and dedups by pip package (C/C++/Java all share
 /// `clang-format`, so they collapse to one entry). Pure decision logic so
 /// the missing-backend computation is unit-testable without any
@@ -26,7 +28,8 @@ use pipeline::provision_backends;
 /// runs (it needs network access).
 fn missing_backends(is_resolved: impl Fn(&str) -> bool) -> Vec<(String, String)> {
     let mut missing: Vec<(String, String)> = Vec::new();
-    for &language in &Language::ALL {
+    for &plugin in registry::languages() {
+        let language = Language(plugin);
         let tool = language.required_tool();
         if is_resolved(tool) {
             continue;
@@ -215,9 +218,10 @@ mod tests {
     #[test]
     fn every_pip_package_is_pinned_to_the_tool_versions_fixture() {
         // `tool-versions.txt` is the CI/doc source of truth; every package
-        // reachable from Language::ALL must carry a matching pin.
+        // reachable from the plugin registry must carry a matching pin.
         let txt = include_str!("../../tests/tool-versions.txt");
-        for &language in &crate::language::Language::ALL {
+        for &plugin in crate::registry::languages() {
+            let language = crate::language::Language(plugin);
             let Some(pkg) = language.pip_package() else {
                 continue; // rustfmt: no pip package, nothing to pin
             };

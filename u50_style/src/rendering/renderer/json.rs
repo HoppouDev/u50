@@ -6,9 +6,10 @@ use std::path::Path;
 use serde::Serialize;
 
 use crate::rendering::unified::render_unified;
-use crate::request::{FileResult, Report};
+use crate::request::{FileResult, Output, Report};
 
 use super::Renderer;
+use super::RendererPlugin;
 
 /// The `patch` field for one file of the JSON document: `null` for clean
 /// files (legacy schema), otherwise the unified diff of the normalized
@@ -22,6 +23,24 @@ fn patch(result: &FileResult) -> Option<String> {
         .as_ref()
         .zip(result.formatted.as_ref())
         .map(|(source, formatted)| render_unified(source, formatted, &result.path))
+}
+
+/// The JSON renderer plugin.
+pub(crate) struct JsonPlugin;
+pub(crate) static PLUGIN: JsonPlugin = JsonPlugin;
+
+impl RendererPlugin for JsonPlugin {
+    fn outputs(&self) -> &'static [Output] {
+        &[Output::Json]
+    }
+
+    fn name(&self) -> &'static str {
+        "json"
+    }
+
+    fn create(&self, _output: Output, _color: bool, out: Box<dyn Write>) -> Box<dyn Renderer> {
+        Box::new(JsonRenderer { out })
+    }
 }
 
 /// Writes the machine-readable JSON document (one entry per file, with the

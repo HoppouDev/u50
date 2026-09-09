@@ -31,16 +31,17 @@ use u50_style::{
     run_with, run_with_renderer,
 };
 
-/// (directory under `tests/fixtures`, file extension, language, backing tool).
-const LANGUAGES: &[(&str, &str, Language, &str)] = &[
-    ("c", "c", Language::C, "clang-format"),
-    ("cpp", "cpp", Language::Cpp, "clang-format"),
-    ("java", "java", Language::Java, "clang-format"),
-    ("py", "py", Language::Python, "autopep8"),
-    ("js", "js", Language::JavaScript, "js-beautify"),
-    ("html", "html", Language::Html, "djhtml"),
-    ("css", "css", Language::Css, "css-beautify"),
-    ("sql", "sql", Language::Sql, "sqlformat"),
+/// (directory under `tests/fixtures`, file extension, language id,
+/// backing tool).
+const LANGUAGES: &[(&str, &str, &str, &str)] = &[
+    ("c", "c", "c", "clang-format"),
+    ("cpp", "cpp", "cpp", "clang-format"),
+    ("java", "java", "java", "clang-format"),
+    ("py", "py", "python", "autopep8"),
+    ("js", "js", "javascript", "js-beautify"),
+    ("html", "html", "html", "djhtml"),
+    ("css", "css", "css", "css-beautify"),
+    ("sql", "sql", "sql", "sqlformat"),
 ];
 
 /// Whether the engine can resolve `<tool>` — the same cache-only
@@ -102,7 +103,12 @@ macro_rules! golden_test {
     ($name:ident, $dir:literal, $ext:literal, $language:expr, $tool:literal) => {
         #[test]
         fn $name() {
-            run_golden($dir, $ext, $language, $tool);
+            run_golden(
+                $dir,
+                $ext,
+                Language::from_id($language).expect("registered language"),
+                $tool,
+            );
         }
     };
 }
@@ -170,14 +176,14 @@ fn c_dirty_score_matches_style50() {
     assert_eq!(score, "0.5036334275333064\n");
 }
 
-golden_test!(c_golden, "c", "c", Language::C, "clang-format");
-golden_test!(cpp_golden, "cpp", "cpp", Language::Cpp, "clang-format");
-golden_test!(java_golden, "java", "java", Language::Java, "clang-format");
-golden_test!(python_golden, "py", "py", Language::Python, "autopep8");
-golden_test!(js_golden, "js", "js", Language::JavaScript, "js-beautify");
-golden_test!(html_golden, "html", "html", Language::Html, "djhtml");
-golden_test!(css_golden, "css", "css", Language::Css, "css-beautify");
-golden_test!(sql_golden, "sql", "sql", Language::Sql, "sqlformat");
+golden_test!(c_golden, "c", "c", "c", "clang-format");
+golden_test!(cpp_golden, "cpp", "cpp", "cpp", "clang-format");
+golden_test!(java_golden, "java", "java", "java", "clang-format");
+golden_test!(python_golden, "py", "py", "python", "autopep8");
+golden_test!(js_golden, "js", "js", "javascript", "js-beautify");
+golden_test!(html_golden, "html", "html", "html", "djhtml");
+golden_test!(css_golden, "css", "css", "css", "css-beautify");
+golden_test!(sql_golden, "sql", "sql", "sql", "sqlformat");
 
 /// Every expected fixture must itself be clean per u50's own engine (the same
 /// property style50 verified during generation); gated per language.
