@@ -245,7 +245,14 @@ fn run(cli: Cli, no_color: bool) -> anyhow::Result<ExitCode> {
                     .log_level
                     .map(|level| format!("{level:?}").to_lowercase()),
             })
-            .map(|()| ExitCode::SUCCESS)
+            .map(|passed| {
+                // check50 parity: exit 1 when any check is not passed.
+                if passed {
+                    ExitCode::SUCCESS
+                } else {
+                    ExitCode::from(1)
+                }
+            })
         }
         Some(Command::Style(args)) => {
             if args.files.is_empty() {

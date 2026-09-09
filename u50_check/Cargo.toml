@@ -5,4 +5,11 @@ edition = "2024"
 
 [dependencies]
 anyhow = { workspace = true }
+crossterm = { workspace = true }
+regex = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+serde_yaml = "0.9"
+sha2 = { workspace = true }
+tempfile = { workspace = true }
 tracing = { workspace = true }
