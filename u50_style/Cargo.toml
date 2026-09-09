@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 anyhow = { workspace = true }
 crossterm = { workspace = true }
+dirs = { workspace = true }
 fs-err = { workspace = true }
 fslock = { workspace = true }
 indicatif = { workspace = true }

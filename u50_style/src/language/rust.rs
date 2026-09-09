@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 use super::Language;
 use crate::format::run_tool;
-use crate::format::tool::{is_executable_file, tool_file_name, user_home};
+use crate::format::tool::{is_executable_file, tool_file_name};
 
 /// rustfmt invocation args pinning the edition (see [`format`]).
 const EDITION_ARGS_2024: [&str; 4] = ["--edition", "2024", "--emit", "stdout"];
@@ -126,11 +126,14 @@ fn cargo_home() -> Option<PathBuf> {
     {
         return Some(home);
     }
-    user_home().map(|home| home.join(".cargo"))
+    dirs::home_dir()
+        .filter(|home| home.is_absolute())
+        .map(|home| home.join(".cargo"))
 }
 
 /// `$RUSTUP_HOME` (default `~/.rustup` on unix, `%USERPROFILE%\.rustup`
-/// on Windows); absolute only, as with [`cargo_home`].
+/// on Windows); absolute only, as with [`cargo_home`]. The default home
+/// comes from the [`dirs`] crate.
 fn rustup_home() -> Option<PathBuf> {
     if let Some(home) = std::env::var_os("RUSTUP_HOME")
         .map(PathBuf::from)
@@ -138,5 +141,7 @@ fn rustup_home() -> Option<PathBuf> {
     {
         return Some(home);
     }
-    user_home().map(|home| home.join(".rustup"))
+    dirs::home_dir()
+        .filter(|home| home.is_absolute())
+        .map(|home| home.join(".rustup"))
 }

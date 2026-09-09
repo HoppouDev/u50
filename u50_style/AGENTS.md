@@ -120,9 +120,10 @@ Mapping per language: C/C++/Java → clang-format, Python → autopep8,
 JavaScript → js-beautify, HTML → djhtml, CSS → css-beautify, SQL → sqlformat,
 Rust → rustfmt (`Language::pip_package`, `None` for Rust). u50 installs them **itself** into a uv-managed
 cache — `<base>` → `u50/style50`, where `<base>` is an absolute
-`$XDG_CACHE_HOME` (override, all platforms), else `$HOME/.cache` on Unix and
-`%LOCALAPPDATA%` (i.e. `%USERPROFILE%\AppData\Local`) on Windows (paths built
-by `cache_dir()`; binaries in `cache_bin_dir()` = `<cache>/venv/bin` on Unix,
+`$XDG_CACHE_HOME` (override, all platforms), else the platform standard
+cache directory resolved by the [`dirs`](https://crates.io/crates/dirs)
+crate — `$HOME/.cache` on Unix (XDG-aware), the Local AppData known folder
+on Windows (paths built by `cache_dir()`; binaries in `cache_bin_dir()` = `<cache>/venv/bin` on Unix,
 `<cache>\venv\Scripts` with `.exe` shims on Windows) — with no
 system pip, no distro packages, and no PATH reliance. Tool resolution is
 **cache-only** (see below), so a missing backend is simply one not yet in

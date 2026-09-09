@@ -16,7 +16,7 @@ use super::ToolOrigin;
 
 /// The u50 style cache root: the absolute `$XDG_CACHE_HOME` override
 /// when set (all platforms), else the platform cache base
-/// ([`cache_base`]), then `u50/style50`.
+/// of `dirs::cache_dir()`), then `u50/style50`.
 ///
 /// # Errors
 /// Returns an error when no cache base is determinable: no absolute
@@ -31,7 +31,7 @@ pub(crate) fn cache_dir() -> anyhow::Result<PathBuf> {
     {
         return Ok(xdg.join("u50").join("style50"));
     }
-    let base = cache_base().ok_or_else(|| {
+    let base = dirs::cache_dir().ok_or_else(|| {
         anyhow::anyhow!(if cfg!(windows) {
             "cannot determine the u50 style cache directory: set \
              %LOCALAPPDATA% or %USERPROFILE% (or an absolute \
@@ -43,37 +43,6 @@ pub(crate) fn cache_dir() -> anyhow::Result<PathBuf> {
     })?;
     Ok(base.join("u50").join("style50"))
 }
-
-/// The user home directory: `$HOME` on unix (absolute only — a
-/// relative `$HOME` would silently root cache and toolchain searches at
-/// the working directory), `%USERPROFILE%` on Windows. Shared by the
-/// cache base and the Rust toolchain resolution.
-pub(crate) fn user_home() -> Option<PathBuf> {
-    #[cfg(unix)]
-    let var = "HOME";
-    #[cfg(windows)]
-    let var = "USERPROFILE";
-    std::env::var_os(var)
-        .map(PathBuf::from)
-        .filter(|home| home.is_absolute())
-}
-
-/// The platform cache base (after the `$XDG_CACHE_HOME` override):
-/// `$HOME/.cache` on unix, `%LOCALAPPDATA%` (or
-/// `%USERPROFILE%\AppData\Local`) on Windows.
-#[cfg(unix)]
-fn cache_base() -> Option<PathBuf> {
-    user_home().map(|home| home.join(".cache"))
-}
-
-#[cfg(windows)]
-fn cache_base() -> Option<PathBuf> {
-    std::env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .or_else(|| user_home().map(|home| home.join("AppData").join("Local")))
-}
-
 /// The `bin` directory of a uv-managed venv: `Scripts` on Windows
 /// (where console scripts are installed as `.exe` shims), `bin`
 /// elsewhere (POSIX shebang scripts).
