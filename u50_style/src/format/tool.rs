@@ -1,6 +1,8 @@
 //! Formatter tool plumbing: cache paths, cache-only tool resolution,
 //! process spawning with timeouts, and lazy backend provisioning. No
-//! language-specific logic lives here.
+//! language-specific logic lives here — exception: `locate_tool`
+//! delegates bare-name fallback resolution for tools that cannot be
+//! pip-provisioned (rustfmt) to `language::rust::toolchain_tool`.
 
 use std::collections::HashSet;
 use std::io::{Read, Write};
@@ -141,16 +143,18 @@ fn is_explicit_path(tool: &str) -> bool {
     }
 }
 
-/// Resolves `tool` to its location, cache-only: an explicit path (see
+/// Resolves `tool` to its location: an explicit path (see
 /// [`is_explicit_path`]) is used as-is ([`ToolOrigin::Path`]); a bare
-/// tool name is looked up ONLY in the u50 style cache bin dir (the
+/// tool name is looked up in the u50 style cache bin dir (the
 /// `u50 --setup` / lazy auto-provision install location, with the
-/// platform console-script file name, see [`tool_file_name`]) — the
-/// system `PATH` is never consulted. Returns `None`
-/// when the tool is not in the cache (the caller may then auto-provision
-/// it; see [`Cs50Formatter::format`](crate::format::Cs50Formatter::format))
-/// or when the cache directory
-/// cannot be determined ([`cache_dir`]).
+/// platform console-script file name, see [`tool_file_name`]), then —
+/// for tools that cannot be pip-provisioned (rustfmt) — in the user's
+/// Rust toolchain ([`ToolOrigin::Toolchain`], see
+/// `language/rust.rs::toolchain_tool`). The system `PATH` is never
+/// consulted. Returns `None` when the tool is found nowhere (the caller
+/// may then auto-provision it; see
+/// [`Cs50Formatter::format`](crate::format::Cs50Formatter::format)) or
+/// when the cache directory cannot be determined ([`cache_dir`]).
 #[must_use]
 pub fn locate_tool(tool: &str) -> Option<(PathBuf, ToolOrigin)> {
     if is_explicit_path(tool) {

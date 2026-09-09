@@ -279,7 +279,7 @@ pub(crate) fn missing_tool_message(tool: &str) -> String {
             "`sqlformat` is required to check SQL style (pip install sqlparse)".to_owned()
         }
         "rustfmt" => {
-            "`rustfmt` is required to check Rust style (install it with:              `rustup component add rustfmt`)"
+            "`rustfmt` is required to check Rust style (install it with: `rustup component add rustfmt`)"
                 .to_owned()
         }
         other => format!("`{other}` is required"),
