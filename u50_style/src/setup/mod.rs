@@ -21,8 +21,8 @@ use pipeline::provision_backends;
 /// Computes the distinct missing pip packages, in first-seen language
 /// order: iterates the registered language plugins ([`crate::registry`]),
 /// skips languages whose backing tool
-/// `is_resolved`, and dedups by pip package (C/C++/Java all share
-/// `clang-format`, so they collapse to one entry). Pure decision logic so
+/// `is_resolved`, and dedups by pip package (languages sharing a backend
+/// collapse to one entry). Pure decision logic so
 /// the missing-backend computation is unit-testable without any
 /// provisioning; the uv install path itself is exercised by manual smoke
 /// runs (it needs network access).

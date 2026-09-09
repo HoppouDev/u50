@@ -13,6 +13,7 @@ fn format_djhtml(source: &str) -> anyhow::Result<String> {
 
 /// The HTML language plugin: the djhtml backend (no comment counter —
 /// HTML files are never comment-hinted).
+/// Registered in `crate::registry::languages()`.
 pub(crate) struct HtmlPlugin;
 pub(crate) static PLUGIN: HtmlPlugin = HtmlPlugin;
 

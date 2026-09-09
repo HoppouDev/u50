@@ -1,0 +1,9 @@
+# gitleaks configuration for u50 (extended by pi-lens' secrets lane).
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Untracked build artifacts under target/: any secrets found there are test fixtures compiled from dependency sources, never project source or history (target/ is gitignored and untracked)"
+paths = [
+  "(^|/)target/",
+]

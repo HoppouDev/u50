@@ -38,26 +38,21 @@ pub enum ToolOrigin {
     Path,
     /// Found in the u50 style cache (`~/.cache/u50/style50`).
     Cache,
-    /// Found in the user's Rust toolchain (`$CARGO_HOME/bin` or a
-    /// rustup toolchain bin dir — deterministic install locations,
-    /// never `PATH`); currently only `rustfmt`.
+    /// Found by the owning plugin's toolchain resolver (deterministic
+    /// install locations, never `PATH`).
     Toolchain,
 }
 
-/// Formatter backed by the same per-language external formatters the
-/// original style50 (3.0.0) uses (`style50/languages.py`): clang-format
-/// for C/C++/Java, autopep8 for Python, js-beautify for JavaScript,
-/// djhtml for HTML, cssbeautifier for CSS, and sqlparse for SQL. The
-/// original calls the Python libraries directly (`autopep8`,
-/// `jsbeautifier`, `cssbeautifier`, `sqlparse`); u50 shells out to the
-/// corresponding pip-installed CLIs, which apply the same defaults — plus
-/// rustfmt for Rust (a u50 addition; resolved from the Rust toolchain,
-/// never auto-provisioned). The formatter itself is registry-driven: it
-/// resolves the language's plugin via [`crate::registry::languages`] and
-/// delegates. The exact invocation for each backend — its flags, the CLI
-/// quirks they work around, and the byte-parity verification against the
-/// original's library calls — is documented on the backend plugin module
-/// itself (see [`crate::language`]).
+/// Formatter backed by the registered per-language plugins
+/// (`crate::registry::languages()`), reproducing the original style50
+/// (3.0.0) backend behavior per `style50/languages.py`: where the
+/// original calls Python libraries directly, u50 shells out to the
+/// corresponding pip-installed CLIs with the same option values (and
+/// resolves non-pip tools by other documented means). The exact
+/// invocation for each backend — its flags, the CLI quirks they work
+/// around, and the byte-parity verification against the original's
+/// library calls — is documented on the plugin module itself (see
+/// [`crate::language`]).
 #[derive(Debug, Clone, Default)]
 pub struct Cs50Formatter;
 

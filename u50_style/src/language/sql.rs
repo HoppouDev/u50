@@ -24,6 +24,7 @@ fn format_sqlformat(source: &str) -> anyhow::Result<String> {
 /// The SQL language plugin: the sqlformat backend with its
 /// trailing-newline fix-up (no comment counter — SQL files are never
 /// comment-hinted).
+/// Registered in `crate::registry::languages()`.
 pub(crate) struct SqlPlugin;
 pub(crate) static PLUGIN: SqlPlugin = SqlPlugin;
 

@@ -125,8 +125,8 @@ fn provision_missing_backends(files: &[PathBuf]) {
             continue;
         };
         let tool = language.required_tool();
-        // Languages without a pip package (rustfmt) resolve from the
-        // Rust toolchain and are never auto-provisioned.
+        // Languages whose plugin has no pip package resolve by other
+        // means (e.g. the Rust toolchain) and are never auto-provisioned.
         let Some(pip_package) = language.pip_package() else {
             continue;
         };
@@ -215,9 +215,15 @@ fn process_file(path: &Path, formatter: &dyn Formatter) -> anyhow::Result<FileRe
     let source = std::fs::read_to_string(path)
         .map_err(|e| anyhow::anyhow!("could not read `{}`: {e}", path.display()))?;
     let Some(language) = detect_language(path) else {
+        // The supported set is registry-derived: adding a language never
+        // touches this message.
+        let supported = crate::registry::languages()
+            .iter()
+            .flat_map(|plugin| plugin.extensions().iter().copied())
+            .collect::<Vec<_>>()
+            .join(", ");
         anyhow::bail!(
-            "unsupported file type `{}`; supported extensions: \
-             c, h, cpp, hpp, java, py, js, html, css, sql",
+            "unsupported file type `{}`; supported extensions: {supported}",
             path.display()
         );
     };

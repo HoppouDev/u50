@@ -1,8 +1,8 @@
 //! Formatter tool plumbing: cache paths, cache-only tool resolution,
 //! process spawning with timeouts, and lazy backend provisioning. No
 //! language-specific logic lives here — exception: `locate_tool`
-//! delegates bare-name fallback resolution for tools that cannot be
-//! pip-provisioned (rustfmt) to `language::rust::toolchain_tool`.
+//! delegates bare-name fallback resolution for tools their plugins
+//! cannot pip-provision via [`LanguagePlugin::resolve_tool`].
 
 use std::collections::HashSet;
 use std::io::{Read, Write};
@@ -95,9 +95,8 @@ pub(crate) fn is_executable_file(path: &Path) -> bool {
 /// true when it contains either path separator, or its first path
 /// component is not a plain name — a Windows drive/UNC prefix (which
 /// `Path::join` would let replace the cache dir entirely), `..`, or
-/// `.`. Bare names (`clang-format`) stay cache-only on all platforms,
-/// so a hostile or unrelated same-named binary on `PATH` can never be
-/// picked up.
+/// `.`. Bare tool names stay cache-only on all platforms, so a hostile
+/// or unrelated same-named binary on `PATH` can never be picked up.
 fn is_explicit_path(tool: &str) -> bool {
     if tool.contains('/') || tool.contains('\\') {
         return true;
@@ -115,11 +114,10 @@ fn is_explicit_path(tool: &str) -> bool {
 /// tool name is looked up in the u50 style cache bin dir (the
 /// `u50 --setup` / lazy auto-provision install location, with the
 /// platform console-script file name, see [`tool_file_name`]), then —
-/// for tools that cannot be pip-provisioned (rustfmt) — in the user's
-/// Rust toolchain ([`ToolOrigin::Toolchain`], see
-/// `language/rust.rs::toolchain_tool`). The system `PATH` is never
-/// consulted. Returns `None` when the tool is found nowhere (the caller
-/// may then auto-provision it; see
+/// for tools their plugins cannot pip-provision — through
+/// [`LanguagePlugin::resolve_tool`] ([`ToolOrigin::Toolchain`]). The
+/// system `PATH` is never consulted. Returns `None` when the tool is
+/// found nowhere (the caller may then auto-provision it; see
 /// [`Cs50Formatter::format`](crate::format::Cs50Formatter::format)) or
 /// when the cache directory cannot be determined ([`cache_dir`]).
 #[must_use]
@@ -137,8 +135,8 @@ pub fn locate_tool(tool: &str) -> Option<(PathBuf, ToolOrigin)> {
     {
         return Some((cached, ToolOrigin::Cache));
     }
-    // Tools that cannot be pip-provisioned (rustfmt) resolve from the
-    // user's Rust toolchain — deterministic install locations, still
+    // Tools their plugins cannot pip-provision resolve through the
+    // plugin's own resolver — deterministic install locations, still
     // never `PATH`.
     if let Some(path) = crate::registry::languages()
         .iter()
@@ -339,14 +337,10 @@ fn tool_failure(tool: &str, status: std::process::ExitStatus, stderr: &[u8]) -> 
 }
 
 /// Runs `tool` with `args`, feeding `source` on stdin, tolerating the
-/// "exit 1 means reformatted" diff/black exit-code convention followed
-/// by older `djhtml` releases (the convention `style50/languages.py`
-/// documents for it): exit 0 is success, and exit 1 with non-empty
-/// stdout is also treated as success; anything else is an error. The
-/// installed djhtml (3.0.11; like 3.0.6 before it) always exits 0 (the
-/// source comment is stale for it), so in practice the strict path is
-/// what runs — the leniency keeps u50 compatible with older djhtml
-/// versions too.
+/// "exit 1 means reformatted" convention some backends document (see the
+/// calling plugin module for which backend uses this and why): exit 0 is
+/// success, and exit 1 with non-empty stdout is also treated as success;
+/// anything else is an error.
 pub(crate) fn run_tool_lenient(tool: &str, args: &[&str], source: &str) -> anyhow::Result<String> {
     let output = spawn_tool(tool, args, source)?;
     let reformatted_on_exit_1 = output.status.code() == Some(1) && !output.stdout.is_empty();

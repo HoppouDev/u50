@@ -18,7 +18,8 @@ fn format_css_beautify(source: &str) -> anyhow::Result<String> {
 }
 
 /// The CSS language plugin: the css-beautify backend (no comment
-/// counter — CSS files are never comment-hinted).
+/// counter — CSS files are never comment-hinted). Registered in
+/// `crate::registry::languages()`.
 pub(crate) struct CssPlugin;
 pub(crate) static PLUGIN: CssPlugin = CssPlugin;
 

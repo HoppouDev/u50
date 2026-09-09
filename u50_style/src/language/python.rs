@@ -250,6 +250,7 @@ fn string_start(chars: &[char], i: usize) -> Option<(usize, bool, bool, char)> {
 
 /// The Python language plugin: the tokenize-mirroring comment counter
 /// (this module) and the autopep8 backend.
+/// Registered in `crate::registry::languages()`.
 pub(crate) struct PythonPlugin;
 pub(crate) static PLUGIN: PythonPlugin = PythonPlugin;
 
