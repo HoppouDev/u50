@@ -14,7 +14,7 @@ fn numbered_lines(prefix: &str, n: usize) -> String {
     out
 }
 use crate::format::{cache_bin_dir, cache_dir, locate_tool, run_tool, venv_bin_dir};
-use crate::language::{Language, comment_hint, count_comments};
+use crate::language::{Language, comment_hint, count_comments, tool_search_scope};
 use crate::rendering::character::render_character;
 use crate::rendering::line_diff::select_algorithm;
 use crate::rendering::palette::{
@@ -208,6 +208,7 @@ fn detect_language_maps_extensions() {
         ("a.html", Some(Language::Html)),
         ("a.css", Some(Language::Css)),
         ("a.sql", Some(Language::Sql)),
+        ("a.rs", Some(Language::Rust)),
         ("a", None),
     ];
     for (name, expected) in cases {
@@ -226,6 +227,7 @@ fn required_tool_maps_every_language() {
         (Language::Html, "djhtml"),
         (Language::Css, "css-beautify"),
         (Language::Sql, "sqlformat"),
+        (Language::Rust, "rustfmt"),
     ];
     for (language, tool) in cases {
         assert_eq!(language.required_tool(), tool, "for {language:?}");
@@ -999,10 +1001,13 @@ fn pip_package_maps_every_language_to_its_backend() {
         (Language::Sql, "sqlparse"),
     ];
     for (language, package) in cases {
-        assert_eq!(language.pip_package(), package);
+        assert_eq!(language.pip_package(), Some(package));
     }
-    // ALL covers every variant exactly once (8 entries, no duplicates).
-    assert_eq!(Language::ALL.len(), 8);
+    // Rust's rustfmt is not pip-installable: it resolves from the
+    // Rust toolchain instead.
+    assert_eq!(Language::Rust.pip_package(), None);
+    // ALL covers every variant exactly once (9 entries, no duplicates).
+    assert_eq!(Language::ALL.len(), 9);
     let mut seen: Vec<Language> = Vec::new();
     for &language in &Language::ALL {
         assert!(!seen.contains(&language), "duplicate in ALL: {language:?}");
@@ -1365,7 +1370,7 @@ fn json_renderer_output_matches_json_document_plus_newline() {
 #[test]
 fn json_renderer_output_is_pretty_printed_with_four_space_indent() {
     // style50 pretty-prints its JSON with indent 4; u50 must match the
-    // formatting (the schema itself stays u50's own â€” documented as a
+    // formatting (the schema itself stays u50's own — documented as a
     // by-design divergence in STYLE50_V3_CROSSCHECK.md).
     let dirty = temp_file("jsonpretty.c", DIRTY_C);
     let req = Request {
@@ -1697,6 +1702,103 @@ fn c_count_comments_unclosed_block_counts_nothing() {
         count_comments("int x; /* never closed\n", Language::C),
         Some(0)
     );
+}
+
+#[test]
+fn rust_count_comments_uses_the_c_family_counter() {
+    // Rust shares the C-family counter: line comments, block comments,
+    // and doc comments (which are just `//` variants) all count.
+    assert_eq!(count_comments("fn main() {}\n", Language::Rust), Some(0));
+    assert_eq!(
+        count_comments("// hi\nfn main() {}\n", Language::Rust),
+        Some(1)
+    );
+    assert_eq!(
+        count_comments("/// doc comment\nfn f() {}\n", Language::Rust),
+        Some(1)
+    );
+    assert_eq!(
+        count_comments("//! inner doc\n// plain\n", Language::Rust),
+        Some(2)
+    );
+    assert_eq!(
+        count_comments("/* one */ fn f() {}\n", Language::Rust),
+        Some(1)
+    );
+}
+
+#[test]
+fn rust_toolchain_sort_prefers_stable_then_newest() {
+    let mut dirs = vec![
+        Path::new("/t/nightly-2020-01-01").to_path_buf(),
+        Path::new("/t/stable-x86_64-unknown-linux-gnu").to_path_buf(),
+        Path::new("/t/1.85.0-x86_64-unknown-linux-gnu").to_path_buf(),
+        Path::new("/t/stable-aarch64-apple-darwin").to_path_buf(),
+    ];
+    crate::language::rust::sort_toolchain_dirs(&mut dirs);
+    let names: Vec<&str> = dirs
+        .iter()
+        .map(|p| p.file_name().unwrap().to_str().unwrap())
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "stable-x86_64-unknown-linux-gnu",
+            "stable-aarch64-apple-darwin",
+            "nightly-2020-01-01",
+            "1.85.0-x86_64-unknown-linux-gnu"
+        ]
+    );
+}
+
+#[test]
+fn rust_toolchain_tool_only_resolves_unprovisioned_tools() {
+    // pip-provisioned tools never resolve here, and neither do unknown
+    // ones — no filesystem access, so the test is hermetic.
+    assert_eq!(crate::language::rust::toolchain_tool("clang-format"), None);
+    assert_eq!(crate::language::rust::toolchain_tool("no-such-tool"), None);
+}
+
+#[test]
+fn rust_tool_search_scope_splits_pip_from_toolchain() {
+    assert_eq!(tool_search_scope("autopep8"), "the u50 style cache");
+    assert_eq!(
+        tool_search_scope("rustfmt"),
+        "the u50 style cache and the Rust toolchain"
+    );
+    assert_eq!(tool_search_scope("no-such-tool"), "the u50 style cache");
+}
+
+#[test]
+fn rust_count_comments_nested_block_counts_once() {
+    // Rust allows nested block comments; the shared C-family counter
+    // closes at the first `*/`, so a nest counts one comment and the
+    // trailing `*/` is inert. Documented behavior, not a bug.
+    assert_eq!(
+        count_comments("/* one /* two */ */\n", Language::Rust),
+        Some(1)
+    );
+}
+
+#[test]
+fn rust_count_comments_ignores_double_quoted_strings() {
+    assert_eq!(
+        count_comments("let s = \"// not a comment\";\n", Language::Rust),
+        Some(0)
+    );
+    assert_eq!(
+        count_comments("let s = \"/* also not */\";\n", Language::Rust),
+        Some(0)
+    );
+}
+
+#[test]
+fn rust_comment_hint_fires_like_the_c_family() {
+    assert!(comment_hint("fn main() {}\n", Language::Rust));
+    assert!(!comment_hint(
+        "// documented\n/// twice\nfn f() {}\n",
+        Language::Rust
+    ));
 }
 
 #[test]

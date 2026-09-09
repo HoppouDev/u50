@@ -5,3 +5,5 @@ tmp/
 codeql/
 .env
 .env.*
+# generated code-statistics report
+scc-report.html

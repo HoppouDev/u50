@@ -17,7 +17,8 @@ fn status_prints_language_table() {
     }
     assert!(stdout.contains("-----"), "missing separator rule");
 
-    // Exactly 8 data rows, one per language name.
+    // Exactly 9 data rows, one per language name (the style50 3.0.0 set
+    // plus Rust).
     for name in [
         "C",
         "C++",
@@ -27,6 +28,7 @@ fn status_prints_language_table() {
         "HTML",
         "CSS",
         "SQL",
+        "Rust",
     ] {
         let rows = stdout
             .lines()
@@ -35,15 +37,18 @@ fn status_prints_language_table() {
         assert_eq!(rows, 1, "expected exactly one row for {name}");
     }
 
-    // Status column only ever says found (cache) or missing: bare tool
-    // names resolve cache-only.
+    // Status column only ever says found (cache)/(toolchain) or
+    // missing: bare tool names resolve cache-only (plus the Rust
+    // toolchain for rustfmt); `PATH` is never claimed, and the
+    // `ToolOrigin::Path` arm in the listing is unreachable for bare
+    // names (kept for exhaustiveness).
     for line in stdout.lines().skip(2) {
         if line.trim().is_empty() {
             continue;
         }
         let status = line.rsplit(' ').next().unwrap_or("");
         assert!(
-            ["(cache)", "missing"].contains(&status),
+            ["(cache)", "(toolchain)", "missing"].contains(&status),
             "unexpected status token {status:?} in {line:?}"
         );
     }

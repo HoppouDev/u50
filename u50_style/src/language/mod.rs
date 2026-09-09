@@ -14,6 +14,7 @@ pub(crate) mod css;
 pub(crate) mod html;
 pub(crate) mod javascript;
 pub(crate) mod python;
+pub(crate) mod rust;
 pub(crate) mod sql;
 
 /// A language whose style can be checked.
@@ -35,12 +36,16 @@ pub enum Language {
     Css,
     /// SQL (`.sql`).
     Sql,
+    /// Rust (`.rs`) — a u50 addition; the original style50 3.0.0 has no
+    /// Rust support.
+    Rust,
 }
 
 impl Language {
     /// Every supported language, in listing order (C, C++, Java, Python,
-    /// JavaScript, HTML, CSS, SQL — the style50 3.0.0 set).
-    pub(crate) const ALL: [Language; 8] = [
+    /// JavaScript, HTML, CSS, SQL — the style50 3.0.0 set — plus Rust, a
+    /// u50 addition).
+    pub(crate) const ALL: [Language; 9] = [
         Self::C,
         Self::Cpp,
         Self::Java,
@@ -49,6 +54,7 @@ impl Language {
         Self::Html,
         Self::Css,
         Self::Sql,
+        Self::Rust,
     ];
 
     /// Canonical file name used with `--assume-filename` so clang-format
@@ -77,22 +83,26 @@ impl Language {
             Self::Html => "djhtml",
             Self::Css => "css-beautify",
             Self::Sql => "sqlformat",
+            Self::Rust => "rustfmt",
         }
     }
 
-    /// The pip package that provides this language's formatter backend
-    /// (all backends are pip-installable: `clang-format` ships a standalone
-    /// binary wheel, the rest are pure-Python packages with console
-    /// scripts).
+    /// The pip package that provides this language's formatter backend,
+    /// when one exists: `clang-format` ships a standalone binary wheel,
+    /// the rest are pure-Python packages with console scripts. Rust's
+    /// `rustfmt` is NOT pip-installable — it resolves from the Rust
+    /// toolchain instead (see [`rust::toolchain_tool`]) and cannot be
+    /// auto-provisioned.
     #[must_use]
-    pub(crate) fn pip_package(self) -> &'static str {
+    pub(crate) fn pip_package(self) -> Option<&'static str> {
         match self {
-            Self::C | Self::Cpp | Self::Java => "clang-format",
-            Self::Python => "autopep8",
-            Self::JavaScript => "jsbeautifier",
-            Self::Html => "djhtml",
-            Self::Css => "cssbeautifier",
-            Self::Sql => "sqlparse",
+            Self::C | Self::Cpp | Self::Java => Some("clang-format"),
+            Self::Python => Some("autopep8"),
+            Self::JavaScript => Some("jsbeautifier"),
+            Self::Html => Some("djhtml"),
+            Self::Css => Some("cssbeautifier"),
+            Self::Sql => Some("sqlparse"),
+            Self::Rust => None,
         }
     }
 
@@ -108,6 +118,7 @@ impl Language {
             Self::Html => "HTML",
             Self::Css => "CSS",
             Self::Sql => "SQL",
+            Self::Rust => "Rust",
         }
     }
 
@@ -123,6 +134,7 @@ impl Language {
             Self::Html => &["html"],
             Self::Css => &["css"],
             Self::Sql => &["sql"],
+            Self::Rust => &["rs"],
         }
     }
 }
@@ -149,7 +161,7 @@ pub(crate) fn style50_count_lines(code: &str, language: Language) -> usize {
 /// counter (HTML, CSS, SQL — those files are never comment-hinted).
 pub(crate) fn count_comments(code: &str, language: Language) -> Option<u32> {
     match language {
-        Language::C | Language::Cpp | Language::Java => {
+        Language::C | Language::Cpp | Language::Java | Language::Rust => {
             Some(count_c_comments(&c::c_strip_strings(code)))
         }
         Language::JavaScript => Some(count_c_comments(&javascript::js_strip_strings(code))),
@@ -228,7 +240,8 @@ fn find_star_slash(haystack: &[char]) -> Option<usize> {
 
 /// Detects the language of `path` from its file extension
 /// (c/h -> C, cpp/hpp -> Cpp, java -> Java, py -> Python,
-/// js -> JavaScript, html -> Html, css -> Css, sql -> Sql).
+/// js -> JavaScript, html -> Html, css -> Css, sql -> Sql,
+/// rs -> Rust).
 #[must_use]
 pub fn detect_language(path: &Path) -> Option<Language> {
     let ext = path.extension()?.to_str()?;
@@ -241,6 +254,7 @@ pub fn detect_language(path: &Path) -> Option<Language> {
         "html" => Some(Language::Html),
         "css" => Some(Language::Css),
         "sql" => Some(Language::Sql),
+        "rs" => Some(Language::Rust),
         _ => None,
     }
 }
@@ -264,6 +278,28 @@ pub(crate) fn missing_tool_message(tool: &str) -> String {
         "sqlformat" => {
             "`sqlformat` is required to check SQL style (pip install sqlparse)".to_owned()
         }
+        "rustfmt" => {
+            "`rustfmt` is required to check Rust style (install it with:              `rustup component add rustfmt`)"
+                .to_owned()
+        }
         other => format!("`{other}` is required"),
+    }
+}
+
+/// Where a missing tool is searched, for the not-found error message:
+/// the u50 style cache for the pip-provisioned backends, plus the Rust
+/// toolchain for the unprovisioned ones (`rustfmt` — derived from
+/// [`Language::pip_package`], not a hardcoded name). Unknown tools keep
+/// the cache-only default.
+pub(crate) fn tool_search_scope(tool: &str) -> &'static str {
+    match Language::ALL
+        .iter()
+        .copied()
+        .find(|&language| language.required_tool() == tool)
+    {
+        Some(language) if language.pip_package().is_none() => {
+            "the u50 style cache and the Rust toolchain"
+        }
+        _ => "the u50 style cache",
     }
 }

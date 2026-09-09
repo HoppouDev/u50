@@ -6,9 +6,9 @@ Rust rewrite of [style50](https://github.com/cs50/style50): checks code style an
 
 ## Status
 
-Engine implemented, supporting all 8 languages of style50 3.0.0. Directory arguments are expanded recursively (`expand_paths`, style50 3.0.0's `os.walk` expansion): `run(&Request) -> Report` uses `Cs50Formatter::default()` (impl of the `Formatter` trait, injectable via `run_with` for tests without the formatters installed), renders per-file diffs (`character` with inline char emphasis / `split` / `unified` / `json`) and prints them; the CLI maps `Report::clean()` to exit 0/1.
+Engine implemented, supporting all 8 languages of style50 3.0.0 plus Rust (a u50 addition). Directory arguments are expanded recursively (`expand_paths`, style50 3.0.0's `os.walk` expansion): `run(&Request) -> Report` uses `Cs50Formatter::default()` (impl of the `Formatter` trait, injectable via `run_with` for tests without the formatters installed), renders per-file diffs (`character` with inline char emphasis / `split` / `unified` / `json`) and prints them; the CLI maps `Report::clean()` to exit 0/1.
 
-API: `Language` (`detect_language` by extension for all supported languages; `Language::required_tool() -> Option<&'static str>` names the backing binary), `Formatter` trait, `Cs50Formatter` (`Default` = built-in tools resolved cache-only), `Request { files, output, color }`, `FileResult { path, clean, rendered, formatted }`, `Report { results, errors }` with `clean()` and `has_errors()`. Pure renderers (`render_character`/`render_split`/`render_unified`/`json_document`) take `(source, formatted, ...)` and are unit-testable without the tools.
+API: `Language` (`detect_language` by extension for all supported languages; `Language::required_tool() -> &'static str` names the backing binary and `Language::pip_package() -> Option<&'static str>` its pip package (`None` for rustfmt)), `Formatter` trait, `Cs50Formatter` (`Default` = built-in tools resolved cache-only), `Request { files, output, color }`, `FileResult { path, clean, rendered, formatted }`, `Report { results, errors }` with `clean()` and `has_errors()`. Pure renderers (`render_character`/`render_split`/`render_unified`/`json_document`) take `(source, formatted, ...)` and are unit-testable without the tools.
 
 Per-file errors never abort the run: an unreadable file, unsupported extension, or formatter failure for one file records `(path, message)` in `Report.errors` and processing continues with the remaining files, so earlier results are preserved.
 
@@ -82,18 +82,19 @@ The pure render functions (`render_character`/`render_split`/`render_unified`/`j
 
 ## Language support
 
-All 8 languages of **style50 3.0.0** (per `style50 -E` → `[c, h, cpp, hpp, py, js, java, html, css, sql]`):
+All 8 languages of **style50 3.0.0** (per `style50 -E` → `[c, h, cpp, hpp, py, js, java, html, css, sql]`), plus **Rust** (`.rs`, a u50 addition — style50 has no Rust support):
 
-| Language   | Extensions | Backend tool           | Install hint                         |
-| ---------- | ---------- | ---------------------- | ------------------------------------ |
-| C          | c, h       | `clang-format` (>= 14) | auto-provisioned by u50 on first use |
-| C++        | cpp, hpp   | `clang-format` (>= 14) | auto-provisioned by u50 on first use |
-| Java       | java       | `clang-format` (>= 14) | auto-provisioned by u50 on first use |
-| Python     | py         | `autopep8`             | auto-provisioned by u50 on first use |
-| JavaScript | js         | `js-beautify`          | auto-provisioned by u50 on first use |
-| HTML       | html       | `djhtml`               | auto-provisioned by u50 on first use |
-| CSS        | css        | `css-beautify`         | auto-provisioned by u50 on first use |
-| SQL        | sql        | `sqlformat`            | auto-provisioned by u50 on first use |
+| Language   | Extensions | Backend tool           | Install hint                                            |
+| ---------- | ---------- | ---------------------- | ------------------------------------------------------- |
+| C          | c, h       | `clang-format` (>= 14) | auto-provisioned by u50 on first use                    |
+| C++        | cpp, hpp   | `clang-format` (>= 14) | auto-provisioned by u50 on first use                    |
+| Java       | java       | `clang-format` (>= 14) | auto-provisioned by u50 on first use                    |
+| Python     | py         | `autopep8`             | auto-provisioned by u50 on first use                    |
+| JavaScript | js         | `js-beautify`          | auto-provisioned by u50 on first use                    |
+| HTML       | html       | `djhtml`               | auto-provisioned by u50 on first use                    |
+| CSS        | css        | `css-beautify`         | auto-provisioned by u50 on first use                    |
+| SQL        | sql        | `sqlformat`            | auto-provisioned by u50 on first use                    |
+| Rust       | rs         | `rustfmt` (toolchain)  | `rustup component add rustfmt` — never auto-provisioned |
 
 Per-tool options (mirroring the original's `languages.py` option values; flag names verified against the installed CLIs):
 
@@ -103,17 +104,21 @@ Per-tool options (mirroring the original's `languages.py` option values; flag na
 - HTML: `djhtml -` via the **lenient** runner: exit 0 is success, and exit 1 with non-empty stdout is also treated as success (older djhtml releases followed the diff/black "exit 1 = reformatted" convention, which is what `languages.py`'s `exit=None` accommodates). Observation: the installed djhtml (3.0.6; also the pinned 3.0.11) **always exits 0**, even when it reformats — the source comment is stale for those versions; the lenient runner covers both conventions.
 - CSS: `css-beautify --indent-size 4 --end-with-newline -` (original: `cssbeautifier.beautify(...)` with `indent_size = 4, end_with_newline = True`; verified byte-identical to the library call).
 - SQL: `sqlformat -k upper -r --indent_width 4 -`, with a `\n` appended when the output lacks one (matching the original's `Sql.style` fix-up). `sqlformat` is the CLI of the same `sqlparse` library the original calls; verified byte-identical to `sqlparse.format(code, reindent=True, keyword_case='upper', indent_width=4)` + trailing-newline append.
+- Rust: `rustfmt --edition 2024 --emit stdout` (a u50 addition — style50 has no Rust backend). Requires rustfmt >= 1.85; older releases reject the edition flag before parsing, and the call falls back to `--edition 2021`. rustfmt's own `rustfmt.toml` discovery applies, as with `cargo fmt` — deliberate, since Rust projects pin their style via rustfmt.toml. Comment counting reuses the C-family counter, with two documented quirks: nested block comments (`/* /* */ */`) count once, and raw strings (`r"..."`) are not stripped.
 
-The original calls the Python libraries (`autopep8`, `jsbeautifier`, `cssbeautifier`, `sqlparse`) directly; u50 shells out to the pip CLIs, which apply the same defaults. All backends are auto-provisioned by u50 into its cache on first use (see 'Tool management'); a system-wide `pip install` still works but is not required. When provisioning fails (or is disabled via `U50_STYLE_NO_PROVISION=1`) and the binary is absent, a per-language error is produced, e.g. "`autopep8` is required to check Python style (pip install autopep8)".
+The original calls the Python libraries (`autopep8`, `jsbeautifier`, `cssbeautifier`, `sqlparse`) directly; u50 shells out to the pip CLIs, which apply the same defaults. All pip-installable backends are auto-provisioned by u50 into its cache on first use (see 'Tool management'); a system-wide `pip install` still works but is not required. `rustfmt` is the exception: it cannot be pip-installed, resolves from the Rust toolchain, and is never auto-provisioned — a missing rustfmt produces the per-file error '`rustfmt` is required to check Rust style (install it with: rustup component add rustfmt)'. When provisioning fails (or is disabled via `U50_STYLE_NO_PROVISION=1`) and the binary is absent, a per-language error is produced, e.g. "`autopep8` is required to check Python style (pip install autopep8)".
 
 ## Tool management (`--status` / `--setup`)
 
-The 6 backing formatters are all pip-installable: `clang-format` (standalone
+The 6 pip-installable backing formatters are `clang-format` (standalone
 binary wheel), `autopep8`, `jsbeautifier` (bin `js-beautify`), `djhtml`,
-`cssbeautifier` (bin `css-beautify`), and `sqlparse` (bin `sqlformat`).
+`cssbeautifier` (bin `css-beautify`), and `sqlparse` (bin `sqlformat`);
+the 7th backing formatter, `rustfmt` for Rust, resolves from the Rust
+toolchain instead (see 'Cache-only tool resolution', below) and is never
+auto-provisioned.
 Mapping per language: C/C++/Java → clang-format, Python → autopep8,
-JavaScript → js-beautify, HTML → djhtml, CSS → css-beautify, SQL → sqlformat
-(`Language::pip_package`). u50 installs them **itself** into a uv-managed
+JavaScript → js-beautify, HTML → djhtml, CSS → css-beautify, SQL → sqlformat,
+Rust → rustfmt (`Language::pip_package`, `None` for Rust). u50 installs them **itself** into a uv-managed
 cache — `<base>` → `u50/style50`, where `<base>` is an absolute
 `$XDG_CACHE_HOME` (override, all platforms), else `$HOME/.cache` on Unix and
 `%LOCALAPPDATA%` (i.e. `%USERPROFILE%\AppData\Local`) on Windows (paths built
@@ -133,9 +138,11 @@ flag; the library entry point stays `list_languages()` (see
 `u50_cli/AGENTS.md`).
 
 Prints an aligned table of languages, extensions, backing binary, and
-status. Because bare tool names resolve cache-only, the status is
-`found (cache)` when the binary is in the u50 cache and `missing` when it
-is not — the system `PATH` is never consulted and never reported. `--status`
+status. Because bare tool names resolve cache-only (plus the Rust
+toolchain for rustfmt), the status is `found (cache)` when the binary is
+in the u50 cache, `found (toolchain)` when it resolved from the Rust
+toolchain (rustfmt), and `missing` otherwise — the system `PATH` is
+never consulted and never reported. `--status`
 **never provisions**; it purely reports:
 
 ```text
@@ -149,6 +156,7 @@ JavaScript  js          js-beautify   found (cache)
 HTML        html        djhtml        found (cache)
 CSS         css         css-beautify  found (cache)
 SQL         sql         sqlformat     found (cache)
+Rust        rs          rustfmt       found (toolchain)
 ```
 
 Always exits 0. Combined with `--setup` or a subcommand it is a usage
@@ -205,7 +213,12 @@ per-package outcomes:
 BUILT-IN formatter tools resolve via `locate_tool(tool)`, which resolves
 **bare tool names from `<cache>/venv/bin` ONLY — the system `PATH` is
 never consulted**, so a hostile or unrelated same-named binary on `PATH`
-can never be picked up. A bare built-in tool absent from the cache is
+can never be picked up. The one exception set: `rustfmt` is not
+pip-installable, so after the cache it also resolves from the user's
+**Rust toolchain** (`$CARGO_HOME/bin`, then rustup toolchain bin dirs —
+deterministic install locations, still never `PATH`; see
+`language/rust.rs::toolchain_tool`) and is reported as
+`found (toolchain)` by `--status`. A bare built-in tool absent from the cache is
 never spawned by name (which would let `Command::new` fall back to the OS
 `PATH`): the call sites check `locate_tool` once and emit the standard
 missing-tool error instead of spawning. Cache hits spawn by resolved path.

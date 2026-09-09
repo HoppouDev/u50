@@ -2,7 +2,7 @@
 //! formatter dispatching to the per-language backends under
 //! [`crate::language`] (which own their tools' invocations).
 
-use crate::language::{Language, c, css, html, javascript, python, sql};
+use crate::language::{Language, c, css, html, javascript, python, rust, sql};
 
 pub(crate) mod tool;
 
@@ -37,6 +37,10 @@ pub enum ToolOrigin {
     Path,
     /// Found in the u50 style cache (`~/.cache/u50/style50`).
     Cache,
+    /// Found in the user's Rust toolchain (`$CARGO_HOME/bin` or a
+    /// rustup toolchain bin dir — deterministic install locations,
+    /// never `PATH`); currently only `rustfmt`.
+    Toolchain,
 }
 
 /// Formatter backed by the same per-language external formatters the
@@ -45,13 +49,15 @@ pub enum ToolOrigin {
 /// djhtml for HTML, cssbeautifier for CSS, and sqlparse for SQL. The
 /// original calls the Python libraries directly (`autopep8`,
 /// `jsbeautifier`, `cssbeautifier`, `sqlparse`); u50 shells out to the
-/// corresponding pip-installed CLIs, which apply the same defaults. The
-/// exact invocation for each backend — its flags, the CLI quirks they
-/// work around, and the byte-parity verification against the original's
-/// library calls — is documented on the backend itself:
-/// [`crate::language::c`], [`crate::language::python`],
+/// corresponding pip-installed CLIs, which apply the same defaults — plus
+/// rustfmt for Rust (a u50 addition; resolved from the Rust toolchain,
+/// never auto-provisioned). The exact invocation for each backend — its
+/// flags, the CLI quirks they work around, and the byte-parity
+/// verification against the original's library calls — is documented on
+/// the backend itself: [`crate::language::c`], [`crate::language::python`],
 /// [`crate::language::javascript`], [`crate::language::html`],
-/// [`crate::language::css`], and [`crate::language::sql`].
+/// [`crate::language::css`], [`crate::language::sql`], and
+/// [`crate::language::rust`].
 #[derive(Debug, Clone, Default)]
 pub struct Cs50Formatter;
 
@@ -84,6 +90,7 @@ impl Formatter for Cs50Formatter {
             Language::Html => html::format(source, language),
             Language::Css => css::format(source, language),
             Language::Sql => sql::format(source, language),
+            Language::Rust => rust::format(source, language),
         }
     }
 }

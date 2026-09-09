@@ -527,7 +527,7 @@ fn setup_succeeds_when_every_backend_is_already_cached() {
         "--setup with a full cache must exit 0 (stdout: {stdout}, stderr: {stderr})"
     );
     assert!(
-        stdout.contains("all formatter backends are already available"),
+        stdout.contains("all pip-installable formatter backends are already available"),
         "expected the already-available line: {stdout}"
     );
     assert!(

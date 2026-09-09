@@ -31,7 +31,12 @@ fn missing_backends(is_resolved: impl Fn(&str) -> bool) -> Vec<(String, String)>
         if is_resolved(tool) {
             continue;
         }
-        let pip_package = language.pip_package();
+        // rustfmt has no pip package: it resolves from the Rust
+        // toolchain (or fails at check time with the missing-tool
+        // message), so there is nothing to auto-provision here.
+        let Some(pip_package) = language.pip_package() else {
+            continue;
+        };
         if !missing.iter().any(|(pkg, _)| pkg == pip_package) {
             missing.push((pip_package.to_owned(), tool.to_owned()));
         }
@@ -74,7 +79,10 @@ pub fn setup_missing() -> Result<()> {
     let missing = missing_backends(|tool| locate_tool(tool).is_some());
 
     if missing.is_empty() {
-        println!("all formatter backends are already available");
+        // rustfmt is never auto-provisioned, so "available" here means
+        // the pip-installable set; a missing rustfmt surfaces at check
+        // time with its own install hint.
+        println!("all pip-installable formatter backends are already available");
         return Ok(());
     }
     install_backends(&missing, ProgressTarget::Stdout)
@@ -210,7 +218,9 @@ mod tests {
         // reachable from Language::ALL must carry a matching pin.
         let txt = include_str!("../../tests/tool-versions.txt");
         for &language in &crate::language::Language::ALL {
-            let pkg = language.pip_package();
+            let Some(pkg) = language.pip_package() else {
+                continue; // rustfmt: no pip package, nothing to pin
+            };
             let (_, version) = PINNED_VERSIONS
                 .iter()
                 .find(|(p, _)| *p == pkg)

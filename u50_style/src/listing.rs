@@ -6,7 +6,7 @@
 
 use std::fmt::Write as _;
 
-use crate::format::locate_tool;
+use crate::format::{ToolOrigin, locate_tool};
 use crate::language::Language;
 
 /// Prints the language/binary/status table to stdout:
@@ -21,12 +21,13 @@ pub fn list_languages() {
     let mut rows: Vec<(String, String, String, String)> = Vec::new();
     for &language in &Language::ALL {
         let tool = language.required_tool();
-        // Bare tool names resolve cache-only, so a hit is always a
-        // cache hit (the status never claims `PATH` for these tools).
-        let status = if locate_tool(tool).is_some() {
-            "found (cache)"
-        } else {
-            "missing"
+        // Bare tool names resolve cache-only (plus the Rust toolchain
+        // for rustfmt); the status never claims `PATH` for these tools.
+        let status = match locate_tool(tool) {
+            Some((_, ToolOrigin::Cache)) => "found (cache)",
+            Some((_, ToolOrigin::Toolchain)) => "found (toolchain)",
+            Some((_, ToolOrigin::Path)) => "found (path)",
+            None => "missing",
         };
         rows.push((
             language.display_name().to_owned(),

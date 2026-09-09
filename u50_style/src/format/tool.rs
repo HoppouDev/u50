@@ -42,18 +42,26 @@ pub(crate) fn cache_dir() -> anyhow::Result<PathBuf> {
     Ok(base.join("u50").join("style50"))
 }
 
+/// The user home directory: `$HOME` on unix (absolute only — a
+/// relative `$HOME` would silently root cache and toolchain searches at
+/// the working directory), `%USERPROFILE%` on Windows. Shared by the
+/// cache base and the Rust toolchain resolution.
+pub(crate) fn user_home() -> Option<PathBuf> {
+    #[cfg(unix)]
+    let var = "HOME";
+    #[cfg(windows)]
+    let var = "USERPROFILE";
+    std::env::var_os(var)
+        .map(PathBuf::from)
+        .filter(|home| home.is_absolute())
+}
+
 /// The platform cache base (after the `$XDG_CACHE_HOME` override):
 /// `$HOME/.cache` on unix, `%LOCALAPPDATA%` (or
 /// `%USERPROFILE%\AppData\Local`) on Windows.
 #[cfg(unix)]
 fn cache_base() -> Option<PathBuf> {
-    // Absolute only — a relative $HOME would silently root the cache at
-    // the working directory, exactly the scattering `cache_dir` rules
-    // out (the Windows branch filters the same way).
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .filter(|home| home.is_absolute())
-        .map(|home| home.join(".cache"))
+    user_home().map(|home| home.join(".cache"))
 }
 
 #[cfg(windows)]
@@ -61,12 +69,7 @@ fn cache_base() -> Option<PathBuf> {
     std::env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
-        .or_else(|| {
-            std::env::var_os("USERPROFILE")
-                .map(PathBuf::from)
-                .filter(|p| p.is_absolute())
-                .map(|profile| profile.join("AppData").join("Local"))
-        })
+        .or_else(|| user_home().map(|home| home.join("AppData").join("Local")))
 }
 
 /// The `bin` directory of a uv-managed venv: `Scripts` on Windows
@@ -106,7 +109,7 @@ pub(crate) fn cache_bin_dir() -> anyhow::Result<PathBuf> {
 /// tool: on unix it must carry an execute bit; Windows has no exec-bit
 /// model, so any existing regular file qualifies.
 #[cfg(unix)]
-fn is_executable_file(path: &Path) -> bool {
+pub(crate) fn is_executable_file(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     path.is_file()
         && path
@@ -115,7 +118,7 @@ fn is_executable_file(path: &Path) -> bool {
 }
 
 #[cfg(windows)]
-fn is_executable_file(path: &Path) -> bool {
+pub(crate) fn is_executable_file(path: &Path) -> bool {
     path.is_file()
 }
 
@@ -153,9 +156,21 @@ pub fn locate_tool(tool: &str) -> Option<(PathBuf, ToolOrigin)> {
     if is_explicit_path(tool) {
         return Some((PathBuf::from(tool), ToolOrigin::Path));
     }
-    let cached = cache_bin_dir().ok()?.join(tool_file_name(tool));
-    if is_executable_file(&cached) {
+    // The cache lookup must not short-circuit the toolchain fallback:
+    // when the cache dir cannot even be determined (no `$HOME` etc.), a
+    // toolchain-installed rustfmt must still resolve.
+    if let Some(cached) = cache_bin_dir()
+        .ok()
+        .map(|dir| dir.join(tool_file_name(tool)))
+        .filter(|path| is_executable_file(path))
+    {
         return Some((cached, ToolOrigin::Cache));
+    }
+    // Tools that cannot be pip-provisioned (rustfmt) resolve from the
+    // user's Rust toolchain — deterministic install locations, still
+    // never `PATH`.
+    if let Some(path) = crate::language::rust::toolchain_tool(tool) {
+        return Some((path, ToolOrigin::Toolchain));
     }
     None
 }
@@ -178,8 +193,9 @@ pub fn locate_tool(tool: &str) -> Option<(PathBuf, ToolOrigin)> {
 fn spawn_tool(tool: &str, args: &[&str], source: &str) -> anyhow::Result<std::process::Output> {
     let resolved = locate_tool(tool).map(|(path, _)| path).ok_or_else(|| {
         anyhow::anyhow!(
-            "{} (not found in the u50 style cache)",
-            missing_tool_message(tool)
+            "{} (not found in {})",
+            missing_tool_message(tool),
+            crate::language::tool_search_scope(tool)
         )
     })?;
     let mut command = Command::new(&resolved);
@@ -407,7 +423,7 @@ pub(crate) fn ensure_backend(tool: &str) {
     let Some(package) = Language::ALL
         .iter()
         .find(|&&language| language.required_tool() == tool)
-        .map(|language| language.pip_package())
+        .and_then(|language| language.pip_package())
     else {
         tracing::warn!(tool, "no known pip package provides this tool");
         return;

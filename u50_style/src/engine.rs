@@ -125,8 +125,13 @@ fn provision_missing_backends(files: &[PathBuf]) {
             continue;
         };
         let tool = language.required_tool();
+        // Languages without a pip package (rustfmt) resolve from the
+        // Rust toolchain and are never auto-provisioned.
+        let Some(pip_package) = language.pip_package() else {
+            continue;
+        };
         if seen.insert(tool) && locate_tool(tool).is_none() {
-            missing.push((language.pip_package().to_owned(), tool.to_owned()));
+            missing.push((pip_package.to_owned(), tool.to_owned()));
         }
     }
     ensure_backends(&missing);

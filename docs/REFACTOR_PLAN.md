@@ -48,6 +48,8 @@ u50_style/src/
 │   ├── python.rs             PyTok, PyStringUnit, python_comments,
 │   │                         single_quote_end, close_triple, string_start,
 │   │                         format() → autopep8 invocation
+│   ├── rust.rs               Rust (u50 addition): rustfmt backend + the
+│   │                         Rust-toolchain tool-resolution hook
 │   ├── javascript.rs         js_strip_strings,
 │   │                         format() → js-beautify invocation
 │   ├── html.rs               format() → djhtml invocation (lenient runner)
@@ -130,6 +132,7 @@ fn format(&self, source: &str, language: Language) -> anyhow::Result<String> {
         Language::Html => html::format(source, language),
         Language::Css => css::format(source, language),
         Language::Sql => sql::format(source, language),
+        Language::Rust => rust::format(source, language),
     }
 }
 ```
@@ -143,10 +146,13 @@ fn format(&self, source: &str, language: Language) -> anyhow::Result<String> {
   resolution, cache paths, venv provisioning, process spawning, timeouts.
   It never needs to change when a language changes.
 - **Dependency direction**: `language/*` → `format/tool` for the tool
-  calls, plus one read-only metadata edge back (`format/tool.rs` reads
-  `missing_tool_message` and the `Language` metadata for provisioning).
-  No language module imports another, and `format/mod.rs` only imports
-  the language modules' `format` functions.
+  calls, plus read-only metadata edges back (`format/tool.rs` reads
+  `missing_tool_message`, the `Language` metadata for provisioning, and
+  — for tools that cannot be pip-provisioned — the per-tool toolchain
+  resolution hook `language/rust.rs::toolchain_tool`; a language with a
+  non-pip backend extends that hook). No language module imports
+  another, and `format/mod.rs` only imports the language modules'
+  `format` functions.
 - **Uniform surface**: one `format(source, language)` per language file —
   simpler than a `LanguageFormatter` trait with one impl per language, since
   each formatter is just a fixed CLI invocation.
@@ -285,7 +291,8 @@ isolation checks were grep-verified during the post-refactor review.
 - [x] HTML output byte-parity on all 8 fixtures
 - [ ] CI green (both OS legs) — pending push
 - [x] No language-specific logic remains in `format/` (grep for tool names
-      and configs outside `language/`)
+      and configs outside `language/`) — exception: `locate_tool`
+      delegates non-pip tools to `language/rust.rs::toolchain_tool`
 - [x] Each `language/<lang>.rs` compiles without importing any sibling
       language module (isolation check)
 - [x] No renderer-specific logic remains in `rendering/mod.rs` (only
