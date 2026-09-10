@@ -30,6 +30,7 @@ impl Graph {
     /// by the registry tests).
     #[must_use]
     pub fn new(checks: &[CheckSpec]) -> Self {
+        let mut seen = std::collections::HashSet::new();
         let mut order = Vec::new();
         let mut dependents: HashMap<Option<String>, Vec<String>> = HashMap::new();
         let mut dependency_of = HashMap::new();
@@ -38,6 +39,11 @@ impl Graph {
         let mut hidden = HashMap::new();
         let mut specs = HashMap::new();
         for (index, check) in checks.iter().enumerate() {
+            assert!(
+                seen.insert(check.name.clone()),
+                "duplicate check name `{}` in the check set",
+                check.name
+            );
             order.push(check.name.clone());
             dependents
                 .entry(check.dependency.clone())
@@ -164,5 +170,19 @@ mod tests {
         let checks = vec![spec("exists", None)];
         let graph = Graph::new(&checks);
         assert!(graph.subgraph(&["nope".to_owned()]).is_none());
+    }
+
+    #[test]
+    #[should_panic(expected = "duplicate check name")]
+    fn duplicate_check_names_are_rejected() {
+        let checks = vec![spec("exists", None), spec("exists", None)];
+        let _ = Graph::new(&checks);
+    }
+
+    #[test]
+    fn the_default_timeout_is_applied_when_unset() {
+        let checks = vec![spec("exists", None)];
+        let graph = Graph::new(&checks);
+        assert_eq!(graph.timeouts["exists"], std::time::Duration::from_mins(1));
     }
 }

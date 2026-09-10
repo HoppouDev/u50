@@ -9,13 +9,14 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::Context as _;
 
-use crate::api::CheckContext;
+use crate::api::{CheckContext, ChildRegistry};
 use crate::graph::Graph;
 use crate::plugin::{CheckSpec, RunKind};
 use crate::result::{Cause, CheckResult, ErrorInfo};
@@ -46,6 +47,10 @@ struct Scheduler<'a> {
     state: Arc<Mutex<HashMap<String, CheckState>>>,
     sender: mpsc::Sender<Message>,
     receiver: mpsc::Receiver<Message>,
+    /// Per-check live child processes (killed on timeout).
+    children: HashMap<String, ChildRegistry>,
+    /// Per-check expiry flags (checked by `Run`'s wait loops).
+    expired: HashMap<String, Arc<AtomicBool>>,
     /// Deadlines for in-flight checks (enforced by the receive loop).
     deadlines: HashMap<String, Instant>,
     /// Number of checks that have been finalized (passed, failed, or
@@ -78,8 +83,8 @@ impl<'a> Scheduler<'a> {
         let seed_dir = run_root.join("-");
         crate::api::copy_tree(work_dir, &seed_dir)
             .unwrap_or_else(|e| tracing::warn!(error = %e, "could not seed the working area"));
-        // Forget the TempDir so the run dirs outlive this function; the
-        // caller cleans up via `cleanup`.
+        // Forget the TempDir so the run dirs outlive this function;
+        // `collect` removes the run root once the run is complete.
         let _ = temp.keep();
 
         let log_arcs: HashMap<String, Arc<Mutex<Vec<String>>>> = graph
@@ -94,7 +99,23 @@ impl<'a> Scheduler<'a> {
                 .map(|name| (name.clone(), Arc::new(Mutex::new(serde_json::Map::new()))))
                 .collect();
 
-        let total = graph.order.len();
+        // Only scheduled checks must finalize: with `--target`, checks
+        // outside the subgraph are never dispatched, and counting them
+        // here would hang the loop forever (they are also excluded
+        // from the collected results, like check50's subgraph runs).
+        let total = scheduled.as_ref().map_or(graph.order.len(), |subgraph| {
+            subgraph.values().map(Vec::len).sum()
+        });
+        let children = graph
+            .order
+            .iter()
+            .map(|name| (name.clone(), Arc::new(Mutex::new(Vec::new()))))
+            .collect();
+        let expired = graph
+            .order
+            .iter()
+            .map(|name| (name.clone(), Arc::new(AtomicBool::new(false))))
+            .collect();
         let (sender, receiver) = mpsc::channel();
 
         Ok(Self {
@@ -105,6 +126,8 @@ impl<'a> Scheduler<'a> {
             seed_dir,
             log_arcs,
             data_arcs,
+            children,
+            expired,
             state: Arc::new(Mutex::new(HashMap::new())),
             sender,
             receiver,
@@ -147,8 +170,9 @@ impl<'a> Scheduler<'a> {
             self.check_dir.clone(),
             Arc::clone(&self.log_arcs[name]),
             Arc::clone(&self.data_arcs[name]),
+            Arc::clone(&self.children[name]),
+            Arc::clone(&self.expired[name]),
         );
-        let _hidden = self.graph.hidden.get(name).cloned();
         let kind = spec.run.clone();
         let sender = self.sender.clone();
         let name_owned = name.to_owned();
@@ -274,6 +298,15 @@ impl<'a> Scheduler<'a> {
             .collect();
         for name in expired {
             self.deadlines.remove(&name);
+            // Stop the check's work before recording the timeout: kill
+            // its spawned processes and flag it so any wait loop in a
+            // still-running `Run` aborts instead of racing `collect`.
+            if let Some(flag) = self.expired.get(&name) {
+                flag.store(true, Ordering::Relaxed);
+            }
+            if let Some(children) = self.children.get(&name) {
+                crate::api::kill_tracked_children(children);
+            }
             self.finalized += 1;
             let timeout = self.graph.timeouts[&name].as_secs();
             self.state
@@ -398,9 +431,20 @@ impl<'a> Scheduler<'a> {
         );
         // Clean up the working area.
         let _ = std::fs::remove_dir_all(&self.run_root);
-        self.graph
-            .order
-            .iter()
+        // With `--target`, only the checks of the scheduled subgraph
+        // ran (check50 parity: its subgraph runs report only those
+        // checks); without targets, every check is reported.
+        let names: Vec<&String> = match &self.scheduled {
+            Some(subgraph) => self
+                .graph
+                .order
+                .iter()
+                .filter(|name| subgraph.values().any(|checks| checks.contains(*name)))
+                .collect(),
+            None => self.graph.order.iter().collect(),
+        };
+        names
+            .into_iter()
             .map(|name| {
                 let entry = state.get(name);
                 let mut result =
@@ -437,6 +481,18 @@ impl<'a> Scheduler<'a> {
                 result
                     .description
                     .clone_from(&self.graph.descriptions[name]);
+                if result.passed == Some(false)
+                    && let Some(rationale) = self.graph.hidden.get(name)
+                {
+                    // Hidden check (check50 `@check50.hidden`): suppress
+                    // the log and replace the failure with the generic
+                    // rationale.
+                    result.cause = Some(Cause::Failure {
+                        rationale: rationale.clone(),
+                        help: None,
+                    });
+                    result.log = Vec::new();
+                }
                 result
             })
             .collect()
@@ -507,6 +563,22 @@ pub fn run_checks(
 mod tests {
     use super::*;
     use crate::plugin::RunKind;
+
+    /// A check that always passes (for graph fixtures).
+    fn ok_check() -> RunKind {
+        RunKind::Native(|_ctx: &mut CheckContext| Ok(()))
+    }
+
+    fn passing_spec(name: &str, dependency: Option<&str>) -> CheckSpec {
+        CheckSpec {
+            name: name.to_owned(),
+            description: name.to_owned(),
+            dependency: dependency.map(str::to_owned),
+            timeout: None,
+            hidden_rationale: None,
+            run: ok_check(),
+        }
+    }
 
     fn native(f: fn(&mut CheckContext) -> Result<(), crate::api::Failure>) -> RunKind {
         RunKind::Native(f)
@@ -616,6 +688,116 @@ mod tests {
                 other => panic!("expected a skip cause for {}, got {other:?}", skipped.name),
             }
         }
+    }
+
+    #[test]
+    fn targeted_runs_finish_and_report_only_the_subgraph() {
+        // Regression guard: `total` used to count every check while
+        // only the scheduled subgraph ran, hanging the loop forever.
+        // The run happens on a thread behind a receive timeout, so a
+        // regression fails the test instead of blocking the suite.
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let checks = vec![
+                passing_spec("exists", None),
+                passing_spec("compiles", Some("exists")),
+                passing_spec("runs", Some("compiles")),
+                passing_spec("unrelated", None),
+            ];
+            let check_dir = tempfile::tempdir().expect("check dir");
+            let work_dir = tempfile::tempdir().expect("work dir");
+            let results = run_checks(
+                &checks,
+                check_dir.path(),
+                work_dir.path(),
+                &["runs".to_owned()],
+            );
+            let _ = sender.send(results);
+        });
+        let results = receiver
+            .recv_timeout(Duration::from_secs(30))
+            .expect("targeted run did not finish (scheduler hang?)");
+        assert_eq!(
+            results.iter().map(|r| r.name.clone()).collect::<Vec<_>>(),
+            vec!["exists", "compiles", "runs"],
+            "only the target subgraph is reported, in declaration order"
+        );
+        assert!(results.iter().all(|r| r.passed == Some(true)));
+    }
+
+    #[test]
+    fn a_panicking_check_is_recorded_as_an_error_and_skips_its_dependents() {
+        fn panics(_ctx: &mut CheckContext) -> Result<(), crate::api::Failure> {
+            panic!("boom");
+        }
+        let checks = vec![
+            CheckSpec {
+                name: "explosive".to_owned(),
+                description: "explosive".to_owned(),
+                dependency: None,
+                timeout: None,
+                hidden_rationale: None,
+                run: RunKind::Native(panics),
+            },
+            passing_spec("dependent", Some("explosive")),
+        ];
+        let check_dir = tempfile::tempdir().expect("check dir");
+        let work_dir = tempfile::tempdir().expect("work dir");
+        let results = run_checks(&checks, check_dir.path(), work_dir.path(), &[]);
+        assert_eq!(results[0].passed, None, "a panic is not a pass or a fail");
+        match &results[0].cause {
+            Some(Cause::Error { error, .. }) => {
+                assert_eq!(error.kind, "Panic");
+                assert!(error.value.contains("boom"));
+            }
+            other => panic!("expected an error cause, got {other:?}"),
+        }
+        assert_eq!(results[1].passed, None);
+        match &results[1].cause {
+            Some(Cause::Skipped { rationale }) => {
+                assert_eq!(rationale, "can't check until a frown turns upside down");
+            }
+            other => panic!("expected a skip cause, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_timed_out_check_has_its_spawned_processes_killed() {
+        // The child would leave this marker behind 30 seconds later if
+        // it survived the timeout instead of being killed.
+        let marker = std::env::temp_dir().join("u50-timeout-marker");
+        let _ = std::fs::remove_file(&marker);
+
+        let checks = vec![CheckSpec {
+            name: "slow".to_owned(),
+            description: "slow".to_owned(),
+            dependency: None,
+            timeout: Some(Duration::from_millis(300)),
+            hidden_rationale: None,
+            run: RunKind::Native(|ctx: &mut CheckContext| {
+                let mut run = ctx.run("sleep 30 && touch /tmp/u50-timeout-marker")?;
+                // Ignored: the scheduler kills the child on timeout.
+                let _ = run.exit(None, Duration::from_mins(1));
+                Ok(())
+            }),
+        }];
+        let check_dir = tempfile::tempdir().expect("check dir");
+        let work_dir = tempfile::tempdir().expect("work dir");
+        let results = run_checks(&checks, check_dir.path(), work_dir.path(), &[]);
+        assert_eq!(results[0].passed, Some(false));
+        match &results[0].cause {
+            Some(Cause::Failure { rationale, .. }) => {
+                assert!(rationale.contains("timed out"), "{rationale}");
+            }
+            other => panic!("expected a timeout cause, got {other:?}"),
+        }
+        // A brief grace period: if the child were still alive, the
+        // marker would only appear after its 30-second sleep.
+        std::thread::sleep(Duration::from_millis(500));
+        assert!(
+            !marker.exists(),
+            "the timed-out check's spawned process must be killed"
+        );
     }
 
     #[test]

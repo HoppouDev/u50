@@ -10,8 +10,11 @@
 
 use std::fmt::Write as _;
 use std::io::{Read, Write as _};
+#[cfg(unix)]
+use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -80,6 +83,13 @@ impl From<Eof> for MatchInput {
         Self::Eof
     }
 }
+
+/// A child process shared between a `Run` builder and its check's
+/// registry, so the scheduler can kill it on timeout.
+pub(crate) type SharedChild = Arc<Mutex<Child>>;
+
+/// The per-check registry of live child processes.
+pub(crate) type ChildRegistry = Arc<Mutex<Vec<SharedChild>>>;
 
 /// Signifies a check failure (check50: `check50.Failure`).
 #[derive(Debug, Clone)]
@@ -184,6 +194,12 @@ pub struct CheckContext {
     check_dir: PathBuf,
     log: Arc<Mutex<Vec<String>>>,
     data: Arc<Mutex<serde_json::Map<String, serde_json::Value>>>,
+    /// Live child processes spawned by this check's `Run` builders, so
+    /// the scheduler can kill them when the check times out.
+    children: ChildRegistry,
+    /// Set by the scheduler when the check overruns its timeout; every
+    /// wait loop in `Run` polls it and aborts early.
+    expired: Arc<AtomicBool>,
 }
 
 impl CheckContext {
@@ -192,13 +208,34 @@ impl CheckContext {
         check_dir: PathBuf,
         log: Arc<Mutex<Vec<String>>>,
         data: Arc<Mutex<serde_json::Map<String, serde_json::Value>>>,
+        children: ChildRegistry,
+        expired: Arc<AtomicBool>,
     ) -> Self {
         Self {
             run_dir,
             check_dir,
             log,
             data,
+            children,
+            expired,
         }
+    }
+
+    /// Registers a spawned child with this check (so a scheduler
+    /// timeout can kill it) and returns the shared handle `Run` uses.
+    fn track(ctx: &CheckContext, child: Child) -> SharedChild {
+        let shared = Arc::new(Mutex::new(child));
+        ctx.children
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(Arc::clone(&shared));
+        shared
+    }
+
+    /// Whether the check has overrun its timeout (the scheduler sets
+    /// the shared flag and kills the tracked children on timeout).
+    fn expired(&self) -> bool {
+        self.expired.load(Ordering::Relaxed)
     }
 
     /// Adds a line to the student-visible check log (newlines escaped,
@@ -313,7 +350,7 @@ fn sha256_hex(bytes: &[u8]) -> String {
 /// check).
 pub struct Run<'ctx> {
     ctx: &'ctx mut CheckContext,
-    child: Child,
+    child: Arc<Mutex<Child>>,
     stdin: Option<ChildStdin>,
     out_buf: Arc<Mutex<String>>,
     /// Match cursor: everything before this offset was already consumed
@@ -326,17 +363,28 @@ impl Run<'_> {
     fn spawn<'s>(ctx: &'s mut CheckContext, command: &str) -> Result<Run<'s>, Failure> {
         ctx.log(format!("running {command}..."));
         // bash -c, exactly like check50 (quoting + shell semantics).
-        let mut child = bash_command()
+        let mut command_builder = bash_command();
+        command_builder
             .arg("-c")
             .arg(command)
             .current_dir(&ctx.run_dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stderr(Stdio::piped());
+        // On Unix, the child gets its own process group so killing it
+        // takes down any grandchildren (a check that backgrounds work
+        // must not leak processes past its own teardown).
+        #[cfg(unix)]
+        {
+            command_builder.process_group(0);
+        }
+        let mut child = command_builder
             .spawn()
             .map_err(|e| Failure::new(format!("could not run {command}: {e}")))?;
         let stdin = child.stdin.take();
         let stdout = child.stdout.take();
+        let stderr = child.stderr.take();
+        let child = CheckContext::track(ctx, child);
         // A reader thread accumulates the program's output so every
         // assertion can poll the buffer without blocking the check.
         let out_buf = Arc::new(Mutex::new(String::new()));
@@ -352,6 +400,14 @@ impl Run<'_> {
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .push_str(&String::from_utf8_lossy(&chunk[..n]));
                 }
+            });
+        }
+        // Drain stderr on a thread: a program that fills the OS pipe
+        // buffer would otherwise deadlock against an unread pipe.
+        if let Some(mut stderr) = stderr {
+            std::thread::spawn(move || {
+                let mut sink = String::new();
+                let _ = stderr.read_to_string(&mut sink);
             });
         }
         Ok(Run {
@@ -388,6 +444,9 @@ impl Run<'_> {
             loop {
                 if self.buffer_len() > start {
                     break;
+                }
+                if self.ctx.expired() {
+                    return Err(Failure::new("check timed out"));
                 }
                 if Instant::now() >= deadline {
                     return Err(Failure::new("expected prompt for input, found none"));
@@ -451,16 +510,29 @@ impl Run<'_> {
             })?)
         };
         let deadline = Instant::now() + timeout;
+        // usize::MAX forces a match attempt on the first iteration (the
+        // program may have buffered output before we started waiting).
+        let mut last_len = usize::MAX;
         loop {
-            let buffer = self.buffer();
-            let unconsumed = &buffer[self.cursor.min(buffer.len())..];
-            if !eof && let Some(end) = matcher.find(unconsumed) {
-                self.cursor += end;
-                return Ok(self);
+            let len = self.buffer_len();
+            if len != last_len {
+                last_len = len;
+                let buffer = self.buffer();
+                let unconsumed = &buffer[self.cursor.min(buffer.len())..];
+                if !eof && let Some(end) = matcher.find(unconsumed) {
+                    self.cursor += end;
+                    return Ok(self);
+                }
             }
             if self.exited() {
                 // EOF with the expectation still unmet (check50 parity:
-                // report a mismatch against whatever was left).
+                // report a mismatch against whatever was left). Give the
+                // reader thread a bounded window to drain the tail
+                // output first, so the snapshot is the program's final
+                // output rather than whatever had arrived so far.
+                self.quiesce();
+                let buffer = self.buffer();
+                let unconsumed = &buffer[self.cursor.min(buffer.len())..];
                 if eof && unconsumed.is_empty() {
                     return Ok(self); // clean EOF
                 }
@@ -472,6 +544,9 @@ impl Run<'_> {
                     },
                     unconsumed.to_owned(),
                 ));
+            }
+            if self.ctx.expired() {
+                return Err(Failure::new("check timed out"));
             }
             if Instant::now() >= deadline {
                 return Err(Failure::new(format!(
@@ -508,6 +583,9 @@ impl Run<'_> {
                     "expected program to reject input, but it did not",
                 ));
             }
+            if self.ctx.expired() {
+                return Err(Failure::new("check timed out"));
+            }
             std::thread::sleep(Duration::from_millis(25));
         }
         Ok(self)
@@ -539,9 +617,11 @@ impl Run<'_> {
         Ok(Some(actual))
     }
 
-    /// Kills the program.
+    /// Kills the program (and its process group on Unix).
     pub fn kill(&mut self) -> &mut Self {
-        let _ = self.child.kill();
+        if let Ok(mut child) = self.child.lock() {
+            kill_child(&mut child);
+        }
         self.exited = true;
         self
     }
@@ -573,7 +653,32 @@ impl Run<'_> {
     }
 
     fn try_exit(&mut self) -> bool {
-        matches!(self.child.try_wait(), Ok(Some(_)))
+        matches!(
+            self.child
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .try_wait(),
+            Ok(Some(_))
+        )
+    }
+
+    /// Gives the stdout reader thread a bounded window (100 ms of
+    /// stability) to drain the program's tail output. A full `join`
+    /// could block forever when a grandchild survives on a platform
+    /// without process-group kill and holds the pipe open.
+    fn quiesce(&mut self) {
+        let mut last = self.buffer_len();
+        let mut stable = 0;
+        while stable < 4 {
+            std::thread::sleep(Duration::from_millis(25));
+            let len = self.buffer_len();
+            if len == last {
+                stable += 1;
+            } else {
+                stable = 0;
+                last = len;
+            }
+        }
     }
 
     /// Waits until the program exits or `deadline` passes; on exit,
@@ -581,13 +686,23 @@ impl Run<'_> {
     /// exit code (`None` when the program was killed by a signal).
     fn wait_for_exit(&mut self, deadline: Instant) -> Result<Option<i32>, Failure> {
         loop {
-            if let Some(status) = self
-                .child
-                .try_wait()
-                .map_err(|_| Failure::new("could not wait for the program"))?
-            {
+            // Scope the mutex guard so it is dropped before the mutable
+            // borrow that `quiesce` takes.
+            let maybe_status = {
+                let mut child = self
+                    .child
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                child
+                    .try_wait()
+                    .map_err(|_| Failure::new("could not wait for the program"))?
+            };
+            if let Some(status) = maybe_status {
                 self.exited = true;
                 drop(self.stdin.take());
+                // Make sure the exit-time stdout snapshot sees the
+                // program's complete output.
+                self.quiesce();
                 if status.signal_of_segfault() {
                     return Err(Failure::new(
                         "failed to execute program due to segmentation fault",
@@ -595,8 +710,16 @@ impl Run<'_> {
                 }
                 return Ok(status.code());
             }
+            if self.ctx.expired() {
+                if let Ok(mut child) = self.child.lock() {
+                    kill_child(&mut child);
+                }
+                return Err(Failure::new("check timed out"));
+            }
             if Instant::now() >= deadline {
-                let _ = self.child.kill();
+                if let Ok(mut child) = self.child.lock() {
+                    kill_child(&mut child);
+                }
                 return Err(Failure::new("timed out while waiting for program to exit"));
             }
             std::thread::sleep(Duration::from_millis(25));
@@ -607,9 +730,12 @@ impl Run<'_> {
 impl Drop for Run<'_> {
     fn drop(&mut self) {
         // check50's good-practice note: never leave spawned programs
-        // running past the check.
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        // running past the check. The child runs in its own process
+        // group (Unix), so this takes down grandchildren as well.
+        if let Ok(mut child) = self.child.lock() {
+            kill_child(&mut child);
+            let _ = child.wait();
+        }
     }
 }
 
@@ -672,6 +798,13 @@ pub fn copy_tree(src: &Path, dst: &Path) -> anyhow::Result<()> {
             std::fs::read_dir(src).with_context(|| format!("could not read {}", src.display()))?
         {
             let entry = entry?;
+            // Never follow symlinks from student code: a cycle would
+            // recurse forever, and a link could point anywhere on the
+            // host filesystem.
+            if entry.file_type().is_ok_and(|ft| ft.is_symlink()) {
+                tracing::warn!(path = %entry.path().display(), "skipping symlink");
+                continue;
+            }
             copy_tree(&entry.path(), &dst.join(entry.file_name()))?;
         }
         Ok(())
@@ -682,6 +815,46 @@ pub fn copy_tree(src: &Path, dst: &Path) -> anyhow::Result<()> {
         std::fs::copy(src, dst)
             .with_context(|| format!("could not copy {} to {}", src.display(), dst.display()))?;
         Ok(())
+    }
+}
+
+/// Kills a spawned check process, including its process group on Unix
+/// (`bash -c` grandchildren survive a plain kill of the shell
+/// otherwise). The child was spawned in its own process group (see
+/// `spawn`), so the group id is the child's pid; an already-dead group
+/// just yields ESRCH.
+///
+/// # Panics
+/// Never (a failed `killpg` is ignored in favor of the direct kill).
+pub(crate) fn kill_child(child: &mut Child) {
+    #[cfg(unix)]
+    {
+        // Pids fit in i32 by definition; a conversion failure falls
+        // through to the direct kill below.
+        if let Ok(pid) = libc::pid_t::try_from(child.id()) {
+            // SAFETY: killpg only sends a signal to a process group; any
+            // failure (e.g. the group is already gone) is ignored.
+            unsafe {
+                libc::killpg(pid, libc::SIGKILL);
+            }
+        }
+    }
+    let _ = child.kill();
+}
+
+/// Kills and reaps every tracked child of a check (shared by
+/// `CheckContext::kill_children` and the scheduler's timeout path).
+pub(crate) fn kill_tracked_children(children: &ChildRegistry) {
+    let drained = children
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .drain(..)
+        .collect::<Vec<_>>();
+    for child in drained {
+        if let Ok(mut child) = child.lock() {
+            kill_child(&mut child);
+            let _ = child.wait();
+        }
     }
 }
 
@@ -742,6 +915,8 @@ mod tests {
             dir.to_path_buf(),
             Arc::new(Mutex::new(Vec::new())),
             Arc::new(Mutex::new(serde_json::Map::new())),
+            Arc::new(Mutex::new(Vec::new())),
+            Arc::new(AtomicBool::new(false)),
         )
     }
 
@@ -759,6 +934,17 @@ mod tests {
         let mut ctx = context(dir.path());
         let err = ctx.exists(["missing.txt"]).unwrap_err();
         assert!(err.rationale.contains("not found"));
+    }
+
+    #[test]
+    fn hash_resolves_against_run_dir_not_the_process_cwd() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("payload.bin"), b"u50").expect("write");
+        let mut ctx = context(dir.path());
+        // The process cwd is the crate root during tests, so success
+        // here proves the path was resolved against run_dir.
+        let digest = ctx.hash("payload.bin").expect("hash");
+        assert_eq!(digest, sha256_hex(b"u50"));
     }
 
     #[test]
@@ -821,11 +1007,26 @@ mod tests {
     }
 
     #[test]
-    fn decimal_regex_matches_the_exact_number_only() {
-        let pattern = decimal_regex(42.0);
-        let re = regex::Regex::new(&pattern).expect("valid regex");
-        assert!(re.is_match("42"));
-        assert!(!re.is_match("420"));
-        assert!(!re.is_match("142"));
+    fn decimal_regex_rejects_numbers_embedded_in_larger_numbers() {
+        // (number, text, expected match). The last two cases are
+        // documented divergences: check50's lookaround accepts a lone
+        // trailing period and a leading period; the regex crate cannot
+        // express those boundaries, so the port rejects them.
+        for (number, text, matches) in [
+            (42.0, "42", true),
+            (42.0, "420", false),
+            (42.0, "142", false),
+            (42.0, "42.5", false),
+            (42.0, "-42", false),
+            (42.0, "42.", false),
+            (42.0, ".42", false),
+            (-42.0, "-42", true),
+            (-42.0, "-420", false),
+            (0.5, "0.5", true),
+            (0.5, "10.5", false),
+        ] {
+            let re = regex::Regex::new(&decimal_regex(number)).expect("valid regex");
+            assert_eq!(re.is_match(text), matches, "decimal {number} vs {text:?}");
+        }
     }
 }
