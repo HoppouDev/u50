@@ -326,7 +326,7 @@ impl Run<'_> {
     fn spawn<'s>(ctx: &'s mut CheckContext, command: &str) -> Result<Run<'s>, Failure> {
         ctx.log(format!("running {command}..."));
         // bash -c, exactly like check50 (quoting + shell semantics).
-        let mut child = Command::new("bash")
+        let mut child = bash_command()
             .arg("-c")
             .arg(command)
             .current_dir(&ctx.run_dir)
@@ -683,6 +683,32 @@ pub fn copy_tree(src: &Path, dst: &Path) -> anyhow::Result<()> {
             .with_context(|| format!("could not copy {} to {}", src.display(), dst.display()))?;
         Ok(())
     }
+}
+
+/// Resolves a real POSIX shell to run check commands through.
+///
+/// On Unix, `bash` on `PATH` is a real shell. On Windows, the first
+/// `bash` found on `PATH` (including inside a GitHub Actions runner)
+/// is frequently `%SystemRoot%\\System32\\bash.exe` — the WSL launcher
+/// stub, which fails immediately when no WSL distribution is installed
+/// rather than running the command. Git for Windows ships a real
+/// `bash.exe` at a fixed location; prefer it explicitly so check
+/// commands (which use POSIX shell syntax check50 checks rely on) run
+/// the same way on every platform.
+fn bash_command() -> Command {
+    #[cfg(windows)]
+    {
+        for candidate in [
+            "C:\\Program Files\\Git\\bin\\bash.exe",
+            "C:\\Program Files\\Git\\usr\\bin\\bash.exe",
+            "C:\\Program Files (x86)\\Git\\bin\\bash.exe",
+        ] {
+            if Path::new(candidate).is_file() {
+                return Command::new(candidate);
+            }
+        }
+    }
+    Command::new("bash")
 }
 
 trait ExitStatusExt {
