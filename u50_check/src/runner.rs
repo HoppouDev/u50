@@ -24,11 +24,6 @@ use crate::result::{Cause, CheckResult, ErrorInfo};
 /// check50 truncates logs to `max_log_lines` (100) with a `...` head.
 const MAX_LOG_LINES: usize = 100;
 
-/// The completion message from a check thread.
-enum Message {
-    Done(String, CheckResult),
-}
-
 /// Per-check runtime state.
 struct CheckState {
     result: Option<CheckResult>,
@@ -45,8 +40,8 @@ struct Scheduler<'a> {
     log_arcs: HashMap<String, Arc<Mutex<Vec<String>>>>,
     data_arcs: HashMap<String, Arc<Mutex<serde_json::Map<String, serde_json::Value>>>>,
     state: Arc<Mutex<HashMap<String, CheckState>>>,
-    sender: mpsc::Sender<Message>,
-    receiver: mpsc::Receiver<Message>,
+    sender: mpsc::Sender<CheckResult>,
+    receiver: mpsc::Receiver<CheckResult>,
     /// Per-check live child processes (killed on timeout).
     children: HashMap<String, ChildRegistry>,
     /// Per-check expiry flags (checked by `Run`'s wait loops).
@@ -60,6 +55,9 @@ struct Scheduler<'a> {
     total: usize,
     /// The target subgraph (None = run all checks).
     scheduled: Option<HashMap<Option<String>, Vec<String>>>,
+    /// The temp working area; dropped with the scheduler, which
+    /// removes the run dirs on every exit path (no leak).
+    _work_area: tempfile::TempDir,
 }
 
 impl<'a> Scheduler<'a> {
@@ -81,11 +79,14 @@ impl<'a> Scheduler<'a> {
             .context("could not create the check working area")?;
         let run_root = temp.path().to_path_buf();
         let seed_dir = run_root.join("-");
-        crate::api::copy_tree(work_dir, &seed_dir)
-            .unwrap_or_else(|e| tracing::warn!(error = %e, "could not seed the working area"));
-        // Forget the TempDir so the run dirs outlive this function;
-        // `collect` removes the run root once the run is complete.
-        let _ = temp.keep();
+        // A failed seed copy is a hard error: every check would
+        // otherwise silently run against an empty run dir.
+        crate::api::copy_tree(work_dir, &seed_dir).with_context(|| {
+            format!(
+                "could not seed the working area from {}",
+                work_dir.display()
+            )
+        })?;
 
         let log_arcs: HashMap<String, Arc<Mutex<Vec<String>>>> = graph
             .order
@@ -135,6 +136,7 @@ impl<'a> Scheduler<'a> {
             finalized: 0,
             total,
             scheduled,
+            _work_area: temp,
         })
     }
 
@@ -231,8 +233,60 @@ impl<'a> Scheduler<'a> {
                     });
                 }
             }
-            let _ = sender.send(Message::Done(name_owned, result));
+            let _ = sender.send(result);
         });
+    }
+
+    /// Records a finished check's result: stores it, and on pass
+    /// dispatches the dependents (inheriting the run dir); on failure
+    /// immediately cascades skips over all transitive dependents so the
+    /// scheduler never waits on results that will never arrive.
+    fn record_completion(&mut self, result: CheckResult) {
+        let name = result.name.clone();
+        if self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(name.as_str())
+            .is_some_and(|s| s.result.is_some())
+        {
+            return; // late result for a timed-out check
+        }
+        self.finalized += 1;
+        self.deadlines.remove(&name);
+        let passed = result.passed == Some(true);
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_mut(name.as_str())
+            .expect("state was just checked")
+            .result = Some(result);
+        if passed {
+            // Dispatch dependents, inheriting the run dir.
+            let dep_dir = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(name.as_str())
+                .and_then(|s| s.run_dir.clone());
+            let dependents = match &self.scheduled {
+                Some(subgraph) => subgraph
+                    .get(&Some(name.clone()))
+                    .cloned()
+                    .unwrap_or_default(),
+                None => self
+                    .graph
+                    .dependents
+                    .get(&Some(name.clone()))
+                    .cloned()
+                    .unwrap_or_default(),
+            };
+            for dependent in &dependents {
+                self.dispatch(dependent, dep_dir.as_deref());
+            }
+        } else {
+            self.cascade_skip(&name);
+        }
     }
 
     /// Marks `name` (and transitively its dependents) as skipped when a
@@ -253,19 +307,16 @@ impl<'a> Scheduler<'a> {
             .cloned()
             .unwrap_or_default();
         while let Some(current) = stack.pop() {
-            if self
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .contains_key(&current)
             {
-                continue;
-            }
-            self.finalized += 1;
-            self.state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .insert(
+                let mut state = self
+                    .state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if state.contains_key(&current) {
+                    continue;
+                }
+                self.finalized += 1;
+                state.insert(
                     current.clone(),
                     CheckState {
                         result: Some(CheckResult {
@@ -280,6 +331,7 @@ impl<'a> Scheduler<'a> {
                         run_dir: None,
                     },
                 );
+            }
             if let Some(dependents) = self.graph.dependents.get(&Some(current.clone())) {
                 stack.extend(dependents.iter().cloned());
             }
@@ -353,7 +405,15 @@ impl<'a> Scheduler<'a> {
             if self.finalized >= self.total {
                 break;
             }
-            // Enforce timeouts, then wait for a completion.
+            // Collect completions that arrived while we were not
+            // receiving, so a check finishing exactly at its deadline is
+            // recorded with its real result instead of a timeout.
+            while let Ok(result) = self.receiver.try_recv() {
+                self.record_completion(result);
+            }
+            if self.finalized >= self.total {
+                break;
+            }
             self.enforce_timeouts();
             if self.finalized >= self.total {
                 break;
@@ -364,54 +424,7 @@ impl<'a> Scheduler<'a> {
                     .min(Duration::from_millis(50))
             });
             match self.receiver.recv_timeout(wait) {
-                Ok(Message::Done(name, result)) => {
-                    if self
-                        .state
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .get(name.as_str())
-                        .is_some_and(|s| s.result.is_some())
-                    {
-                        continue; // late result for a timed-out check
-                    }
-                    self.finalized += 1;
-                    self.deadlines.remove(&name);
-                    let passed = result.passed == Some(true);
-                    self.state
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .get_mut(name.as_str())
-                        .expect("state was just checked")
-                        .result = Some(result);
-                    if passed {
-                        // Dispatch dependents, inheriting the run dir.
-                        let dep_dir = self
-                            .state
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .get(name.as_str())
-                            .and_then(|s| s.run_dir.clone());
-                        let dependents = match &self.scheduled {
-                            Some(subgraph) => subgraph
-                                .get(&Some(name.clone()))
-                                .cloned()
-                                .unwrap_or_default(),
-                            None => self
-                                .graph
-                                .dependents
-                                .get(&Some(name.clone()))
-                                .cloned()
-                                .unwrap_or_default(),
-                        };
-                        for dependent in &dependents {
-                            self.dispatch(dependent, dep_dir.as_deref());
-                        }
-                    } else {
-                        // Failure: immediately cascade skips over all
-                        // transitive dependents (prevents hangs).
-                        self.cascade_skip(&name);
-                    }
-                }
+                Ok(result) => self.record_completion(result),
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     // Handled by enforce_timeouts at the top of the loop.
                 }
@@ -429,8 +442,8 @@ impl<'a> Scheduler<'a> {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
         );
-        // Clean up the working area.
-        let _ = std::fs::remove_dir_all(&self.run_root);
+        // `self` (and with it the temp working area) drops at the end
+        // of this function, removing the run dirs on every exit path.
         // With `--target`, only the checks of the scheduled subgraph
         // ran (check50 parity: its subgraph runs report only those
         // checks); without targets, every check is reported.
@@ -447,18 +460,21 @@ impl<'a> Scheduler<'a> {
             .into_iter()
             .map(|name| {
                 let entry = state.get(name);
-                let mut result =
-                    entry
-                        .and_then(|s| s.result.clone())
-                        .unwrap_or_else(|| CheckResult {
-                            name: name.clone(),
-                            description: self.graph.descriptions[name].clone(),
-                            passed: None,
-                            log: Vec::new(),
-                            cause: Some(Cause::skipped()),
-                            data: serde_json::Map::new(),
-                            dependency: self.graph.dependency_of[name].clone(),
-                        });
+                let mut result = entry.and_then(|s| s.result.clone()).unwrap_or_else(|| {
+                    tracing::warn!(
+                        check = %name,
+                        "no result recorded; fabricating a skip"
+                    );
+                    CheckResult {
+                        name: name.clone(),
+                        description: self.graph.descriptions[name].clone(),
+                        passed: None,
+                        log: Vec::new(),
+                        cause: Some(Cause::skipped()),
+                        data: serde_json::Map::new(),
+                        dependency: self.graph.dependency_of[name].clone(),
+                    }
+                });
                 let log = self.log_arcs[name]
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -762,6 +778,31 @@ mod tests {
     }
 
     #[test]
+    fn an_unknown_target_skips_every_check_without_running_anything() {
+        let checks = vec![
+            passing_spec("exists", None),
+            passing_spec("compiles", Some("exists")),
+        ];
+        let check_dir = tempfile::tempdir().expect("check dir");
+        let work_dir = tempfile::tempdir().expect("work dir");
+        let results = run_checks(
+            &checks,
+            check_dir.path(),
+            work_dir.path(),
+            &["nonexistent".to_owned()],
+        );
+        for result in &results {
+            assert_eq!(result.passed, None, "{} must not run", result.name);
+            match &result.cause {
+                Some(Cause::Skipped { rationale }) => {
+                    assert_eq!(rationale, "can't check until a frown turns upside down");
+                }
+                other => panic!("expected a skip cause, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
     fn a_timed_out_check_has_its_spawned_processes_killed() {
         // The child would leave this marker behind 30 seconds later if
         // it survived the timeout instead of being killed.
@@ -810,22 +851,38 @@ mod tests {
             Ok(())
         }
 
-        let checks = vec![CheckSpec {
-            name: "slow".to_owned(),
-            description: "slow".to_owned(),
-            dependency: None,
-            timeout: Some(Duration::from_millis(50)),
-            hidden_rationale: None,
-            run: native(sleeps),
-        }];
+        let checks = vec![
+            CheckSpec {
+                name: "slow".to_owned(),
+                description: "slow".to_owned(),
+                dependency: None,
+                timeout: Some(Duration::from_millis(50)),
+                hidden_rationale: None,
+                run: native(sleeps),
+            },
+            passing_spec("dependent", Some("slow")),
+        ];
         let check_dir = tempfile::tempdir().expect("check dir");
         let work_dir = tempfile::tempdir().expect("work dir");
         let results = run_checks(&checks, check_dir.path(), work_dir.path(), &[]);
-        assert_eq!(results.len(), 1);
         assert_ne!(
             results[0].passed,
             Some(true),
             "a check that overruns its timeout must not pass"
         );
+        match &results[0].cause {
+            Some(Cause::Failure { rationale, .. }) => {
+                assert!(rationale.contains("timed out"), "{rationale}");
+            }
+            other => panic!("expected a timeout cause, got {other:?}"),
+        }
+        // The dependent is skipped with the cascade rationale.
+        assert_eq!(results[1].passed, None);
+        match &results[1].cause {
+            Some(Cause::Skipped { rationale }) => {
+                assert_eq!(rationale, "can't check until a frown turns upside down");
+            }
+            other => panic!("expected a skip cause, got {other:?}"),
+        }
     }
 }

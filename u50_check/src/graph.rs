@@ -24,10 +24,15 @@ pub(crate) struct Graph {
     pub specs: HashMap<String, usize>,
 }
 
+/// The default per-check timeout (check50: 60 seconds).
+pub(crate) const DEFAULT_CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(1);
+
 impl Graph {
     /// Builds the graph from the plugin's checks (in declaration order).
-    /// Panics on duplicate check names (a plugin-authoring bug, caught
-    /// by the registry tests).
+    /// Panics on duplicate or path-unsafe check names, and on any check
+    /// that is unreachable from the implicit root (dangling dependency
+    /// or dependency cycle) — all plugin-authoring bugs, caught by the
+    /// registry tests.
     #[must_use]
     pub fn new(checks: &[CheckSpec]) -> Self {
         let mut seen = std::collections::HashSet::new();
@@ -44,6 +49,15 @@ impl Graph {
                 "duplicate check name `{}` in the check set",
                 check.name
             );
+            // Check names are used as run-directory path components.
+            assert!(
+                !check.name.is_empty()
+                    && check.name != "."
+                    && check.name != ".."
+                    && !check.name.contains(['/', '\\']),
+                "check name `{}` is not a valid path component",
+                check.name
+            );
             order.push(check.name.clone());
             dependents
                 .entry(check.dependency.clone())
@@ -53,12 +67,31 @@ impl Graph {
             descriptions.insert(check.name.clone(), check.description.clone());
             timeouts.insert(
                 check.name.clone(),
-                check.timeout.unwrap_or(std::time::Duration::from_mins(1)),
+                check.timeout.unwrap_or(DEFAULT_CHECK_TIMEOUT),
             );
             if let Some(rationale) = &check.hidden_rationale {
                 hidden.insert(check.name.clone(), rationale.clone());
             }
             specs.insert(check.name.clone(), index);
+        }
+        // Every check must be reachable from the implicit root: a
+        // dangling dependency or a dependency cycle would otherwise
+        // never be dispatched and hang the scheduler.
+        let mut reachable = std::collections::HashSet::new();
+        let mut stack: Vec<String> = dependents.get(&None).cloned().unwrap_or_default();
+        while let Some(name) = stack.pop() {
+            if reachable.insert(name.clone())
+                && let Some(children) = dependents.get(&Some(name))
+            {
+                stack.extend(children.iter().cloned());
+            }
+        }
+        for check in checks {
+            assert!(
+                reachable.contains(&check.name),
+                "check `{}` is unreachable (dangling dependency or dependency cycle?)",
+                check.name
+            );
         }
         Self {
             order,
@@ -94,17 +127,11 @@ impl Graph {
         }
         let mut subgraph: HashMap<Option<String>, Vec<String>> = HashMap::new();
         for name in &self.order {
-            let dependency = self.dependency_of[name].clone();
-            if let Some(children) = self.dependents.get(&dependency)
-                && children.contains(name)
-            {
-                let name = name.clone();
-                if keep.contains(&name) {
-                    subgraph
-                        .entry(self.dependency_of[&name].clone())
-                        .or_default()
-                        .push(name);
-                }
+            if keep.contains(name) {
+                subgraph
+                    .entry(self.dependency_of[name].clone())
+                    .or_default()
+                    .push(name.clone());
             }
         }
         Some(subgraph)
@@ -176,6 +203,27 @@ mod tests {
     #[should_panic(expected = "duplicate check name")]
     fn duplicate_check_names_are_rejected() {
         let checks = vec![spec("exists", None), spec("exists", None)];
+        let _ = Graph::new(&checks);
+    }
+
+    #[test]
+    #[should_panic(expected = "unreachable")]
+    fn a_dangling_dependency_is_rejected() {
+        let checks = vec![spec("exists", Some("ghost"))];
+        let _ = Graph::new(&checks);
+    }
+
+    #[test]
+    #[should_panic(expected = "unreachable")]
+    fn a_dependency_cycle_is_rejected() {
+        let checks = vec![spec("a", Some("b")), spec("b", Some("a"))];
+        let _ = Graph::new(&checks);
+    }
+
+    #[test]
+    #[should_panic(expected = "not a valid path component")]
+    fn path_unsafe_check_names_are_rejected() {
+        let checks = vec![spec("../escape", None)];
         let _ = Graph::new(&checks);
     }
 

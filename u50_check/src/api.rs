@@ -140,18 +140,6 @@ impl Failure {
             actual: Some(actual),
         }
     }
-
-    /// A mismatch with a help hint.
-    #[must_use]
-    pub fn mismatch_with_help(
-        expected: impl Into<String>,
-        actual: impl Into<String>,
-        help: impl Into<String>,
-    ) -> Self {
-        let mut failure = Self::mismatch(expected, actual);
-        failure.help = Some(help.into());
-        failure
-    }
 }
 
 impl std::fmt::Display for Failure {
@@ -161,26 +149,6 @@ impl std::fmt::Display for Failure {
 }
 
 impl std::error::Error for Failure {}
-
-/// Signifies a check failure due to an item missing from a collection
-/// (check50: `check50.Missing`) — typically a substring expected in
-/// stdout. The rationale reads `Did not find "item" in "collection"`
-/// (check50's exact wording).
-pub struct Missing;
-
-impl Missing {
-    /// The missing-item failure.
-    #[must_use]
-    pub fn failure(item: impl Into<String>, collection: impl Into<String>) -> Failure {
-        let (item, collection) = (item.into(), collection.into());
-        Failure {
-            rationale: format!("Did not find \"{item}\" in \"{collection}\""),
-            help: None,
-            expected: Some(item),
-            actual: Some(collection),
-        }
-    }
-}
 
 /// The context a check runs in: its own working directory, the check
 /// directory files can be included from, and the per-check log/data
@@ -241,10 +209,17 @@ impl CheckContext {
     /// Adds a line to the student-visible check log (newlines escaped,
     /// check50 parity).
     pub fn log(&mut self, line: impl AsRef<str>) {
+        let line = line.as_ref();
+        // Only allocate when there is something to escape.
+        let escaped = if line.contains('\n') {
+            std::borrow::Cow::Owned(line.replace('\n', "\\n"))
+        } else {
+            std::borrow::Cow::Borrowed(line)
+        };
         self.log
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(line.as_ref().replace('\n', "\\n"));
+            .push(escaped.into_owned());
     }
 
     /// Adds key/value pairs to the check's result payload (check50:
@@ -278,13 +253,40 @@ impl CheckContext {
     /// Resolves a check-relative path against the check's `run_dir`
     /// (checks run concurrently in threads of one process, so — unlike
     /// check50's per-process `os.chdir` — a relative path can never be
-    /// resolved against the process's current directory).
-    fn resolve(&self, path: &Path) -> PathBuf {
+    /// resolved against the process's current directory). Absolute
+    /// paths pass through unchanged. This is the one path-resolution
+    /// helper check authors should use.
+    ///
+    /// Student code is untrusted: a relative path containing `..` is
+    /// normalized lexically and may not escape `run_dir` — an escaping
+    /// path resolves to a location that cannot exist (so `exists`/
+    /// `hash` fail with `not found` instead of touching the host
+    /// filesystem).
+    #[must_use]
+    pub fn resolve(&self, path: &Path) -> PathBuf {
+        use std::path::Component;
         if path.is_absolute() {
-            path.to_path_buf()
-        } else {
-            self.run_dir.join(path)
+            return path.to_path_buf();
         }
+        let mut normalized = self.run_dir.clone();
+        for component in path.components() {
+            match component {
+                Component::CurDir => {}
+                Component::ParentDir => {
+                    normalized.pop();
+                    if !normalized.starts_with(&self.run_dir) {
+                        // Escapes the run dir: resolve to a path that
+                        // cannot exist (the embedded NUL fails every
+                        // filesystem operation on every platform).
+                        let mut escaped = self.run_dir.clone();
+                        escaped.push("\u{0}escaped-run-dir");
+                        return escaped;
+                    }
+                }
+                component => normalized.push(component.as_os_str()),
+            }
+        }
+        normalized
     }
 
     /// Copies files/directories from the check's own directory into the
@@ -311,12 +313,31 @@ impl CheckContext {
     /// Returns a [`Failure`] when the file does not exist or cannot be
     /// read.
     pub fn hash(&mut self, file: impl AsRef<Path>) -> Result<String, Failure> {
+        use sha2::Digest as _;
         let path = file.as_ref();
         self.exists([path])?;
         self.log(format!("hashing {}...", path.display()));
-        let bytes = std::fs::read(self.resolve(path))
+        // Stream the file: hashing must not slurp arbitrary-size
+        // student files into memory.
+        let mut file = std::fs::File::open(self.resolve(path))
             .map_err(|_| Failure::new(format!("{} not found", path.display())))?;
-        Ok(sha256_hex(&bytes))
+        let mut hasher = sha2::Sha256::new();
+        let mut chunk = [0u8; 8192];
+        loop {
+            let read = std::io::Read::read(&mut file, &mut chunk)
+                .map_err(|_| Failure::new(format!("could not read {}", path.display())))?;
+            if read == 0 {
+                break;
+            }
+            hasher.update(&chunk[..read]);
+        }
+        Ok(hasher
+            .finalize()
+            .iter()
+            .fold(String::new(), |mut out, byte| {
+                let _ = write!(out, "{byte:02x}");
+                out
+            }))
     }
 
     /// Runs a command in the check's run directory, returning the
@@ -327,20 +348,6 @@ impl CheckContext {
     pub fn run(&mut self, command: impl AsRef<str>) -> Result<Run<'_>, Failure> {
         Run::spawn(self, command.as_ref())
     }
-}
-
-/// Computes the SHA-256 digest of `bytes` as lowercase hex.
-fn sha256_hex(bytes: &[u8]) -> String {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    hasher
-        .finalize()
-        .iter()
-        .fold(String::new(), |mut out, byte| {
-            let _ = write!(out, "{byte:02x}");
-            out
-        })
 }
 
 /// The result of spawning a command inside a check, with the same
@@ -391,14 +398,50 @@ impl Run<'_> {
         if let Some(mut stdout) = stdout {
             let buf = Arc::clone(&out_buf);
             std::thread::spawn(move || {
+                // Decode incrementally: a multi-byte UTF-8 sequence
+                // split across pipe reads must not be lossy-decoded
+                // per chunk (that would corrupt the characters).
+                let mut pending: Vec<u8> = Vec::new();
                 let mut chunk = [0u8; 4096];
                 while let Ok(n) = stdout.read(&mut chunk) {
                     if n == 0 {
                         break;
                     }
-                    buf.lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .push_str(&String::from_utf8_lossy(&chunk[..n]));
+                    pending.extend_from_slice(&chunk[..n]);
+                    loop {
+                        match std::str::from_utf8(&pending) {
+                            Ok(text) => {
+                                buf.lock()
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                    .push_str(text);
+                                pending.clear();
+                                break;
+                            }
+                            Err(error) => {
+                                let valid = error.valid_up_to();
+                                if valid > 0 {
+                                    let text = std::str::from_utf8(&pending[..valid]).unwrap_or("");
+                                    buf.lock()
+                                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                        .push_str(text);
+                                    pending.drain(..valid);
+                                }
+                                match error.error_len() {
+                                    // Genuinely invalid bytes: replace
+                                    // them like from_utf8_lossy does.
+                                    Some(bad) => {
+                                        buf.lock()
+                                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                            .push('\u{FFFD}');
+                                        pending.drain(..bad);
+                                    }
+                                    // Incomplete tail: wait for the
+                                    // next read to complete it.
+                                    None => break,
+                                }
+                            }
+                        }
+                    }
                 }
             });
         }
@@ -453,10 +496,10 @@ impl Run<'_> {
                 }
                 std::thread::sleep(Duration::from_millis(50));
             }
-            let absorb = Instant::now() + timeout;
-            while Instant::now() < absorb {
-                std::thread::sleep(Duration::from_millis(50));
-            }
+            // Give any remaining prompt text a bounded window to
+            // arrive (output gone quiet for 100 ms), instead of
+            // unconditionally burning the whole timeout.
+            self.quiesce();
         }
         let Some(stdin) = self.stdin.as_mut() else {
             return Err(Failure::new("stdin is closed"));
@@ -550,8 +593,8 @@ impl Run<'_> {
             }
             if Instant::now() >= deadline {
                 return Err(Failure::new(format!(
-                    "timed out while waiting for output (waited {}s)",
-                    timeout.as_secs()
+                    "timed out while waiting for output (waited {:.1}s)",
+                    timeout.as_secs_f32()
                 )));
             }
             std::thread::sleep(Duration::from_millis(25));
@@ -761,6 +804,15 @@ impl Matcher {
     }
 }
 
+/// The leading boundary class for [`decimal_regex`]: start of the
+/// unconsumed output, or a character that cannot continue a larger
+/// number. check50 expresses this with a negative lookbehind, which
+/// the `regex` crate lacks.
+const DECIMAL_LEADING_BOUNDARY: &str = "(?:^|[^0-9.\\-])";
+
+/// The trailing boundary class for [`decimal_regex`].
+const DECIMAL_TRAILING_BOUNDARY: &str = "(?:[^0-9.]|$)";
+
 /// Builds the exact-number regex (check50: `check50.regex.decimal`).
 ///
 /// check50's Python original uses look-around (a negative lookbehind
@@ -772,6 +824,13 @@ impl Matcher {
 /// on each side that is *not* part of a larger number, which is
 /// functionally equivalent for [`Run::stdout`]'s use (only whether a
 /// match exists, and where it ends, matters — not the captured text).
+///
+/// A `^` boundary at the start of the *unconsumed* output behaves like
+/// check50's lookbehind at the start of its search window: a digit in
+/// already-consumed output is invisible to both. Two real divergences
+/// remain (cases check50's lookaround accepts and this regex cannot
+/// express): a number followed by a lone period (`"42."`) and a
+/// number preceded by a period (`".42"`).
 #[must_use]
 pub fn decimal_regex(number: f64) -> String {
     let literal = regex::escape(&format!("{number}"));
@@ -779,9 +838,9 @@ pub fn decimal_regex(number: f64) -> String {
         // The minus sign is already part of `literal`; only the
         // trailing boundary (not embedded in a larger/decimal number)
         // needs asserting.
-        format!(r"{literal}(?:[^0-9.]|$)")
+        format!("{literal}{DECIMAL_TRAILING_BOUNDARY}")
     } else {
-        format!(r"(?:^|[^0-9.\-]){literal}(?:[^0-9.]|$)")
+        format!("{DECIMAL_LEADING_BOUNDARY}{literal}{DECIMAL_TRAILING_BOUNDARY}")
     }
 }
 
@@ -869,6 +928,16 @@ pub(crate) fn kill_tracked_children(children: &ChildRegistry) {
 /// commands (which use POSIX shell syntax check50 checks rely on) run
 /// the same way on every platform.
 fn bash_command() -> Command {
+    /// Resolved once per process: probing the filesystem on every
+    /// spawned command is wasted syscalls, and the fallback warning
+    /// must not repeat per spawn.
+    static RESOLVED: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    let program = RESOLVED.get_or_init(resolve_bash_program);
+    Command::new(program)
+}
+
+/// Locates the shell program `bash_command` should use (see its docs).
+fn resolve_bash_program() -> String {
     #[cfg(windows)]
     {
         for candidate in [
@@ -877,11 +946,14 @@ fn bash_command() -> Command {
             "C:\\Program Files (x86)\\Git\\bin\\bash.exe",
         ] {
             if Path::new(candidate).is_file() {
-                return Command::new(candidate);
+                return candidate.to_owned();
             }
         }
+        tracing::warn!(
+            "no Git for Windows bash found; falling back to `bash` on PATH, which may be the WSL launcher stub"
+        );
     }
-    Command::new("bash")
+    "bash".to_owned()
 }
 
 trait ExitStatusExt {
@@ -938,13 +1010,71 @@ mod tests {
 
     #[test]
     fn hash_resolves_against_run_dir_not_the_process_cwd() {
+        use sha2::Digest as _;
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::write(dir.path().join("payload.bin"), b"u50").expect("write");
         let mut ctx = context(dir.path());
         // The process cwd is the crate root during tests, so success
         // here proves the path was resolved against run_dir.
         let digest = ctx.hash("payload.bin").expect("hash");
-        assert_eq!(digest, sha256_hex(b"u50"));
+        let mut expected = sha2::Sha256::new();
+        expected.update(b"u50");
+        let expected = expected
+            .finalize()
+            .iter()
+            .fold(String::new(), |mut out, byte| {
+                use std::fmt::Write as _;
+                let _ = write!(out, "{byte:02x}");
+                out
+            });
+        assert_eq!(digest, expected);
+    }
+
+    #[test]
+    fn resolve_keeps_absolute_paths_and_rejects_escape_attempts() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = context(dir.path());
+        // Absolute paths pass through unchanged.
+        let absolute = ctx.resolve(Path::new("/etc/hostname"));
+        assert!(absolute.is_absolute());
+        // A `..` escape must stay contained inside the run dir (it
+        // resolves to a location that cannot exist, per the other
+        // exists-escape test).
+        let outside = std::path::PathBuf::from("../outside.txt");
+        let resolved = ctx.resolve(&outside);
+        assert!(
+            resolved.starts_with(dir.path()),
+            "an escaping path must not resolve outside the run dir: {}",
+            resolved.display()
+        );
+        assert!(
+            !resolved.exists(),
+            "the escaped path must not resolve to a real file"
+        );
+    }
+
+    #[test]
+    fn exists_never_escapes_the_run_dir_via_dot_dot() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // The file exists, but one level ABOVE the run dir.
+        let outside = dir.path().parent().expect("parent").join("outside.txt");
+        std::fs::write(&outside, "secret").expect("write");
+        let mut ctx = context(dir.path());
+        assert!(
+            ctx.exists(["../outside.txt"]).is_err(),
+            "a .. path must not reach the host filesystem"
+        );
+    }
+
+    #[test]
+    fn reject_passes_when_the_program_survives_without_consuming_input() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut ctx = context(dir.path());
+        let mut run = ctx.run("sleep 1").expect("spawn");
+        run.stdin("meow", false, Duration::from_millis(200))
+            .expect("stdin sent");
+        run.reject(Duration::from_millis(300))
+            .expect("the program must stay alive (reject the input)");
     }
 
     #[test]

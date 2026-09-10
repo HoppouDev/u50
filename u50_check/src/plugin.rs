@@ -63,7 +63,8 @@ pub trait CheckSetPlugin: Sync {
     /// Stable machine id (`"hello"`), matched against the request slug.
     fn id(&self) -> &str;
     /// The directory containing the check set's own files (source of
-    /// `include` in its checks).
+    /// `include` in its checks). An empty path is the sentinel for "no
+    /// check-directory files": such check sets must not use `include`.
     fn check_dir(&self) -> PathBuf;
     /// The checks, in declaration order (the order results are emitted
     /// in, like check50's declaration-order results).

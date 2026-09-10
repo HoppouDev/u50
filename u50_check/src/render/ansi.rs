@@ -2,6 +2,11 @@
 //! terminal — the piped ground truth — and termcolor-style colors when
 //! it is): a bold-white banner line, then `:)`/`:|`/`:(` lines with the
 //! cause rationale, help, and error details, plus the optional log.
+//!
+//! Student-controlled text (descriptions, rationales, output payloads,
+//! log lines) is sanitized before rendering: control characters — most
+//! importantly the ANSI escape byte — cannot smuggle terminal escape
+//! sequences into u50's own output.
 
 use std::fmt::Write as _;
 
@@ -14,6 +19,23 @@ use super::RenderInput;
 type ColoredFn<'a> = dyn Fn(&mut String, Color, &[(bool, Attribute)], &str) + 'a;
 use crate::result::{Cause, CheckResult};
 
+/// Escapes control characters in student-controlled text so rendered
+/// output cannot smuggle terminal escape sequences (ANSI injection).
+/// Newlines and tabs pass through (the renderer's own line structure).
+fn sanitize(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        match ch {
+            '\n' | '\t' => out.push(ch),
+            c if c.is_control() => {
+                let _ = write!(out, "\\u{{{:04x}}}", c as u32);
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 /// Renders the ANSI output. Colors are emitted only when `input.color`
 /// is set (stdout is a terminal); the plain form matches check50's piped
 /// output byte for byte (modulo the documented u50 branding).
@@ -21,6 +43,8 @@ use crate::result::{Cause, CheckResult};
 pub(crate) fn render_ansi(input: &RenderInput) -> String {
     let mut out = String::new();
     let colored = |out: &mut String, color: Color, attrs: &[(bool, Attribute)], text: &str| {
+        // One choke point for student-controlled text.
+        let text = &sanitize(text);
         if !input.color {
             out.push_str(text);
             return;
