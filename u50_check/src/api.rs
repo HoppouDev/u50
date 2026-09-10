@@ -727,7 +727,7 @@ impl ExitStatusExt for std::process::ExitStatus {
 impl ExitStatusExt for std::process::ExitStatus {
     fn signal_of_segfault(&self) -> bool {
         // STATUS_ACCESS_VIOLATION
-        self.code() == Some(0xC000_0005_u32 as i32)
+        self.code() == Some(0xC000_0005_u32.cast_signed())
     }
 }
 
