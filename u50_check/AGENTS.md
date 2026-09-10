@@ -15,7 +15,7 @@ The engine (`api.rs`, `graph.rs`, `runner.rs`) reproduces check50's runtime mode
 
 ## Behavior notes
 
-Findings recorded from the official user docs: https://cs50.readthedocs.io/projects/check50/en/latest/check50_user/
+Findings recorded from the official user docs: <https://cs50.readthedocs.io/projects/check50/en/latest/check50_user/>
 
 ### Usage and slug
 
