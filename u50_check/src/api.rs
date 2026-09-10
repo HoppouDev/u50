@@ -231,11 +231,23 @@ impl CheckContext {
         for path in paths {
             let path = path.as_ref();
             self.log(format!("checking that {} exists...", path.display()));
-            if !path.exists() {
+            if !self.resolve(path).exists() {
                 return Err(Failure::new(format!("{} not found", path.display())));
             }
         }
         Ok(())
+    }
+
+    /// Resolves a check-relative path against the check's `run_dir`
+    /// (checks run concurrently in threads of one process, so — unlike
+    /// check50's per-process `os.chdir` — a relative path can never be
+    /// resolved against the process's current directory).
+    fn resolve(&self, path: &Path) -> PathBuf {
+        if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            self.run_dir.join(path)
+        }
     }
 
     /// Copies files/directories from the check's own directory into the
@@ -265,7 +277,7 @@ impl CheckContext {
         let path = file.as_ref();
         self.exists([path])?;
         self.log(format!("hashing {}...", path.display()));
-        let bytes = std::fs::read(path)
+        let bytes = std::fs::read(self.resolve(path))
             .map_err(|_| Failure::new(format!("{} not found", path.display())))?;
         Ok(sha256_hex(&bytes))
     }
@@ -624,14 +636,27 @@ impl Matcher {
 }
 
 /// Builds the exact-number regex (check50: `check50.regex.decimal`).
+///
+/// check50's Python original uses look-around (a negative lookbehind
+/// for non-negative numbers, a negative lookahead always) to reject a
+/// match embedded in a larger number (`"420"` must not match `42`).
+/// The `regex` crate has no look-around support, so the port gets the
+/// same rejection with consuming character-class boundaries instead:
+/// the match includes one boundary character (or start/end of string)
+/// on each side that is *not* part of a larger number, which is
+/// functionally equivalent for [`Run::stdout`]'s use (only whether a
+/// match exists, and where it ends, matters — not the captured text).
 #[must_use]
 pub fn decimal_regex(number: f64) -> String {
-    let lookbehind = if number.is_sign_negative() {
-        ""
+    let literal = regex::escape(&format!("{number}"));
+    if number.is_sign_negative() {
+        // The minus sign is already part of `literal`; only the
+        // trailing boundary (not embedded in a larger/decimal number)
+        // needs asserting.
+        format!(r"{literal}(?:[^0-9.]|$)")
     } else {
-        "(?<![\\d-])"
-    };
-    format!("{lookbehind}{number}(?!(\\.?\\d))")
+        format!(r"(?:^|[^0-9.\-]){literal}(?:[^0-9.]|$)")
+    }
 }
 
 /// Copies `src` to `dst`, recursively when `src` is a directory
@@ -677,5 +702,104 @@ impl ExitStatusExt for std::process::ExitStatus {
     fn signal_of_segfault(&self) -> bool {
         // STATUS_ACCESS_VIOLATION
         self.code() == Some(0xC000_0005_u32 as i32)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    fn context(dir: &std::path::Path) -> CheckContext {
+        CheckContext::new(
+            dir.to_path_buf(),
+            dir.to_path_buf(),
+            Arc::new(Mutex::new(Vec::new())),
+            Arc::new(Mutex::new(serde_json::Map::new())),
+        )
+    }
+
+    #[test]
+    fn exists_passes_for_a_present_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("hello.txt"), "hi").expect("write");
+        let mut ctx = context(dir.path());
+        assert!(ctx.exists(["hello.txt"]).is_ok());
+    }
+
+    #[test]
+    fn exists_fails_for_a_missing_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut ctx = context(dir.path());
+        let err = ctx.exists(["missing.txt"]).unwrap_err();
+        assert!(err.rationale.contains("not found"));
+    }
+
+    #[test]
+    fn run_stdout_and_exit_pass_for_matching_output() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut ctx = context(dir.path());
+        let mut run = ctx.run("echo hello").expect("spawn");
+        run.stdout("hello", false, Duration::from_secs(3))
+            .expect("stdout matches");
+        run.exit(Some(0), Duration::from_secs(3))
+            .expect("exit code matches");
+    }
+
+    #[test]
+    fn run_stdout_mismatch_carries_expected_and_actual() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut ctx = context(dir.path());
+        let mut run = ctx.run("echo hello").expect("spawn");
+        let Err(err) = run.stdout("goodbye", true, Duration::from_millis(500)) else {
+            panic!("expected a stdout mismatch");
+        };
+        assert_eq!(err.expected.as_deref(), Some("goodbye"));
+        assert_eq!(err.actual.as_deref(), Some("hello\n"));
+    }
+
+    #[test]
+    fn run_exit_code_mismatch_reports_expected_and_actual_codes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut ctx = context(dir.path());
+        let mut run = ctx.run("exit 7").expect("spawn");
+        let err = run.exit(Some(0), Duration::from_secs(3)).unwrap_err();
+        assert!(err.rationale.contains("expected exit code 0, not 7"));
+    }
+
+    #[test]
+    fn run_stdin_prompt_then_echo_round_trips() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut ctx = context(dir.path());
+        let mut run = ctx
+            .run("echo -n '> '; read line; echo \"$line\"")
+            .expect("spawn");
+        run.stdin("meow", true, Duration::from_secs(3))
+            .expect("prompt absorbed and line sent");
+        run.stdout("meow", true, Duration::from_secs(3))
+            .expect("echoed back");
+        run.exit(Some(0), Duration::from_secs(3)).expect("exits 0");
+    }
+
+    #[test]
+    fn run_reject_fails_when_program_consumes_input() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut ctx = context(dir.path());
+        let mut run = ctx.run("read line; exit 0").expect("spawn");
+        run.stdin("meow", false, Duration::from_millis(200))
+            .expect("stdin sent");
+        let Err(err) = run.reject(Duration::from_secs(1)) else {
+            panic!("expected reject to fail (program consumed input)");
+        };
+        assert!(err.rationale.contains("reject"));
+    }
+
+    #[test]
+    fn decimal_regex_matches_the_exact_number_only() {
+        let pattern = decimal_regex(42.0);
+        let re = regex::Regex::new(&pattern).expect("valid regex");
+        assert!(re.is_match("42"));
+        assert!(!re.is_match("420"));
+        assert!(!re.is_match("142"));
     }
 }

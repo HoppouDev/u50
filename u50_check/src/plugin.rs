@@ -1,6 +1,8 @@
 //! The `CheckSetPlugin` trait: one plugin per problem's check set,
 //! registered in [`crate::registry`] (the same model as `u50_style`'s
-//! language and renderer plugins).
+//! language and renderer plugins). This is core: it never names a
+//! specific check set — concrete plugins live under `checks/` and are
+//! wired in exclusively by `registry.rs`.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -66,60 +68,4 @@ pub trait CheckSetPlugin: Sync {
     /// The checks, in declaration order (the order results are emitted
     /// in, like check50's declaration-order results).
     fn checks(&self) -> Vec<CheckSpec>;
-}
-
-/// The `hello` example check set — the authoring template: one module
-/// (or section) declaring a zero-sized plugin struct, its checks in
-/// declaration order, and one registry line. The check50 README's
-/// exists-then-verify chain, expressed natively.
-pub struct HelloPlugin;
-
-impl CheckSetPlugin for HelloPlugin {
-    fn id(&self) -> &'static str {
-        "hello"
-    }
-
-    fn check_dir(&self) -> PathBuf {
-        // The example ships no extra files.
-        PathBuf::new()
-    }
-
-    fn checks(&self) -> Vec<CheckSpec> {
-        fn exists(ctx: &mut CheckContext) -> Result<(), Failure> {
-            ctx.exists(["hello.txt"])
-        }
-
-        fn prints_content(ctx: &mut CheckContext) -> Result<(), Failure> {
-            ctx.log("checking that hello.txt contains hello...");
-            let content = std::fs::read_to_string("hello.txt")
-                .map_err(|_| Failure::new("could not read hello.txt"))?;
-            if content.contains("hello") {
-                Ok(())
-            } else {
-                Err(Failure::with_help(
-                    "expected \"hello\" in hello.txt",
-                    "the file should contain the word hello",
-                ))
-            }
-        }
-
-        vec![
-            CheckSpec {
-                name: "exists".to_owned(),
-                description: "hello.txt exists".to_owned(),
-                dependency: None,
-                timeout: None,
-                hidden_rationale: None,
-                run: RunKind::Native(exists),
-            },
-            CheckSpec {
-                name: "prints_content".to_owned(),
-                description: "hello.txt contains hello".to_owned(),
-                dependency: Some("exists".to_owned()),
-                timeout: None,
-                hidden_rationale: None,
-                run: RunKind::Native(prints_content),
-            },
-        ]
-    }
 }

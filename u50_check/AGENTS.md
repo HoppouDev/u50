@@ -6,7 +6,12 @@ Rust rewrite of [check50](https://github.com/cs50/check50): runs checks against 
 
 ## Status
 
-Stub engine: `run()` bails with a "not implemented yet" error; request types (`Request`, `Mode`, `Output`) are defined and dispatched from the CLI. Concrete engine behavior is future work.
+Implemented (see `docs/U50_CHECK_PLUGIN_PLAN.md` and `docs/CHECK50_PORT_NOTES.md` for the port plan and source notes). Local/offline/dev modes run checks from a `.cs50.yaml`-rooted check directory (the slug is a local path — online/remote mode is a documented divergence and still bails with an error). Two ways to author checks, both compiled into `CheckSpec`s:
+
+- **"Simple" YAML checks** (`check50.checks` as a dict in `.cs50.yaml`): interpreted natively (`yaml.rs`) against the check API — no Python, no compilation step.
+- **Native check-set plugins** (`CheckSetPlugin`, one module per problem under `checks/`, registered in `registry.rs` — the only core file that names a plugin; see `docs/U50_CHECK_PLUGIN_PLAN.md`): looked up by id when `.cs50.yaml` names a Python checks file (Python checks themselves are not executable — a documented divergence). `checks/hello.rs` is the authoring template.
+
+The engine (`api.rs`, `graph.rs`, `runner.rs`) reproduces check50's runtime model: a chainable `run().stdin().stdout().exit()` builder with prompt absorption, EOF, regex/exact/decimal matching, and SIGSEGV detection; per-check thread isolation with filesystem inheritance (copytree from the dependency's run dir) and per-check timeouts; declaration-order results; and the failure skip cascade (`"can't check until a frown turns upside down"`). `render/ansi.rs` and `render/json.rs` render check50's documented output shapes; `html` output is deferred (Phase 5 of the plugin plan).
 
 ## Behavior notes
 

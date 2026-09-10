@@ -104,3 +104,65 @@ impl Graph {
         Some(subgraph)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plugin::RunKind;
+
+    fn spec(name: &str, dependency: Option<&str>) -> CheckSpec {
+        CheckSpec {
+            name: name.to_owned(),
+            description: name.to_owned(),
+            dependency: dependency.map(str::to_owned),
+            timeout: None,
+            hidden_rationale: None,
+            run: RunKind::Native(|_ctx| Ok(())),
+        }
+    }
+
+    #[test]
+    fn declaration_order_is_preserved() {
+        let checks = vec![spec("exists", None), spec("compiles", Some("exists"))];
+        let graph = Graph::new(&checks);
+        assert_eq!(graph.order, vec!["exists", "compiles"]);
+    }
+
+    #[test]
+    fn root_dependents_are_the_dependency_free_checks() {
+        let checks = vec![spec("exists", None), spec("compiles", Some("exists"))];
+        let graph = Graph::new(&checks);
+        assert_eq!(graph.dependents[&None], vec!["exists"]);
+        assert_eq!(
+            graph.dependents[&Some("exists".to_owned())],
+            vec!["compiles"]
+        );
+    }
+
+    #[test]
+    fn subgraph_includes_transitive_dependencies_of_a_target() {
+        let checks = vec![
+            spec("exists", None),
+            spec("compiles", Some("exists")),
+            spec("runs", Some("compiles")),
+            spec("unrelated", None),
+        ];
+        let graph = Graph::new(&checks);
+        let subgraph = graph
+            .subgraph(&["runs".to_owned()])
+            .expect("runs is a known check");
+        assert_eq!(subgraph[&None], vec!["exists"]);
+        assert_eq!(subgraph[&Some("exists".to_owned())], vec!["compiles"]);
+        assert_eq!(subgraph[&Some("compiles".to_owned())], vec!["runs"]);
+        assert!(
+            !subgraph.contains_key(&None) || !subgraph[&None].contains(&"unrelated".to_owned())
+        );
+    }
+
+    #[test]
+    fn subgraph_of_an_unknown_target_is_none() {
+        let checks = vec![spec("exists", None)];
+        let graph = Graph::new(&checks);
+        assert!(graph.subgraph(&["nope".to_owned()]).is_none());
+    }
+}

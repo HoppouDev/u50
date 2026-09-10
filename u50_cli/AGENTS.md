@@ -1,6 +1,6 @@
 # u50_cli — unified binary (u50)
 
-> **Status:** the CLI layer is implemented; `u50_style` has a working engine (clang-format-backed; style violations exit 1, and exit 3 now means any per-file error — unreadable file, unsupported type, or formatter failure — with the remaining files still checked and their output streamed). `u50_check` and `u50_submit` remain stubs returning "not implemented yet" errors (exit 3).
+> **Status:** the CLI layer is implemented; `u50_style` has a working engine (clang-format-backed; style violations exit 1, and exit 3 now means any per-file error — unreadable file, unsupported type, or formatter failure — with the remaining files still checked and their output streamed). `u50_check` has a working engine (local/offline/dev modes over a `.cs50.yaml` check directory; YAML "simple" checks and native `checks/` plugins; ansi/json output; exit 1 when any check does not pass) — remote/online mode and html output remain documented divergences that still error. `u50_submit` remains a stub returning a "not implemented yet" error (exit 3).
 
 The `u50` binary replaces the separate check50/style50/submit50 command-line tools with a single program: clap 4 derive defines the interface, and each subcommand dispatches to the corresponding library crate (`u50_check`, `u50_style`, `u50_submit`).
 

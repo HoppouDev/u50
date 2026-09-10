@@ -216,7 +216,18 @@ impl<'a> Scheduler<'a> {
     /// scheduler never hangs waiting for checks that will never be
     /// dispatched.
     fn cascade_skip(&mut self, name: &str) {
-        let mut stack = vec![name.to_owned()];
+        // Start from `name`'s dependents, not `name` itself: the failed
+        // check already has a result recorded by the caller, so seeding
+        // the stack with `name` would hit the `contains_key` guard on
+        // the very first pop and stop before ever reaching a dependent
+        // (leaving the scheduler waiting on results that will never
+        // arrive).
+        let mut stack: Vec<String> = self
+            .graph
+            .dependents
+            .get(&Some(name.to_owned()))
+            .cloned()
+            .unwrap_or_default();
         while let Some(current) = stack.pop() {
             if self
                 .state
@@ -245,7 +256,7 @@ impl<'a> Scheduler<'a> {
                         run_dir: None,
                     },
                 );
-            if let Some(dependents) = self.graph.dependents.get(&Some(current)) {
+            if let Some(dependents) = self.graph.dependents.get(&Some(current.clone())) {
                 stack.extend(dependents.iter().cloned());
             }
         }
@@ -490,4 +501,149 @@ pub fn run_checks(
 
     sched.run_loop();
     sched.collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plugin::RunKind;
+
+    fn native(f: fn(&mut CheckContext) -> Result<(), crate::api::Failure>) -> RunKind {
+        RunKind::Native(f)
+    }
+
+    #[test]
+    fn dependents_inherit_the_dependency_run_dir_and_results_are_declaration_ordered() {
+        fn seed(ctx: &mut CheckContext) -> Result<(), crate::api::Failure> {
+            std::fs::write(ctx.run_dir.join("artifact.txt"), "hello")
+                .map_err(|_| crate::api::Failure::new("could not write artifact"))?;
+            Ok(())
+        }
+        fn reads(ctx: &mut CheckContext) -> Result<(), crate::api::Failure> {
+            let content = std::fs::read_to_string(ctx.run_dir.join("artifact.txt"))
+                .map_err(|_| crate::api::Failure::new("artifact.txt missing (no inheritance)"))?;
+            if content == "hello" {
+                Ok(())
+            } else {
+                Err(crate::api::Failure::new("unexpected artifact content"))
+            }
+        }
+
+        let checks = vec![
+            CheckSpec {
+                name: "seed".to_owned(),
+                description: "seed".to_owned(),
+                dependency: None,
+                timeout: None,
+                hidden_rationale: None,
+                run: native(seed),
+            },
+            CheckSpec {
+                name: "reads".to_owned(),
+                description: "reads".to_owned(),
+                dependency: Some("seed".to_owned()),
+                timeout: None,
+                hidden_rationale: None,
+                run: native(reads),
+            },
+        ];
+        let check_dir = tempfile::tempdir().expect("check dir");
+        let work_dir = tempfile::tempdir().expect("work dir");
+        let results = run_checks(&checks, check_dir.path(), work_dir.path(), &[]);
+        assert_eq!(
+            results.iter().map(|r| r.name.clone()).collect::<Vec<_>>(),
+            vec!["seed", "reads"],
+            "results must be in declaration order"
+        );
+        assert_eq!(results[0].passed, Some(true));
+        assert_eq!(
+            results[1].passed,
+            Some(true),
+            "reads must see seed's run_dir contents: {:?}",
+            results[1].cause
+        );
+    }
+
+    #[test]
+    fn a_failed_dependency_cascades_skip_to_every_transitive_dependent() {
+        fn fails(ctx: &mut CheckContext) -> Result<(), crate::api::Failure> {
+            ctx.log("about to fail");
+            Err(crate::api::Failure::new("deliberate failure"))
+        }
+        // The `Result` return is fixed by `RunKind::Native`'s function
+        // pointer type; this check happens to never fail.
+        #[allow(clippy::unnecessary_wraps)]
+        fn never_runs(_ctx: &mut CheckContext) -> Result<(), crate::api::Failure> {
+            Ok(())
+        }
+
+        let checks = vec![
+            CheckSpec {
+                name: "exists".to_owned(),
+                description: "exists".to_owned(),
+                dependency: None,
+                timeout: None,
+                hidden_rationale: None,
+                run: native(fails),
+            },
+            CheckSpec {
+                name: "compiles".to_owned(),
+                description: "compiles".to_owned(),
+                dependency: Some("exists".to_owned()),
+                timeout: None,
+                hidden_rationale: None,
+                run: native(never_runs),
+            },
+            CheckSpec {
+                name: "runs".to_owned(),
+                description: "runs".to_owned(),
+                dependency: Some("compiles".to_owned()),
+                timeout: None,
+                hidden_rationale: None,
+                run: native(never_runs),
+            },
+        ];
+        let check_dir = tempfile::tempdir().expect("check dir");
+        let work_dir = tempfile::tempdir().expect("work dir");
+        let results = run_checks(&checks, check_dir.path(), work_dir.path(), &[]);
+        assert_eq!(results[0].passed, Some(false));
+        for skipped in &results[1..] {
+            assert_eq!(skipped.passed, None, "{} should be skipped", skipped.name);
+            match &skipped.cause {
+                Some(Cause::Skipped { rationale }) => {
+                    assert_eq!(rationale, "can't check until a frown turns upside down");
+                }
+                other => panic!("expected a skip cause for {}, got {other:?}", skipped.name),
+            }
+        }
+    }
+
+    #[test]
+    fn a_check_that_exceeds_its_timeout_is_reported_as_failed() {
+        // The `Result` return is fixed by `RunKind::Native`'s function
+        // pointer type; this check happens to never fail.
+        #[allow(clippy::unnecessary_wraps)]
+        fn sleeps(_ctx: &mut CheckContext) -> Result<(), crate::api::Failure> {
+            std::thread::sleep(Duration::from_millis(300));
+            Ok(())
+        }
+
+        let checks = vec![CheckSpec {
+            name: "slow".to_owned(),
+            description: "slow".to_owned(),
+            dependency: None,
+            timeout: Some(Duration::from_millis(50)),
+            hidden_rationale: None,
+            run: native(sleeps),
+        }];
+        let check_dir = tempfile::tempdir().expect("check dir");
+        let work_dir = tempfile::tempdir().expect("work dir");
+        let results = run_checks(&checks, check_dir.path(), work_dir.path(), &[]);
+        assert_eq!(results.len(), 1);
+        assert_ne!(
+            results[0].passed,
+            Some(true),
+            "a check that overruns its timeout must not pass"
+        );
+    }
 }
