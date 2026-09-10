@@ -1,12 +1,19 @@
 //! Check execution: per-check isolation, filesystem inheritance,
 //! timeout enforcement, concurrency, and the failure skip cascade
 //! (check50 parity: `runner.py`).
+//!
+//! The scheduler dispatches dependency-free checks first, dispatches
+//! dependents as dependencies pass, and immediately finalizes skipped
+//! checks (with their transitive dependents) when a dependency fails —
+//! preventing the scheduler from hanging.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+use anyhow::Context as _;
 
 use crate::api::CheckContext;
 use crate::graph::Graph;
@@ -21,11 +28,408 @@ enum Message {
     Done(String, CheckResult),
 }
 
-/// Shared mutable state for the running checks.
-struct Shared {
-    results: HashMap<String, CheckResult>,
-    run_dirs: HashMap<String, PathBuf>,
-    finalized: HashMap<String, bool>,
+/// Per-check runtime state.
+struct CheckState {
+    result: Option<CheckResult>,
+    run_dir: Option<PathBuf>,
+}
+
+/// The scheduler: owns all per-check state and drives execution.
+struct Scheduler<'a> {
+    graph: Graph,
+    checks: &'a [CheckSpec],
+    check_dir: PathBuf,
+    run_root: PathBuf,
+    seed_dir: PathBuf,
+    log_arcs: HashMap<String, Arc<Mutex<Vec<String>>>>,
+    data_arcs: HashMap<String, Arc<Mutex<serde_json::Map<String, serde_json::Value>>>>,
+    state: Arc<Mutex<HashMap<String, CheckState>>>,
+    sender: mpsc::Sender<Message>,
+    receiver: mpsc::Receiver<Message>,
+    /// Deadlines for in-flight checks (enforced by the receive loop).
+    deadlines: HashMap<String, Instant>,
+    /// Number of checks that have been finalized (passed, failed, or
+    /// skipped).
+    finalized: usize,
+    /// Total checks that will run (after target filtering).
+    total: usize,
+    /// The target subgraph (None = run all checks).
+    scheduled: Option<HashMap<Option<String>, Vec<String>>>,
+}
+
+impl<'a> Scheduler<'a> {
+    /// Creates a scheduler with a temp working area seeded from
+    /// `work_dir`.
+    ///
+    /// # Errors
+    /// Returns an error when the temp dir or seed copy fails.
+    pub fn new(
+        checks: &'a [CheckSpec],
+        graph: Graph,
+        check_dir: &Path,
+        work_dir: &Path,
+        scheduled: Option<HashMap<Option<String>, Vec<String>>>,
+    ) -> anyhow::Result<Self> {
+        let temp = tempfile::Builder::new()
+            .prefix("u50-check-")
+            .tempdir()
+            .context("could not create the check working area")?;
+        let run_root = temp.path().to_path_buf();
+        let seed_dir = run_root.join("-");
+        crate::api::copy_tree(work_dir, &seed_dir)
+            .unwrap_or_else(|e| tracing::warn!(error = %e, "could not seed the working area"));
+        // Forget the TempDir so the run dirs outlive this function; the
+        // caller cleans up via `cleanup`.
+        let _ = temp.keep();
+
+        let log_arcs: HashMap<String, Arc<Mutex<Vec<String>>>> = graph
+            .order
+            .iter()
+            .map(|name| (name.clone(), Arc::new(Mutex::new(Vec::new()))))
+            .collect();
+        let data_arcs: HashMap<String, Arc<Mutex<serde_json::Map<String, serde_json::Value>>>> =
+            graph
+                .order
+                .iter()
+                .map(|name| (name.clone(), Arc::new(Mutex::new(serde_json::Map::new()))))
+                .collect();
+
+        let total = graph.order.len();
+        let (sender, receiver) = mpsc::channel();
+
+        Ok(Self {
+            graph,
+            checks,
+            check_dir: check_dir.to_path_buf(),
+            run_root,
+            seed_dir,
+            log_arcs,
+            data_arcs,
+            state: Arc::new(Mutex::new(HashMap::new())),
+            sender,
+            receiver,
+            deadlines: HashMap::new(),
+            finalized: 0,
+            total,
+            scheduled,
+        })
+    }
+
+    /// Dispatches a check thread and records its deadline. Called for
+    /// both root checks (no dependency) and dependents of passing
+    /// checks.
+    fn dispatch(&mut self, name: &str, dep_run_dir: Option<&Path>) {
+        let index = self.graph.specs[name];
+        let spec = &self.checks[index];
+        let run_dir = self.run_root.join(name);
+        let source = dep_run_dir.unwrap_or(&self.seed_dir).to_path_buf();
+        if let Err(e) = crate::api::copy_tree(&source, &run_dir) {
+            tracing::warn!(error = %e, check = name, "could not set up the run dir");
+        }
+
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(
+                name.to_owned(),
+                CheckState {
+                    result: None,
+                    run_dir: Some(run_dir.clone()),
+                },
+            );
+
+        // Record the deadline for the timeout enforcement loop.
+        self.deadlines
+            .insert(name.to_owned(), Instant::now() + self.graph.timeouts[name]);
+
+        let ctx = CheckContext::new(
+            run_dir,
+            self.check_dir.clone(),
+            Arc::clone(&self.log_arcs[name]),
+            Arc::clone(&self.data_arcs[name]),
+        );
+        let _hidden = self.graph.hidden.get(name).cloned();
+        let kind = spec.run.clone();
+        let sender = self.sender.clone();
+        let name_owned = name.to_owned();
+
+        std::thread::spawn(move || {
+            let started = Instant::now();
+            let mut ctx = ctx;
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match &kind {
+                RunKind::Native(run) => run(&mut ctx),
+                RunKind::Yaml(steps) => crate::yaml::run_steps(&mut ctx, steps),
+            }));
+            let elapsed = started.elapsed();
+            let mut result = CheckResult {
+                name: name_owned.clone(),
+                description: String::new(),
+                passed: None,
+                log: Vec::new(),
+                cause: None,
+                data: serde_json::Map::new(),
+                dependency: None,
+            };
+            match outcome {
+                Ok(Ok(())) => result.passed = Some(true),
+                Ok(Err(failure)) => {
+                    result.passed = Some(false);
+                    result.cause = Some(match failure.expected {
+                        Some(expected) => Cause::Mismatch {
+                            rationale: failure.rationale,
+                            help: failure.help,
+                            expected,
+                            actual: failure.actual.unwrap_or_default(),
+                        },
+                        None => Cause::Failure {
+                            rationale: failure.rationale,
+                            help: failure.help,
+                        },
+                    });
+                }
+                Err(panic) => {
+                    let message = panic
+                        .downcast_ref::<String>()
+                        .cloned()
+                        .or_else(|| panic.downcast_ref::<&str>().map(|s| (*s).to_owned()))
+                        .unwrap_or_else(|| "unknown panic".to_owned());
+                    result.cause = Some(Cause::Error {
+                        rationale: "check50 ran into an error while running checks!".to_owned(),
+                        error: ErrorInfo {
+                            kind: "Panic".to_owned(),
+                            value: message,
+                            traceback: vec![format!(
+                                "check panicked after {:.1}s",
+                                elapsed.as_secs_f32()
+                            )],
+                            data: serde_json::Map::new(),
+                        },
+                    });
+                }
+            }
+            let _ = sender.send(Message::Done(name_owned, result));
+        });
+    }
+
+    /// Marks `name` (and transitively its dependents) as skipped when a
+    /// dependency did not pass. Called inside the receive loop so the
+    /// scheduler never hangs waiting for checks that will never be
+    /// dispatched.
+    fn cascade_skip(&mut self, name: &str) {
+        let mut stack = vec![name.to_owned()];
+        while let Some(current) = stack.pop() {
+            if self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .contains_key(&current)
+            {
+                continue;
+            }
+            self.finalized += 1;
+            self.state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(
+                    current.clone(),
+                    CheckState {
+                        result: Some(CheckResult {
+                            name: current.clone(),
+                            description: self.graph.descriptions[&current].clone(),
+                            passed: None,
+                            log: Vec::new(),
+                            cause: Some(Cause::skipped()),
+                            data: serde_json::Map::new(),
+                            dependency: self.graph.dependency_of[&current].clone(),
+                        }),
+                        run_dir: None,
+                    },
+                );
+            if let Some(dependents) = self.graph.dependents.get(&Some(current)) {
+                stack.extend(dependents.iter().cloned());
+            }
+        }
+    }
+
+    /// Enforces per-check timeouts: marks expired checks as timed out
+    /// and cascades skips over their dependents.
+    fn enforce_timeouts(&mut self) {
+        let now = Instant::now();
+        let expired: Vec<String> = self
+            .deadlines
+            .iter()
+            .filter(|(_, deadline)| **deadline <= now)
+            .map(|(name, _)| name.clone())
+            .collect();
+        for name in expired {
+            self.deadlines.remove(&name);
+            self.finalized += 1;
+            let timeout = self.graph.timeouts[&name].as_secs();
+            self.state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(
+                    name.clone(),
+                    CheckState {
+                        result: Some(CheckResult {
+                            name: name.clone(),
+                            description: self.graph.descriptions[&name].clone(),
+                            passed: Some(false),
+                            log: Vec::new(),
+                            cause: Some(Cause::failure(format!(
+                                "check timed out after {timeout} seconds"
+                            ))),
+                            data: serde_json::Map::new(),
+                            dependency: self.graph.dependency_of[&name].clone(),
+                        }),
+                        run_dir: None,
+                    },
+                );
+            self.cascade_skip(&name);
+        }
+    }
+
+    /// Runs the event loop until all checks are finalized.
+    pub fn run_loop(&mut self) {
+        // Dispatch the root checks (respecting the target subgraph).
+        let roots = match &self.scheduled {
+            Some(subgraph) => subgraph.get(&None).cloned().unwrap_or_default(),
+            None => self
+                .graph
+                .dependents
+                .get(&None)
+                .cloned()
+                .unwrap_or_default(),
+        };
+        for name in &roots {
+            self.dispatch(name, None);
+        }
+
+        loop {
+            if self.finalized >= self.total {
+                break;
+            }
+            // Enforce timeouts, then wait for a completion.
+            self.enforce_timeouts();
+            if self.finalized >= self.total {
+                break;
+            }
+            let next_deadline = self.deadlines.values().copied().min();
+            let wait = next_deadline.map_or(Duration::from_millis(50), |d| {
+                d.saturating_duration_since(Instant::now())
+                    .min(Duration::from_millis(50))
+            });
+            match self.receiver.recv_timeout(wait) {
+                Ok(Message::Done(name, result)) => {
+                    if self
+                        .state
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .get(name.as_str())
+                        .is_some_and(|s| s.result.is_some())
+                    {
+                        continue; // late result for a timed-out check
+                    }
+                    self.finalized += 1;
+                    self.deadlines.remove(&name);
+                    let passed = result.passed == Some(true);
+                    self.state
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .get_mut(name.as_str())
+                        .expect("state was just checked")
+                        .result = Some(result);
+                    if passed {
+                        // Dispatch dependents, inheriting the run dir.
+                        let dep_dir = self
+                            .state
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .get(name.as_str())
+                            .and_then(|s| s.run_dir.clone());
+                        let dependents = match &self.scheduled {
+                            Some(subgraph) => subgraph
+                                .get(&Some(name.clone()))
+                                .cloned()
+                                .unwrap_or_default(),
+                            None => self
+                                .graph
+                                .dependents
+                                .get(&Some(name.clone()))
+                                .cloned()
+                                .unwrap_or_default(),
+                        };
+                        for dependent in &dependents {
+                            self.dispatch(dependent, dep_dir.as_deref());
+                        }
+                    } else {
+                        // Failure: immediately cascade skips over all
+                        // transitive dependents (prevents hangs).
+                        self.cascade_skip(&name);
+                    }
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    // Handled by enforce_timeouts at the top of the loop.
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+    }
+
+    /// Collects the results in declaration order and cleans up.
+    #[must_use]
+    pub fn collect(self) -> Vec<CheckResult> {
+        let state = std::mem::take(
+            &mut *self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        // Clean up the working area.
+        let _ = std::fs::remove_dir_all(&self.run_root);
+        self.graph
+            .order
+            .iter()
+            .map(|name| {
+                let entry = state.get(name);
+                let mut result =
+                    entry
+                        .and_then(|s| s.result.clone())
+                        .unwrap_or_else(|| CheckResult {
+                            name: name.clone(),
+                            description: self.graph.descriptions[name].clone(),
+                            passed: None,
+                            log: Vec::new(),
+                            cause: Some(Cause::skipped()),
+                            data: serde_json::Map::new(),
+                            dependency: self.graph.dependency_of[name].clone(),
+                        });
+                let log = self.log_arcs[name]
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                result.log = if log.len() > MAX_LOG_LINES {
+                    let mut lines = vec!["...".to_owned()];
+                    lines.extend(log[log.len() - MAX_LOG_LINES..].iter().cloned());
+                    lines
+                } else {
+                    log.clone()
+                };
+                drop(log);
+                result.data.clone_from(
+                    &self.data_arcs[name]
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner),
+                );
+                result
+                    .dependency
+                    .clone_from(&self.graph.dependency_of[name]);
+                result
+                    .description
+                    .clone_from(&self.graph.descriptions[name]);
+                result
+            })
+            .collect()
+    }
 }
 
 /// Runs `checks` (one plugin's check set, in declaration order) against
@@ -33,15 +437,7 @@ struct Shared {
 /// `check_dir`. `targets` restricts which checks run (plus their
 /// dependency chains); empty means all.
 ///
-/// Returns the results in declaration order, mirroring check50:
-///
-/// (Long by necessity: the dispatch loop, timeout enforcement, and skip
-/// cascade form one interleaved scheduling pass. One function keeps the
-/// state machine readable.)
-#[allow(clippy::too_many_lines)]
-/// passing checks dispatch their dependents, failures cascade as skips
-/// (`"can't check until a frown turns upside down"`), and per-check
-/// timeouts fail with `"check timed out after N seconds"`.
+/// Returns the results in declaration order, mirroring check50.
 #[must_use]
 pub fn run_checks(
     checks: &[CheckSpec],
@@ -70,373 +466,28 @@ pub fn run_checks(
             })
             .collect();
     }
-    let should_run = |name: &str| -> bool {
-        match &scheduled {
-            None => true,
-            Some(subgraph) => subgraph
-                .values()
-                .any(|children| children.iter().any(|child| child == name)),
+
+    let mut sched = match Scheduler::new(checks, graph, check_dir, work_dir, scheduled) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!(error = %e, "could not create the check working area");
+            return checks
+                .iter()
+                .map(|spec| CheckResult {
+                    name: spec.name.clone(),
+                    description: spec.description.clone(),
+                    passed: None,
+                    log: Vec::new(),
+                    cause: Some(Cause::failure(format!(
+                        "could not create the working area: {e}"
+                    ))),
+                    data: serde_json::Map::new(),
+                    dependency: spec.dependency.clone(),
+                })
+                .collect();
         }
     };
 
-    let temp = tempfile::Builder::new()
-        .prefix("u50-check-")
-        .tempdir()
-        .expect("could not create the check working area");
-    let run_root = temp.path().to_path_buf();
-    let seed_dir = run_root.join("-");
-    crate::api::copy_tree(work_dir, &seed_dir)
-        .unwrap_or_else(|e| tracing::warn!(error = %e, "could not seed the working area"));
-
-    let log_arcs: HashMap<String, Arc<Mutex<Vec<String>>>> = graph
-        .order
-        .iter()
-        .map(|name| (name.clone(), Arc::new(Mutex::new(Vec::new()))))
-        .collect();
-    let data_arcs: HashMap<String, Arc<Mutex<serde_json::Map<String, serde_json::Value>>>> = graph
-        .order
-        .iter()
-        .map(|name| (name.clone(), Arc::new(Mutex::new(serde_json::Map::new()))))
-        .collect();
-
-    let (sender, receiver) = mpsc::channel::<Message>();
-    let shared = Arc::new(Mutex::new(Shared {
-        results: HashMap::new(),
-        run_dirs: HashMap::new(),
-        finalized: HashMap::new(),
-    }));
-
-    let total = graph.order.iter().filter(|name| should_run(name)).count();
-    let mut deadlines: HashMap<String, Instant> = HashMap::new();
-
-    if let Some(children) = scheduled.as_ref().and_then(|s| s.get(&None)) {
-        for name in children {
-            dispatch_check(
-                name,
-                None,
-                checks,
-                &graph,
-                &log_arcs,
-                &data_arcs,
-                check_dir,
-                &run_root,
-                &seed_dir,
-                &shared,
-                sender.clone(),
-            );
-        }
-    } else if let Some(children) = graph.dependents.get(&None) {
-        for name in children {
-            if should_run(name) {
-                dispatch_check(
-                    name,
-                    None,
-                    checks,
-                    &graph,
-                    &log_arcs,
-                    &data_arcs,
-                    check_dir,
-                    &run_root,
-                    &seed_dir,
-                    &shared,
-                    sender.clone(),
-                );
-            }
-        }
-    }
-
-    loop {
-        let done = shared
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .finalized
-            .len();
-        if done >= total {
-            break;
-        }
-        let next_deadline = deadlines.values().copied().min();
-        let wait = next_deadline.map_or(Duration::from_millis(50), |d| {
-            d.saturating_duration_since(Instant::now())
-                .min(Duration::from_millis(50))
-        });
-        match receiver.recv_timeout(wait) {
-            Ok(Message::Done(name, result)) => {
-                let mut guard = shared
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                if guard.finalized.contains_key(&name) {
-                    continue;
-                }
-                guard.finalized.insert(name.clone(), true);
-                let passed = result.passed == Some(true);
-                guard.results.insert(name.clone(), result);
-                drop(guard);
-                deadlines.remove(&name);
-                if passed
-                    && let Some(children) = scheduled
-                        .as_ref()
-                        .and_then(|s| s.get(&Some(name.clone())))
-                        .or_else(|| graph.dependents.get(&Some(name.clone())))
-                {
-                    for child in children {
-                        if !should_run(child) {
-                            continue;
-                        }
-                        let dep_dir = shared
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .run_dirs
-                            .get(&name)
-                            .cloned();
-                        dispatch_check(
-                            child,
-                            dep_dir,
-                            checks,
-                            &graph,
-                            &log_arcs,
-                            &data_arcs,
-                            check_dir,
-                            &run_root,
-                            &seed_dir,
-                            &shared,
-                            sender.clone(),
-                        );
-                        let timeout = graph.timeouts[child.as_str()];
-                        deadlines.insert(child.clone(), Instant::now() + timeout);
-                    }
-                }
-            }
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                let now = Instant::now();
-                let expired: Vec<String> = deadlines
-                    .iter()
-                    .filter(|(_, deadline)| **deadline <= now)
-                    .map(|(name, _)| name.clone())
-                    .collect();
-                for name in expired {
-                    let mut guard = shared
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    if guard.finalized.contains_key(&name) {
-                        deadlines.remove(&name);
-                        continue;
-                    }
-                    guard.finalized.insert(name.clone(), true);
-                    let timeout = graph.timeouts[&name].as_secs();
-                    guard.results.insert(
-                        name.clone(),
-                        CheckResult {
-                            name: name.clone(),
-                            description: graph.descriptions[&name].clone(),
-                            passed: Some(false),
-                            log: Vec::new(),
-                            cause: Some(Cause::failure(format!(
-                                "check timed out after {timeout} seconds"
-                            ))),
-                            data: serde_json::Map::new(),
-                            dependency: graph.dependency_of[&name].clone(),
-                        },
-                    );
-                    deadlines.remove(&name);
-                }
-            }
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
-        }
-    }
-
-    let guard = shared
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let mut results: HashMap<String, CheckResult> = guard.results.clone();
-    drop(guard);
-    for name in &graph.order {
-        if !should_run(name) {
-            continue;
-        }
-        let Some(result) = results.get(name) else {
-            results.insert(
-                name.clone(),
-                CheckResult {
-                    name: name.clone(),
-                    description: graph.descriptions[name].clone(),
-                    passed: None,
-                    log: Vec::new(),
-                    cause: Some(Cause::skipped()),
-                    data: serde_json::Map::new(),
-                    dependency: graph.dependency_of[name].clone(),
-                },
-            );
-            continue;
-        };
-        if result.passed != Some(true) {
-            let mut stack = vec![name.clone()];
-            while let Some(current) = stack.pop() {
-                for dependent in graph
-                    .dependents
-                    .get(&Some(current.clone()))
-                    .into_iter()
-                    .flatten()
-                {
-                    if should_run(dependent)
-                        && results
-                            .get(dependent)
-                            .is_none_or(|r| r.passed.is_none() && r.cause.is_none())
-                    {
-                        results.insert(
-                            dependent.clone(),
-                            CheckResult {
-                                name: dependent.clone(),
-                                description: graph.descriptions[dependent].clone(),
-                                passed: None,
-                                log: Vec::new(),
-                                cause: Some(Cause::skipped()),
-                                data: serde_json::Map::new(),
-                                dependency: graph.dependency_of[dependent].clone(),
-                            },
-                        );
-                        stack.push(dependent.clone());
-                    }
-                }
-            }
-        }
-    }
-
-    graph
-        .order
-        .iter()
-        .filter(|name| should_run(name))
-        .map(|name| {
-            let mut result = results.remove(name).unwrap_or_else(|| CheckResult {
-                name: name.clone(),
-                description: graph.descriptions[name].clone(),
-                passed: None,
-                log: Vec::new(),
-                cause: Some(Cause::skipped()),
-                data: serde_json::Map::new(),
-                dependency: graph.dependency_of[name].clone(),
-            });
-            let log = log_arcs[name]
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            result.log = if log.len() > MAX_LOG_LINES {
-                let mut lines = vec!["...".to_owned()];
-                lines.extend(log[log.len() - MAX_LOG_LINES..].iter().cloned());
-                lines
-            } else {
-                log.clone()
-            };
-            drop(log);
-            result.data.clone_from(
-                &data_arcs[name]
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner),
-            );
-            result.dependency.clone_from(&graph.dependency_of[name]);
-            result.description.clone_from(&graph.descriptions[name]);
-            result
-        })
-        .collect()
-}
-
-/// Spawns the check thread for `name`. The thread creates the check's
-/// run dir (inheriting the dependency's filesystem), runs the check, and
-/// sends the result back through the channel.
-#[allow(clippy::too_many_arguments)]
-fn dispatch_check(
-    name: &str,
-    dependency_run_dir: Option<PathBuf>,
-    checks: &[CheckSpec],
-    graph: &Graph,
-    log_arcs: &HashMap<String, Arc<Mutex<Vec<String>>>>,
-    data_arcs: &HashMap<String, Arc<Mutex<serde_json::Map<String, serde_json::Value>>>>,
-    check_dir: &Path,
-    run_root: &Path,
-    seed_dir: &Path,
-    shared: &Arc<Mutex<Shared>>,
-    sender: mpsc::Sender<Message>,
-) {
-    let index = graph.specs[name];
-    let spec = &checks[index];
-    let run_dir = run_root.join(name);
-    let source = dependency_run_dir.unwrap_or_else(|| seed_dir.to_path_buf());
-    if let Err(e) = crate::api::copy_tree(&source, &run_dir) {
-        tracing::warn!(error = %e, check = name, "could not set up the run dir");
-    }
-    shared
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .run_dirs
-        .insert(name.to_owned(), run_dir.clone());
-
-    let ctx = CheckContext::new(
-        run_dir,
-        check_dir.to_path_buf(),
-        Arc::clone(&log_arcs[name]),
-        Arc::clone(&data_arcs[name]),
-    );
-    let hidden = graph.hidden.get(name).cloned();
-    let kind = spec.run.clone();
-    let _sender2 = sender.clone();
-    let name_owned = name.to_owned();
-
-    std::thread::spawn(move || {
-        let started = Instant::now();
-        let mut ctx = ctx;
-        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match &kind {
-            RunKind::Native(run) => run(&mut ctx),
-            RunKind::Yaml(steps) => crate::yaml::run_steps(&mut ctx, steps),
-        }));
-        let elapsed = started.elapsed();
-        let mut result = CheckResult {
-            name: name_owned.clone(),
-            description: String::new(),
-            passed: None,
-            log: Vec::new(),
-            cause: None,
-            data: serde_json::Map::new(),
-            dependency: None,
-        };
-        match outcome {
-            Ok(Ok(())) => result.passed = Some(true),
-            Ok(Err(failure)) => {
-                result.passed = Some(false);
-                if let Some(rationale) = hidden {
-                    result.cause = Some(Cause::failure(rationale));
-                } else {
-                    result.cause = Some(match failure.expected {
-                        Some(expected) => Cause::Mismatch {
-                            rationale: failure.rationale,
-                            help: failure.help,
-                            expected,
-                            actual: failure.actual.unwrap_or_default(),
-                        },
-                        None => Cause::Failure {
-                            rationale: failure.rationale,
-                            help: failure.help,
-                        },
-                    });
-                }
-            }
-            Err(panic) => {
-                let message = panic
-                    .downcast_ref::<String>()
-                    .cloned()
-                    .or_else(|| panic.downcast_ref::<&str>().map(|s| (*s).to_owned()))
-                    .unwrap_or_else(|| "unknown panic".to_owned());
-                result.cause = Some(Cause::Error {
-                    rationale: "check50 ran into an error while running checks!".to_owned(),
-                    error: ErrorInfo {
-                        kind: "Panic".to_owned(),
-                        value: message,
-                        traceback: vec![format!(
-                            "check panicked after {:.1}s",
-                            elapsed.as_secs_f32()
-                        )],
-                        data: serde_json::Map::new(),
-                    },
-                });
-            }
-        }
-        let _ = sender.send(Message::Done(name_owned, result));
-    });
+    sched.run_loop();
+    sched.collect()
 }
