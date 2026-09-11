@@ -396,6 +396,29 @@ its seven formatters, now hosting a tool that no strategy can pip-provision:
   capability/tools section (`valgrind  found (system) / missing`);
   `--setup` bulk-provisions the Uv-strategy capabilities (flask, any
   `dependencies:`) and prints the valgrind guidance line.
+- **Why valgrind cannot be cache-provisioned like the formatters** (verified
+  against the live indexes, not assumed):
+  - The uv pipeline installs _wheels from PyPI_; PyPI's only `valgrind`
+    package is version **0.0.0** — a ctypes helper for controlling callgrind
+    instrumentation from _inside_ a process already running under valgrind.
+    It does not ship the valgrind binary, so there is nothing to provision.
+  - Third-party prebuilt channels do exist (conda-forge packages valgrind)
+    but are a compatibility trap: valgrind is coupled to the host
+    kernel/libc, and conda-forge's builds cover `linux-64`, `linux-aarch64`,
+    `linux-ppc64le`, and `osx-64` only — **no Apple Silicon, no Windows**
+    (upstream valgrind does not support them). A frozen cache binary would
+    break subtly on mismatched kernels, and the strategy could never apply
+    to a whole platform u50 supports. The formatters are cache-installable
+    precisely because they are pure-Python/any-wheel packages; valgrind is
+    the same class of exception as rustfmt (hence `System`, not `Uv`).
+- **Optional, explicit system-bridge** (the safe version of "on-demand"):
+  `u50 --setup` detects the available package manager (apt/dnf/pacman/brew)
+  and — only with an explicit opt-in flag (e.g. `u50 --setup
+--install-system-tools`) and its consent prompt — runs the install
+  command for missing System-strategy tools. Never the default, never
+  silent, never from a check run: mutating the host system is outside the
+  cache-only philosophy, so it stays behind a flag that says exactly what
+  it does. Without the flag, behavior is the planned guidance + skip.
 - **Gate**: golden for a valgrind-shaped check (captured JSON), the
   missing-tool skip path, status-table output, and both legs (the guidance
   path is exercised where valgrind is absent, e.g. CI Windows).
@@ -445,5 +468,7 @@ its seven formatters, now hosting a tool that no strategy can pip-provision:
 - [ ] Phase 8: valgrind `found (system)`/`missing` in `u50 --status`;
       missing-valgrind check skips with guidance; valgrind timeout
       multiplier documented and tested
+- [ ] Phase 8 (opt-in bridge): `--install-system-tools` prompts before
+      mutating the system; default behavior remains guidance + skip
 - [ ] Capability registry: adding a throwaway capability = 1 module +
       1 registration line; `--status`/`--setup` pick it up generically
