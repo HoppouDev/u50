@@ -30,8 +30,7 @@ not style-local or check-local code:
   application-wide, pluggable assets rather than style50 internals.
 - **Capability plugins** (Phases 7-8): flask and valgrind become **their own
   plugins** — self-contained modules registered in a capability registry,
-  each declaring its tool/dependency needs (uv-provisioned stack vs
-  resolver-discovered binary) and exposing its surface to _both_ the Python
+  each declaring its tool/dependency needs (uv-provisioned stack vs pinned downloaded binary) and exposing its surface to _both_ the Python
   bridge (`check50.flask`, `check50.c.valgrind`) and the native Rust
   check API. Adding a future capability is one module + one registration
   line — the same rule the language and check-set registries follow.
@@ -104,11 +103,11 @@ u50_tools/                    NEW shared crate — application-wide, not
 │                             declares which resolver provisions it;
 │                             plugins: uv (the extracted pipeline, for pip
 │                             packages), toolchain (rustfmt from the Rust
-│                             toolchain), system (discover-only, e.g.
-│                             valgrind), download (pinned standalone
-│                             binaries + SHA-256, platform-mapped); cache
-│                             paths parameterized by domain (`u50/style50`,
-│                             `u50/check50`)
+│                             toolchain), system (discover-only), download
+│                             (pinned standalone binaries + SHA-256,
+│                             platform-mapped — first consumer: valgrind);
+│                             cache paths parameterized by domain
+│                             (`u50/style50`, `u50/check50`)
 ├── registry.rs               plugin-scaffolding helpers shared by every
 │                             registry (unique-id/name validation, path-safe
 │                             names, declaration-order iteration); the
@@ -123,9 +122,9 @@ u50_check/src/
 │                             + one registration line per capability)
 │   ├── flask.rs               FlaskCapability (Uv strategy: pinned Flask
 │                             stack venv, lazily provisioned once)
-│   └── valgrind.rs            ValgrindCapability (System strategy:
-│                             discover-only, skip-with-guidance when
-│                             absent)
+│   └── valgrind.rs            ValgrindCapability (download resolver:
+│                             pinned prebuilt binary, no system reliance,
+│                             skip-with-guidance on unsupported platforms)
 ├── python.rs                  feature-gated module root (mod python when built)
 │   ├── interp.rs              interpreter lifecycle: one VM per run, warm pool
 │                             of scopes, sys.path wiring (check dir, run dir,
@@ -193,14 +192,11 @@ pub trait CapabilityPlugin: Sync {
     /// submodule surface it backs.
     fn id(&self) -> &'static str;
     /// Availability through u50_tools: the capability's tools are resolved
-/// by their declared resolver plugins (flask -> the `uv` resolver: is
-/// the pinned stack provisioned? valgrind -> the `system` resolver:
-/// discovered binary?). Reported by `u50 --status`.
-    fn availability(&self) -> Availability;   // Available | NeedsProvision | Missing { guidance }
-
-    fn availability(&self) -> Availability;   // Available | NeedsProvision | Missing { guidance }
-    /// Provision when supported by the strategy (flask: yes, once per
-    /// machine; valgrind: never — prints guidance instead).
+    /// by their declared resolver plugins (flask -> the `uv` resolver: is
+    /// the pinned stack provisioned? valgrind -> the `download` resolver:
+    /// pinned prebuilt binary). Reported by `u50 --status`.
+    /// Provision when supported by the resolver (flask: yes, once per
+    /// machine; valgrind: downloads the pinned build instead).
     fn ensure(&self) -> anyhow::Result<()>;
     /// The native Rust surface (usable from native check sets, not just
     /// Python checks) — e.g. `ctx.flask().get(...)`, `ctx.c_valgrind(..)`.
@@ -216,7 +212,7 @@ Consequences of the shape:
   `python/flask.rs` / `python/c.rs` are thin bridges; the logic lives in the
   capability module. Native Rust check sets can use the same capability
   without Python.
-- **Provisioning is declarative**: each capability names its strategy and
+- **Provisioning is declarative**: each capability names its resolver and
   package/binary needs; `u50 --status` reports every capability's
   availability, `u50 --setup` bulk-provisions the provisionable ones (and
   prints guidance for the discover-only ones) — one table, all domains.
@@ -358,23 +354,27 @@ pub struct ToolSpec {
     check-side venvs (Phase 6).
   - `toolchain` — resolves rustfmt from the Rust toolchain; provisioning
     unsupported by design (the rustfmt precedent).
-  - `system` — discover-only (valgrind): bounded standard-location lookup,
-    `found (system)`/`missing`; `provision` returns guidance (and, behind
-    the Phase 8 opt-in consent flag, the package-manager bridge).
+  - `system` — discover-only: bounded standard-location lookup,
+    `found (system)`/`missing`; `provision` is unsupported by design and
+    returns guidance. No shipped tool declares it initially — it exists as
+    the read-only escape hatch for hosts where nothing else can serve a
+    tool.
   - `download` — pinned standalone-binary downloads into the cache
     (`<cache>/u50/<domain>/bin/<tool>/<version>/`) with pinned SHA-256
     checksums and an explicit platform-mapping table. Implemented and
     unit-tested in Phase 5 (against a synthetic local file server — no
-    network in tests); reserved for future tools that ship standalone
-    binaries rather than pip wheels. Never the default for
-    pip-installable tools — `uv` stays preferred wherever a wheel exists.
+    network in tests). Its first consumer is valgrind (Phase 8); it is
+    never the default for pip-installable tools — `uv` stays preferred
+    wherever a wheel exists.
 - **Policy hooks**: each resolver declares whether `provision` is
   supported. `u50 --status` walks every registered tool → its declared
-  resolver → `resolve()` → status line. `u50 --setup` calls `provision()`
-  for tools whose resolver supports it and prints each resolver's
-  guidance for the rest. The opt-in system-mutation bridge (Phase 8) is
-  simply `system`'s provision behavior gated behind the consent flag —
-  not special-cased plumbing.
+  resolver → `resolve()` → status line. **`u50 --install-tools`** (new
+  root-level flag) bulk-provisions every registered tool through its
+  declared resolver — style formatters, capability stacks, declared
+  `dependencies:`, pinned binary downloads — and prints each resolver's
+  guidance for what it cannot provision; lazy per-tool provisioning on
+  first use is unchanged. `--setup` keeps its existing style-only meaning
+  and is documented as superseded by `--install-tools`.
 - **Security**: the `download` resolver pins exact versions + SHA-256 and
   is cache-first; `uv` pins versions and reuses the shared cache offline;
   `system` only reads. Every resolver's config is validated through the
@@ -427,12 +427,12 @@ using the extracted pipeline:
   legs in CI with a warm cache; cold-cache provisioning shown on stderr
   only.
 
-### Phase 7 — flask: a capability plugin (Uv strategy)
+### Phase 7 — flask: a capability plugin (the `uv` resolver)
 
 `FlaskCapability` in `capabilities/flask.rs`, unblocked by Phases 5-6:
 Flask + Werkzeug + Jinja2 + click + itsdangerous + markupsafe are all pure
 Python, so the capability's need is "a pinned Python package set" — exactly
-what the Uv strategy provisions:
+what the `uv` resolver provisions:
 
 - **Lazy, pinned provisioning**: first `import check50.flask` (or first
   native use) provisions a pinned Flask stack venv at
@@ -451,18 +451,36 @@ what the Uv strategy provisions:
   output; cold-cache provisioning on stderr only; `u50 --status` shows the
   capability.
 
-### Phase 8 — valgrind: a capability plugin (the `system` resolver)
+### Phase 8 — valgrind: a capability plugin (the `download` resolver)
 
-`ValgrindCapability` in `capabilities/valgrind.rs`, backed by the `system`
-resolver plugin — the resolver-plugin system in action for a tool that no
-provisioning resolver can install:
+`ValgrindCapability` in `capabilities/valgrind.rs`, backed by the `download`
+resolver plugin — valgrind ships as **pinned prebuilt binaries** resolved
+into u50's cache, exactly like the formatters are provisioned, with no
+reliance on any system installation:
 
-- **Discovery, not installation**: valgrind is a system C tool; the
-  capability reports `found (cache)` / `found (system)` / `missing`.
-  `ensure()` never installs: a missing valgrind prints actionable guidance
-  (`apt/dnf/brew install valgrind`) as a non-fatal line. A check set that
-  actually uses valgrind **skips with guidance** (check50 `Cause`-shaped)
-  when the tool is absent — never a whole-run bail.
+- **Pinned provisioning**: the capability's `ToolSpec` declares the
+  `download` resolver with a pinned upstream build per platform
+  (conda-forge valgrind builds: `linux-64`, `linux-aarch64`,
+  `linux-ppc64le`, `osx-64`), each with a pinned URL + SHA-256 in an
+  explicit platform-mapping table. First use (or `u50 --install-tools`)
+  downloads the pinned package into
+  `<cache>/u50/check50/valgrind/<version>/<platform>/` and extracts the
+  full prefix (`bin/valgrind` + `lib/valgrind/*` — valgrind locates its
+  runtime directory relative to the binary, so the extracted prefix is
+  self-contained). `provision` is idempotent and cache-first; `--offline`
+  uses only the cached copy.
+- **No system reliance**: the `ToolSpec` declares **no `system` fallback** —
+  a missing valgrind never silently degrades to whatever the host happens
+  to have installed. `u50 --status` shows `found (cache)` / `missing` /
+  `unsupported (platform)`:
+  - `unsupported (platform)` — upstream valgrind has no builds for Apple
+    Silicon or Windows (see the platform map above); valgrind-decorated
+    checks on those platforms **skip with guidance** naming the
+    limitation, instead of depending on a system install.
+- **Runtime self-check**: a pinned prebuilt binary can still mismatch the
+  host kernel, so provision runs `valgrind --version` once; a failure or
+  crash marks the cached copy bad and reports a clear error
+  (re-provision/skip) instead of letting checks fail mysteriously.
 - **`python/c.rs`** bridges `check50.c.valgrind`'s surface (decorate a
   check so its spawned programs run under valgrind and valgrind-clean
   output is asserted — exact semantics pinned by re-fetching `c.py`, the
@@ -471,36 +489,21 @@ provisioning resolver can install:
   checks get a documented multiplier (e.g. ×25, capped) applied to the
   effective deadline — the author's explicit `timeout=` always wins over
   the multiplier.
-- **`u50 --status` / `--setup`**: the root-level table gains the
-  capability/tools section (`valgrind  found (system) / missing`);
-  `--setup` bulk-provisions the Uv-strategy capabilities (flask, any
-  `dependencies:`) and prints the valgrind guidance line.
-- **Why valgrind cannot be cache-provisioned like the formatters** (verified
-  against the live indexes, not assumed):
-  - The uv pipeline installs _wheels from PyPI_; PyPI's only `valgrind`
-    package is version **0.0.0** — a ctypes helper for controlling callgrind
-    instrumentation from _inside_ a process already running under valgrind.
-    It does not ship the valgrind binary, so there is nothing to provision.
-  - Third-party prebuilt channels do exist (conda-forge packages valgrind)
-    but are a compatibility trap: valgrind is coupled to the host
-    kernel/libc, and conda-forge's builds cover `linux-64`, `linux-aarch64`,
-    `linux-ppc64le`, and `osx-64` only — **no Apple Silicon, no Windows**
-    (upstream valgrind does not support them). A frozen cache binary would
-    break subtly on mismatched kernels, and the strategy could never apply
-    to a whole platform u50 supports. The formatters are cache-installable
-    precisely because they are pure-Python/any-wheel packages; valgrind is
-    the same class of exception as rustfmt (hence `System`, not `Uv`).
-- **Optional, explicit system-bridge** (the safe version of "on-demand"):
-  `u50 --setup` detects the available package manager (apt/dnf/pacman/brew)
-  and — only with an explicit opt-in flag (e.g. `u50 --setup
---install-system-tools`) and its consent prompt — runs the install
-  command for missing System-strategy tools. Never the default, never
-  silent, never from a check run: mutating the host system is outside the
-  cache-only philosophy, so it stays behind a flag that says exactly what
-  it does. Without the flag, behavior is the planned guidance + skip.
+- **`u50 --status` / `--install-tools`**: the root-level table gains the
+  capability/tools section (`valgrind  found (cache) / missing /
+unsupported (platform)`); `--install-tools` provisions every registered
+  tool through its declared resolver (style formatters, flask, declared
+  `dependencies:` via `uv`; valgrind via `download`).
+- **Why the pip route is impossible** (verified against the live indexes,
+  not assumed): PyPI's only `valgrind` package is version **0.0.0** — a
+  ctypes helper for controlling callgrind instrumentation from _inside_ a
+  process already running under valgrind. It does not ship the valgrind
+  binary, so the `uv` resolver has nothing to install; `download` with
+  pinned prebuilt packages is the only honest channel.
 - **Gate**: golden for a valgrind-shaped check (captured JSON), the
-  missing-tool skip path, status-table output, and both legs (the guidance
-  path is exercised where valgrind is absent, e.g. CI Windows).
+  provision-on-first-use + offline-cache path, checksum-verification
+  failure, the `unsupported (platform)` skip (CI Windows / Apple Silicon),
+  and the runtime self-check failure path.
 
 ## Risks and mitigations
 
@@ -519,7 +522,8 @@ provisioning resolver can install:
 | `u50_tools` extraction regresses style50                                                 | Re-exports keep the public API stable; style50's golden fixtures + tool tests are the regression net; the extraction is behavior-preserving by construction (moves + parameterization, no rewrites).                                    |
 | Capability plugins drift from upstream `flask.py`/`c.py` semantics                       | Semantics pinned by re-fetching the source (the `tmp/check50-src` snapshot is stale) and by golden fixtures against captured check50 output; the capability trait keeps each surface small enough to verify in isolation.               |
 | Capability registry bloat (every helper wants to be a capability)                        | A capability earns registration by owning a tool/dependency strategy and a dual (native + Python) surface; pure helpers stay in `u50_tools`. Documented admission rule.                                                                 |
-| valgrind absent on the host                                                              | `System` strategy reports `missing`; affected checks skip with guidance; `--status` makes the gap visible before a run.                                                                                                                 |
+| Pinned valgrind binary vs host kernel mismatch                                           | Runtime self-check (`valgrind --version`) at provision marks bad cache copies with a clear error (re-provision/skip); per-platform version fixtures; affected checks skip rather than fail mysteriously.                                |
+| valgrind has no build for the host platform (Apple Silicon, Windows)                     | `unsupported (platform)` status; valgrind-decorated checks skip with guidance naming the limitation; no system fallback is declared.                                                                                                    |
 
 ## Verification checklist
 
@@ -549,10 +553,13 @@ provisioning resolver can install:
 - [ ] Phase 7: pinned Flask stack provisions once (`ensure()` idempotent);
       a flask check fixture matches captured check50 JSON; capability
       visible in `u50 --status`
-- [ ] Phase 8: valgrind `found (system)`/`missing` in `u50 --status`;
-      missing-valgrind check skips with guidance; valgrind timeout
-      multiplier documented and tested
-- [ ] Phase 8 (opt-in bridge): `--install-system-tools` prompts before
-      mutating the system; default behavior remains guidance + skip
+- [ ] Phase 8: valgrind `found (cache)`/`missing`/`unsupported (platform)`
+      in `u50 --status`; pinned download provisions on first use and via
+      `--install-tools`; checksum + runtime self-check failure paths
+      tested; timeout multiplier documented
+- [ ] `u50 --install-tools`: bulk-provisions every registered tool
+      through its declared resolver (style formatters, flask,
+      `dependencies:`, valgrind); lazy first-use provisioning unchanged;
+      `--setup` documented as style-specific and superseded
 - [ ] Capability registry: adding a throwaway capability = 1 module +
       1 registration line; `--status`/`--setup` pick it up generically
