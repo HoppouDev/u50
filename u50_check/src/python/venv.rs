@@ -99,29 +99,30 @@ fn ensure() -> Result<PathBuf> {
         }
         provision(&cache_root)?;
     }
-    let site_packages = site_packages(&python)?;
+    // Re-resolve: provisioning may have created the primary `python`
+    // that was absent before (Windows venvs have no `python3` shim,
+    // so the pre-provision lookup returns the nonexistent fallback).
+    let python = venv_python(&venv_path);
+    let site_packages = site_packages(&venv_path)?;
     stage_package(&site_packages)?;
     Ok(python)
 }
 
-/// Queries the venv interpreter's pure site-packages directory by
-/// asking the interpreter itself (robust across layouts).
-fn site_packages(python: &Path) -> Result<PathBuf> {
-    let out = std::process::Command::new(python)
-        .args([
-            "-c",
-            "import sysconfig; print(sysconfig.get_paths()['purelib'])",
-        ])
-        .output()
-        .context("query venv site-packages")?;
-    anyhow::ensure!(
-        out.status.success(),
-        "query venv site-packages failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let path = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
-    anyhow::ensure!(!path.as_os_str().is_empty(), "empty site-packages path");
-    Ok(path)
+/// The venv's pure site-packages directory, from the standard layout:
+/// `Lib\site-packages` on Windows (no version component),
+/// `lib/python3.x/site-packages` on POSIX.
+fn site_packages(venv: &Path) -> Result<PathBuf> {
+    if cfg!(windows) {
+        return Ok(venv.join("Lib").join("site-packages"));
+    }
+    let lib = venv.join("lib");
+    for entry in std::fs::read_dir(&lib).context("read the venv lib dir")? {
+        let entry = entry.context("read the venv lib dir")?;
+        if entry.file_name().to_string_lossy().starts_with("python3") {
+            return Ok(entry.path().join("site-packages"));
+        }
+    }
+    anyhow::bail!("no python3.x directory in {}", lib.display())
 }
 
 /// Copies the shipped `check50` package into site-packages (fresh on
