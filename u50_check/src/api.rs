@@ -844,37 +844,12 @@ pub fn decimal_regex(number: f64) -> String {
     }
 }
 
-/// Copies `src` to `dst`, recursively when `src` is a directory
-/// (check50: `_copy`).
+/// Copies `src` to `dst`, recursively when `src` is a directory.
 ///
 /// # Errors
 /// Returns an error when any copy step fails.
 pub fn copy_tree(src: &Path, dst: &Path) -> anyhow::Result<()> {
-    if src.is_dir() {
-        std::fs::create_dir_all(dst)
-            .with_context(|| format!("could not create {}", dst.display()))?;
-        for entry in
-            std::fs::read_dir(src).with_context(|| format!("could not read {}", src.display()))?
-        {
-            let entry = entry?;
-            // Never follow symlinks from student code: a cycle would
-            // recurse forever, and a link could point anywhere on the
-            // host filesystem.
-            if entry.file_type().is_ok_and(|ft| ft.is_symlink()) {
-                tracing::warn!(path = %entry.path().display(), "skipping symlink");
-                continue;
-            }
-            copy_tree(&entry.path(), &dst.join(entry.file_name()))?;
-        }
-        Ok(())
-    } else {
-        if let Some(parent) = dst.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::copy(src, dst)
-            .with_context(|| format!("could not copy {} to {}", src.display(), dst.display()))?;
-        Ok(())
-    }
+    u50_tools::fs::copy_tree(src, dst)
 }
 
 /// Kills a spawned check process, including its process group on Unix
@@ -886,19 +861,7 @@ pub fn copy_tree(src: &Path, dst: &Path) -> anyhow::Result<()> {
 /// # Panics
 /// Never (a failed `killpg` is ignored in favor of the direct kill).
 pub(crate) fn kill_child(child: &mut Child) {
-    #[cfg(unix)]
-    {
-        // Pids fit in i32 by definition; a conversion failure falls
-        // through to the direct kill below.
-        if let Ok(pid) = libc::pid_t::try_from(child.id()) {
-            // SAFETY: killpg only sends a signal to a process group; any
-            // failure (e.g. the group is already gone) is ignored.
-            unsafe {
-                libc::killpg(pid, libc::SIGKILL);
-            }
-        }
-    }
-    let _ = child.kill();
+    u50_tools::proc::kill_child(child);
 }
 
 /// Kills and reaps every tracked child of a check (shared by

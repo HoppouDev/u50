@@ -1,22 +1,16 @@
 [package]
-name = "u50_check"
+name = "u50_tools"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
 anyhow = { workspace = true }
-crossterm = { workspace = true }
 dirs = { workspace = true }
-include_dir = { workspace = true }
-regex = { workspace = true }
-serde = { workspace = true, features = ["derive"] }
-serde_json = { workspace = true }
-serde_yaml = "0.9"
+reqwest = { workspace = true, default-features = false, features = ["gzip", "rustls", "system-proxy"] }
 sha2 = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
-u50_tools = { path = "../u50_tools" }
 uv-cache = { workspace = true }
 uv-client = { workspace = true }
 uv-preview = { workspace = true }

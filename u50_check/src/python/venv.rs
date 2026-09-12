@@ -6,22 +6,11 @@
 //! site-packages on every provisioning pass so it can never go stale.
 
 use std::path::{Path, PathBuf};
-use std::str::FromStr;
 use std::sync::OnceLock;
 
-use anyhow::{Context, Result};
-use uv_cache::Cache;
-use uv_client::{BaseClient, BaseClientBuilder};
-use uv_python::downloads::{DownloadResult, ManagedPythonDownloadList, PythonDownloadRequest};
-use uv_python::managed::{ManagedPythonInstallation, ManagedPythonInstallations};
-use uv_python::{Interpreter, VersionRequest};
-use uv_virtualenv::{OnExisting, Prompt, Seed, create_venv};
+use anyhow::{Context as _, Result};
 
 use crate::python::CHECK50_PACKAGE;
-
-/// The pinned interpreter version (style50 parity: same uv-managed
-/// build, shared through uv's interpreter cache).
-const PINNED_PYTHON: &str = "3.14";
 
 /// The u50 check cache root: the absolute `$XDG_CACHE_HOME` override
 /// when set (all platforms), else the platform cache base of
@@ -30,36 +19,21 @@ const PINNED_PYTHON: &str = "3.14";
 /// # Errors
 /// Returns an error when no cache base is determinable.
 pub fn cache_dir() -> Result<PathBuf> {
-    if let Some(xdg) = std::env::var_os("XDG_CACHE_HOME")
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-    {
-        return Ok(xdg.join("u50").join("check50"));
-    }
-    let base = dirs::cache_dir().context("cannot determine the u50 check cache directory")?;
-    Ok(base.join("u50").join("check50"))
+    Ok(u50_tools::uv::cache_root_for("check50"))
 }
 
 /// The venv's `bin` directory: `Scripts` on Windows (`.exe` shims),
 /// `bin` elsewhere.
 #[must_use]
 pub fn venv_bin_dir(venv: &Path) -> PathBuf {
-    if cfg!(windows) {
-        venv.join("Scripts")
-    } else {
-        venv.join("bin")
-    }
+    u50_tools::uv::venv_bin_dir(venv)
 }
 
 /// The file name a console script/binary is installed under:
 /// `tool.exe` on Windows, `tool` elsewhere.
 #[must_use]
 pub fn tool_file_name(tool: &str) -> String {
-    if cfg!(windows) {
-        format!("{tool}.exe")
-    } else {
-        tool.to_owned()
-    }
+    u50_tools::uv::tool_file_name(tool)
 }
 
 fn venv_python(venv: &Path) -> PathBuf {
@@ -145,102 +119,9 @@ fn stage_package(site_packages: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Provisions the uv-managed `CPython` ([`PINNED_PYTHON`]) and creates
-/// the check venv when absent (style50 `setup` parity).
+/// Provisions the check venv via the shared `u50_tools` uv pipeline.
 fn provision(cache_root: &Path) -> Result<()> {
-    // uv gates some APIs behind preview mode; without this the crate
-    // panics on first use (style50 `setup` parity).
-    uv_preview::set(uv_preview::Preview::default()).context("preview init")?;
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .context("tokio runtime")?
-        .block_on(async {
-            let client_builder = BaseClientBuilder::default();
-            // Python distribution downloads retry internally
-            // (`fetch_with_retry`), so their client disables middleware
-            // retries — mirroring uv and style50's setup.
-            let download_client = client_builder
-                .clone()
-                .retries(0)
-                .build()
-                .context("download client build")?;
-            let uv_cache = Cache::from_path(cache_root.join("uv"))
-                .init()
-                .await
-                .context("uv cache init")?;
-            let venv_path = cache_root.join("venv");
-            let interpreter =
-                provision_python(&client_builder, &download_client, &uv_cache).await?;
-            create_venv(
-                &venv_path,
-                interpreter,
-                Prompt::Static("u50-check".into()),
-                false,             // system_site_packages
-                OnExisting::Allow, // idempotent re-runs
-                false,             // relocatable
-                Seed::Disabled,
-                false, // upgradeable
-            )
-            .context("create check venv")?;
-            anyhow::Ok(())
-        })
-}
-
-/// Downloads and installs the managed `CPython` ([`PINNED_PYTHON`]) into
-/// uv's install root (shared with style50) and queries the interpreter.
-async fn provision_python(
-    client_builder: &BaseClientBuilder<'_>,
-    client: &BaseClient,
-    uv_cache: &Cache,
-) -> Result<Interpreter> {
-    let retry_policy = client_builder.retry_policy();
-    let download_list = ManagedPythonDownloadList::new(client_builder, uv_cache, None)
-        .await
-        .context("download list")?;
-    let request = PythonDownloadRequest::default()
-        .with_version(VersionRequest::from_str(PINNED_PYTHON).context("version request")?)
-        .fill()
-        .context("fill request")?;
-    let download = download_list
-        .find(&request)
-        .context("find download")?
-        .clone();
-    tracing::debug!(download = %download.key(), "provisioning managed python");
-
-    let installations = ManagedPythonInstallations::from_settings(None)
-        .context("installations dir")?
-        .init()
-        .context("init installations")?;
-    let installation_dir = installations.root().to_path_buf();
-    let scratch_dir = installations.scratch();
-    let _lock = installations.lock().await.context("installations lock")?;
-
-    let fetched = download
-        .fetch_with_retry(
-            client,
-            &retry_policy,
-            &installation_dir,
-            &scratch_dir,
-            false, // reinstall
-            None,  // python_install_mirror
-            None,  // pypy_install_mirror
-            None,  // reporter
-        )
-        .await
-        .context("fetch managed python")?;
-    let path = match fetched {
-        DownloadResult::AlreadyAvailable(path) | DownloadResult::Fetched(path) => path,
-    };
-    let installation = ManagedPythonInstallation::new(path, &download);
-    let executable = installation.executable(false);
-    let interpreter = Interpreter::query(&executable, uv_cache).context("interpreter query")?;
-    tracing::debug!(
-        version = %interpreter.python_version(),
-        executable = %executable.display(),
-        "managed python ready"
-    );
-    Ok(interpreter)
+    u50_tools::uv::ensure_venv("u50-check", cache_root).map(|_| ())
 }
 
 #[cfg(test)]

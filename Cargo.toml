@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["u50_check", "u50_cli", "u50_style", "u50_submit"]
+members = ["u50_check", "u50_cli", "u50_style", "u50_submit", "u50_tools"]
 
 [workspace.dependencies]
 anyhow = "1"

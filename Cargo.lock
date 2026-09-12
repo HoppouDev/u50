@@ -5337,6 +5337,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+ "u50_tools",
  "uv-cache",
  "uv-client",
  "uv-preview",
@@ -5399,6 +5400,25 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "tracing",
+]
+
+[[package]]
+name = "u50_tools"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "dirs 7.0.0",
+ "libc",
+ "reqwest",
+ "sha2 0.10.9",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "uv-cache",
+ "uv-client",
+ "uv-preview",
+ "uv-python",
+ "uv-virtualenv",
 ]
 
 [[package]]
