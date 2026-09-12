@@ -147,6 +147,9 @@ fn stage_package(site_packages: &Path) -> Result<()> {
 /// Provisions the uv-managed `CPython` ([`PINNED_PYTHON`]) and creates
 /// the check venv when absent (style50 `setup` parity).
 fn provision(cache_root: &Path) -> Result<()> {
+    // uv gates some APIs behind preview mode; without this the crate
+    // panics on first use (style50 `setup` parity).
+    uv_preview::set(uv_preview::Preview::default()).context("preview init")?;
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()

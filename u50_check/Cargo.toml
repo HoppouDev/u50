@@ -18,6 +18,7 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 uv-cache = { workspace = true }
 uv-client = { workspace = true }
+uv-preview = { workspace = true }
 uv-python = { workspace = true }
 uv-virtualenv = { workspace = true }
 

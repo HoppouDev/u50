@@ -5339,6 +5339,7 @@ dependencies = [
  "tracing",
  "uv-cache",
  "uv-client",
+ "uv-preview",
  "uv-python",
  "uv-virtualenv",
 ]
