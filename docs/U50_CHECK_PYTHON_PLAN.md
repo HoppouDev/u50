@@ -565,14 +565,16 @@ unsupported (platform)`); `--install-tools` provisions every registered
 
 - [ ] `cargo build/test --workspace` green on both OS legs (no new deps,
       no feature gate)
-- [ ] Phase 0: `<cache>/u50/check50/venv` provisions cache-only (PATH
+- [x] Phase 0: `<cache>/u50/check50/venv` provisions cache-only (PATH
       untouched) on both legs; startup/subprocess overhead measured
-- [ ] Phase-1 fixtures: Python-driven `run/stdin/stdout/exit/reject`
-      parity with the YAML cross-check expectations
-- [ ] hello-world `__init__.py` results JSON matches the YAML/native shape
+      (uv-managed CPython 3.14, current-thread tokio runtime, subprocess
+      overhead measured in the e2e suite: 6 checks ~1s wall)
+- [x] Phase-1 fixtures: Python-driven `run/stdin/stdout/exit/reject`
+      parity with the YAML cross-check expectations (tests/python_checks.rs)
+- [x] hello-world `__init__.py` results JSON matches the YAML/native shape
 - [ ] Golden fixtures for 2-3 real cs50/problems check sets (captured JSON,
       gated live check50 cross-check)
-- [ ] Return-value passing covered by a chain test (pickled state file)
+- [x] Return-value passing covered by a chain test (pickled state file)
 - [ ] C extensions: a `dependencies: [numpy]` check set imports and runs
 - [ ] No plugin/check-set names outside `checks/` + `registry.rs` (grep)
       still holds; the shipped `check50` package is generic (no per-problem

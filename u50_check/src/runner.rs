@@ -16,13 +16,21 @@ use std::time::{Duration, Instant};
 
 use anyhow::Context as _;
 
-use crate::api::{CheckContext, ChildRegistry};
+use crate::api::{CheckContext, ChildRegistry, Failure};
 use crate::graph::Graph;
 use crate::plugin::{CheckSpec, RunKind};
 use crate::result::{Cause, CheckResult, ErrorInfo};
 
 /// check50 truncates logs to `max_log_lines` (100) with a `...` head.
 const MAX_LOG_LINES: usize = 100;
+
+/// The outcome of one check thread (mirrors the engine's result
+/// causes: pass, check failure, internal error).
+enum Step {
+    Ok,
+    Fail(Failure),
+    Error(ErrorInfo),
+}
 
 /// Per-check runtime state.
 struct CheckState {
@@ -176,15 +184,15 @@ impl<'a> Scheduler<'a> {
             Arc::clone(&self.expired[name]),
         );
         let kind = spec.run.clone();
+        let timeout = self.graph.timeouts[name];
         let sender = self.sender.clone();
         let name_owned = name.to_owned();
 
         std::thread::spawn(move || {
             let started = Instant::now();
             let mut ctx = ctx;
-            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match &kind {
-                RunKind::Native(run) => run(&mut ctx),
-                RunKind::Yaml(steps) => crate::yaml::run_steps(&mut ctx, steps),
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                Self::run_step(&kind, &mut ctx, timeout)
             }));
             let elapsed = started.elapsed();
             let mut result = CheckResult {
@@ -197,8 +205,8 @@ impl<'a> Scheduler<'a> {
                 dependency: None,
             };
             match outcome {
-                Ok(Ok(())) => result.passed = Some(true),
-                Ok(Err(failure)) => {
+                Ok(Step::Ok) => result.passed = Some(true),
+                Ok(Step::Fail(failure)) => {
                     result.passed = Some(false);
                     result.cause = Some(match failure.expected {
                         Some(expected) => Cause::Mismatch {
@@ -211,6 +219,12 @@ impl<'a> Scheduler<'a> {
                             rationale: failure.rationale,
                             help: failure.help,
                         },
+                    });
+                }
+                Ok(Step::Error(info)) => {
+                    result.cause = Some(Cause::Error {
+                        rationale: "check50 ran into an error while running checks!".to_owned(),
+                        error: info,
                     });
                 }
                 Err(panic) => {
@@ -235,6 +249,29 @@ impl<'a> Scheduler<'a> {
             }
             let _ = sender.send(result);
         });
+    }
+
+    /// Runs one check of a kind (native, YAML, or Python) against its
+    /// context, mapping every outcome onto the engine's `Step` result
+    /// model.
+    fn run_step(kind: &RunKind, ctx: &mut CheckContext, timeout: Duration) -> Step {
+        match kind {
+            RunKind::Native(run) => match run(ctx) {
+                Ok(()) => Step::Ok,
+                Err(failure) => Step::Fail(failure),
+            },
+            RunKind::Yaml(steps) => match crate::yaml::run_steps(ctx, steps) {
+                Ok(()) => Step::Ok,
+                Err(failure) => Step::Fail(failure),
+            },
+            RunKind::Python { checks_file, check } => {
+                match crate::python::bridge::invoke(ctx, checks_file, check, timeout) {
+                    Ok(()) => Step::Ok,
+                    Err(crate::python::bridge::PyFailure::Check(failure)) => Step::Fail(failure),
+                    Err(crate::python::bridge::PyFailure::Internal(info)) => Step::Error(info),
+                }
+            }
+        }
     }
 
     /// Records a finished check's result: stores it, and on pass

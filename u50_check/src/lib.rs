@@ -9,6 +9,7 @@ pub mod api;
 mod checks;
 mod graph;
 mod plugin;
+pub mod python;
 mod registry;
 mod render;
 pub mod result;
@@ -16,7 +17,6 @@ mod runner;
 mod yaml;
 
 use std::io::IsTerminal as _;
-use std::path::PathBuf;
 
 use anyhow::Context as _;
 
@@ -116,41 +116,8 @@ pub fn run(req: &Request) -> anyhow::Result<bool> {
     // interpreted natively; native check sets come from the registry.
     let config = yaml::load_config(&check_dir)?;
     let yaml_specs = yaml::specs_from_config(&config)?;
-
-    let (_plugin_id, specs, plugin_check_dir): (String, Vec<plugin::CheckSpec>, PathBuf) =
-        if yaml_specs.is_empty()
-            && config
-                .check50
-                .checks
-                .as_ref()
-                .is_some_and(serde_yaml::Value::is_string)
-        {
-            // `checks: check.py` names a native checks file — the port's
-            // documented divergence: Python checks are not executable, so
-            // look for a registered plugin with a matching id instead.
-            let checks_file = config
-                .check50
-                .checks
-                .as_ref()
-                .and_then(|value| value.as_str())
-                .unwrap_or_default();
-            let id = std::path::Path::new(checks_file).file_stem().map_or_else(
-                || req.slug.clone(),
-                |name| name.to_string_lossy().into_owned(),
-            );
-            let Some(plugin) = registry::builtin_plugins()
-                .into_iter()
-                .find(|plugin| plugin.id() == id)
-            else {
-                anyhow::bail!(
-                    "no registered check set matches `{id}` (Python checks are not executable; use simple YAML checks)"
-                );
-            };
-            (plugin.id().to_owned(), plugin.checks(), plugin.check_dir())
-        } else {
-            // YAML check set: the plugin is constructed from the config.
-            (req.slug.clone(), yaml_specs, check_dir.clone())
-        };
+    let (_plugin_id, specs, plugin_check_dir) =
+        resolve_specs(&config, &yaml_specs, &check_dir, &req.slug)?;
 
     let work_dir = req
         .work_dir
@@ -202,4 +169,82 @@ pub fn run(req: &Request) -> anyhow::Result<bool> {
     }
 
     Ok(passed)
+}
+
+/// Resolves the check set for a request: a `checks:` string naming a
+/// Python checks file routes to the provisioned-CPython bridge (the
+/// `check50` package, Phases 0-2 of `docs/U50_CHECK_PYTHON_PLAN.md`); a
+/// string naming a native registered check set uses the registry; a
+/// `checks:` mapping is a YAML simple-check set interpreted natively.
+///
+/// # Errors
+/// Returns an error when the config names neither an existing Python
+/// checks file nor a registered check set, or when discovery fails.
+fn resolve_specs(
+    config: &yaml::Config,
+    yaml_specs: &[plugin::CheckSpec],
+    check_dir: &std::path::Path,
+    slug: &str,
+) -> anyhow::Result<(String, Vec<plugin::CheckSpec>, std::path::PathBuf)> {
+    if !(yaml_specs.is_empty()
+        && config
+            .check50
+            .checks
+            .as_ref()
+            .is_some_and(serde_yaml::Value::is_string))
+    {
+        // YAML check set: the plugin is constructed from the config.
+        return Ok((
+            slug.to_owned(),
+            yaml_specs.to_vec(),
+            check_dir.to_path_buf(),
+        ));
+    }
+
+    let checks_file = config
+        .check50
+        .checks
+        .as_ref()
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
+    let file = check_dir.join(checks_file);
+    if std::path::Path::new(checks_file)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("py"))
+        && file.is_file()
+    {
+        let py_specs = python::bridge::discover(&file)
+            .with_context(|| format!("could not discover checks from {}", file.display()))?;
+        let specs = py_specs
+            .into_iter()
+            .map(|spec| plugin::CheckSpec {
+                name: spec.name.clone(),
+                description: spec.description,
+                dependency: spec.dependency,
+                timeout: spec.timeout,
+                hidden_rationale: spec.hidden,
+                run: plugin::RunKind::Python {
+                    checks_file: file.clone(),
+                    check: spec.name,
+                },
+            })
+            .collect();
+        return Ok((slug.to_owned(), specs, check_dir.to_path_buf()));
+    }
+
+    // A native registered check set, matched by id (the checks-file
+    // stem).
+    let id = std::path::Path::new(checks_file).file_stem().map_or_else(
+        || slug.to_owned(),
+        |name| name.to_string_lossy().into_owned(),
+    );
+    let Some(plugin) = registry::builtin_plugins()
+        .into_iter()
+        .find(|plugin| plugin.id() == id)
+    else {
+        anyhow::bail!(
+            "no registered check set matches `{id}` and `{checks_file}` does not exist (a Python checks file must end in .py)"
+        );
+    };
+    Ok((plugin.id().to_owned(), plugin.checks(), plugin.check_dir()))
 }

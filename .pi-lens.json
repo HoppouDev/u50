@@ -3,6 +3,7 @@
   "ignore": [
     "u50_style/tests/fixtures/**",
     "u50_style/AGENTS.md",
-    "target/**"
+    "target/**",
+    "u50_check/python/**"
   ]
 }

@@ -18,9 +18,20 @@ pub enum RunKind {
     /// A "simple" YAML check pipeline (check50: `_simple.py`'s compiled
     /// `run`/`stdin`/`stdout`/`exit` sequences), interpreted natively.
     Yaml(Vec<YamlStep>),
+    /// A legacy Python check (an `@check50.check` function in a
+    /// `__init__.py`-style checks file), invoked as a subprocess on the
+    /// provisioned `CPython` (Phases 0-2 of
+    /// `docs/U50_CHECK_PYTHON_PLAN.md`).
+    Python {
+        /// The checks file (absolute path) to import.
+        checks_file: PathBuf,
+        /// The registered check function name.
+        check: String,
+    },
 }
 
 /// One check of a check set.
+#[derive(Clone)]
 pub struct CheckSpec {
     /// Unique name (check50: the Python function name); also the
     /// dependency-graph node key and the results entry's `name`.
