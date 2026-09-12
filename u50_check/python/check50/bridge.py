@@ -22,6 +22,9 @@ STATE_FILE = ".check50-state"
 
 
 def _load_module(path):
+    import check50.bridge_state as _state
+
+    _state.loaded_path = path
     spec = importlib.util.spec_from_file_location("checks", path)
     if spec is None or spec.loader is None:
         raise ImportError(f"could not load the checks module from {path}")

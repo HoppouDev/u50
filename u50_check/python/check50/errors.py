@@ -4,7 +4,11 @@
 def raw(value, n=15):
     """Truncated double-quoted rendering (parity with the engine's
     mismatch rationale and the captured check50 goldens)."""
-    value = '"' + value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n") + '"' if isinstance(value, str) else repr(value)
+    value = (
+        '"' + value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n") + '"'
+        if isinstance(value, str)
+        else repr(value)
+    )
     return value if len(value) <= n else value[:n] + "..."
 
 

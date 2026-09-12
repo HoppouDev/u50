@@ -5,6 +5,7 @@
 
 use serde_json::Value;
 use std::path::{Path, PathBuf};
+use std::process::Command as OsCommand;
 
 /// Creates a check package: a `.cs50.yaml` naming `__init__.py`, the
 /// checks module itself, and (optionally) a `hello.sh` student program
@@ -202,4 +203,67 @@ fn the_interpreter_resolves_idempotently_from_the_cache() {
     assert!(first.is_file(), "{} must exist", first.display());
     let second = u50_check::python::venv::interpreter().expect("interpreter");
     assert_eq!(first, second);
+}
+
+#[test]
+fn live_check50_matches_u50_check_when_installed() {
+    // Gated live cross-check: run real check50 on the hello package and
+    // compare its results array against ours (skipped when check50 is
+    // not installed, like cross_check.rs's live mode).
+    let probe = OsCommand::new("bash")
+        .args(["-c", "command -v check50"])
+        .output()
+        .expect("probe");
+    if !probe.status.success() {
+        eprintln!("skip live cross-check: check50 is not installed");
+        return;
+    }
+    let module = r##"
+import check50
+
+
+@check50.check()
+def exists():
+    """hello.sh exists"""
+    check50.exists("hello.sh")
+
+
+@check50.check(exists)
+def prints_hello():
+    """prints hello"""
+    check50.run("./hello.sh").stdout("[Hh]ello, world!\n").exit(0)
+"##;
+    let dir = write_package("live", module, true);
+    let ours = run_u50_check(&dir);
+    let theirs = run_real_check50(&dir);
+    let Some(theirs) = theirs else {
+        eprintln!("skip: check50 produced no output");
+        return;
+    };
+    assert_eq!(results(&ours), results(&theirs));
+}
+
+/// Runs real check50 on the package and returns the parsed JSON
+/// document (`None` when check50 is unusable).
+fn run_real_check50(dir: &Path) -> Option<Value> {
+    let out_file = dir.join("check50-actual.json");
+    let status = OsCommand::new("python3")
+        .args([
+            "-m",
+            "check50",
+            dir.display().to_string().as_str(),
+            "--offline",
+            "-o",
+            "json",
+            "--output-file",
+            out_file.display().to_string().as_str(),
+        ])
+        .env_remove("CHECK50_PATH")
+        .output()
+        .expect("run check50");
+    if !status.status.success() {
+        return None;
+    }
+    let raw = std::fs::read_to_string(&out_file).ok()?;
+    serde_json::from_str(&raw).ok()
 }

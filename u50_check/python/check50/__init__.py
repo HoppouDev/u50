@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import codecs
 import contextlib
+import importlib.util
+import sys
 import hashlib
 import os
 import re
@@ -17,12 +19,24 @@ import threading
 import time
 
 from . import bridge_state as state
-from . import c, regex
+from . import c, py, regex
 from .errors import EOF, Failure, Mismatch, Missing
 
 __all__ = [
-    "EOF", "Failure", "Mismatch", "Missing", "c", "check", "data",
-    "exists", "hash", "hidden", "include", "log", "regex", "run",
+    "EOF",
+    "Failure",
+    "Mismatch",
+    "Missing",
+    "c",
+    "check",
+    "data",
+    "exists",
+    "hash",
+    "hidden",
+    "include",
+    "log",
+    "regex",
+    "run",
 ]
 
 
@@ -42,6 +56,30 @@ def check(dependency=None, *, timeout=None):
         fn, dependency = dependency, None
         return decorator(fn)
     return decorator
+
+
+def import_checks(path):
+    import importlib.util
+    import inspect
+
+    # Resolve relative to the calling module's directory (check50
+    # parity); fall back to the bridge-loaded checks file.
+    frame = inspect.stack()[1]
+    base = os.path.dirname(os.path.abspath(frame.filename))
+    target = os.path.normpath(os.path.join(base, path))
+    if os.path.isdir(target):
+        target = os.path.join(target, "__init__.py")
+    elif not target.endswith(".py"):
+        target += ".py"
+    spec = importlib.util.spec_from_file_location(
+        "check50.imported." + os.path.basename(target)[:-3], target
+    )
+    if spec is None or spec.loader is None:
+        raise Failure("could not import checks from " + path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 def hidden(rationale):
@@ -261,6 +299,7 @@ class _Run:
 
     def _make_matcher(self, pattern, exact):
         if exact:
+
             def matcher(text):
                 start = text.find(pattern)
                 return None if start < 0 else start + len(pattern)
@@ -275,6 +314,7 @@ class _Run:
             def matcher(text):
                 match = compiled.search(text)
                 return None if match is None else match.end()
+
         return matcher
 
     def stdout(self, output=None, str_output=None, regex=True, timeout=3):
@@ -296,7 +336,9 @@ class _Run:
             if isinstance(output, (int, float)) and not isinstance(output, bool):
                 pattern = decimal(output) if regex else str(output)
             else:
-                pattern = str_output if (str_output is not None and not regex) else output
+                pattern = (
+                    str_output if (str_output is not None and not regex) else output
+                )
                 pattern = str(pattern)
             log(f'checking for output "{pattern}"...')
             matcher = self._make_matcher(pattern, exact)
@@ -307,14 +349,14 @@ class _Run:
             if length != last:
                 last = length
                 if not eof:
-                    unconsumed = self._text()[self._cursor:]
+                    unconsumed = self._text()[self._cursor :]
                     end = matcher(unconsumed)
                     if end is not None:
                         self._cursor += end
                         return self
             if self._try_exit():
                 self._quiesce()
-                unconsumed = self._text()[self._cursor:]
+                unconsumed = self._text()[self._cursor :]
                 if eof and not unconsumed:
                     return self
                 raise Mismatch("EOF" if eof else pattern, unconsumed)
@@ -326,7 +368,7 @@ class _Run:
 
     def _stdout_text(self, timeout):
         self._wait_exit(timeout)
-        return self._text()[self._cursor:].replace("\r\n", "\n").lstrip("\n")
+        return self._text()[self._cursor :].replace("\r\n", "\n").lstrip("\n")
 
     def _wait_exit(self, timeout):
         """Waits for exit within `timeout`; returns the exit code

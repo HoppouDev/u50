@@ -12,9 +12,7 @@ def compile(*files, cc="clang"):
     source file (check50 parity: `c.compile`)."""
     log("compiling...")
     target = os.path.splitext(files[0])[0]
-    result = subprocess.run(
-        [cc, "-o", target, *files], capture_output=True, text=True
-    )
+    result = subprocess.run([cc, "-o", target, *files], capture_output=True, text=True)
     if result.returncode != 0:
         raise Failure(
             f"could not compile {' '.join(files)}",

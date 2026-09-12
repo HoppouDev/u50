@@ -24,6 +24,10 @@ order = []
 log_lines = []
 payload = {}
 
+# The checks file currently loaded (set by the bridge; import_checks
+# resolves sibling modules against it).
+loaded_path = ""
+
 
 def reset():
     """Clears the per-invocation state (bridge, before each check)."""
