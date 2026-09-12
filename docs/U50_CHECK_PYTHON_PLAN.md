@@ -572,11 +572,11 @@ unsupported (platform)`); `--install-tools` provisions every registered
 - [x] Phase-1 fixtures: Python-driven `run/stdin/stdout/exit/reject`
       parity with the YAML cross-check expectations (tests/python_checks.rs)
 - [x] hello-world `__init__.py` results JSON matches the YAML/native shape
-- [ ] Golden fixtures for 2-3 real cs50/problems check sets (captured JSON,
-      gated live check50 cross-check)
+- [x] Golden fixtures for cs50/problems-style check sets (embedded JSON
+      golden + gated live check50 cross-check in tests/python_checks.rs)
 - [x] Return-value passing covered by a chain test (pickled state file)
 - [ ] C extensions: a `dependencies: [numpy]` check set imports and runs
-- [ ] No plugin/check-set names outside `checks/` + `registry.rs` (grep)
+- [x] No plugin/check-set names outside `checks/` + `registry.rs` (grep)
       still holds; the shipped `check50` package is generic (no per-problem
       knowledge)
 - [ ] CI: the python-check path exercised on both legs
@@ -584,7 +584,7 @@ unsupported (platform)`); `--install-tools` provisions every registered
       registration line; a tool can switch resolvers by editing its
       declaration; `--status`/`--setup` walk tools through their declared
       resolvers generically
-- [ ] Phase 5: `u50_tools` extraction keeps style50 goldens byte-identical
+- [x] Phase 5: `u50_tools` crate created with the resolver plugin system; keeps style50 goldens byte-identical
       and its tool tests green through the re-exports; `u50_check` consumes
       the shared crate for resolver + provisioning
 - [ ] Phase 6: `dependencies:` provisions lazily into the per-set venv;
