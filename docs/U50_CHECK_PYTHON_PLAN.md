@@ -1,13 +1,19 @@
-# u50_check Python Checks Plan (embedded RustPython)
+# u50_check Python Checks Plan (provisioned CPython)
 
 Runs the legacy Python check files — the `__init__.py` / `check.py` authoring
 model that the real check sets in [cs50/problems](https://github.com/cs50/problems)
-actually use — inside `u50_check`, by embedding [RustPython](https://github.com/RustPython/RustPython)
-and exposing a native `check50` module that bridges to the existing Rust check API.
-This closes the port's largest documented divergence: today
-`u50_check/src/lib.rs` bails with _"no registered check set matches … (Python
-checks are not executable)"_ for the model that most shipped check sets use
-(see `docs/CHECK50_PORT_NOTES.md` §7.1 and `docs/U50_CHECK_PLUGIN_PLAN.md`).
+actually use — inside `u50_check`, on a **CPython interpreter that u50
+itself provisions** with the same in-process uv pipeline style50 already
+uses. A revision of this plan replaced an embedded [RustPython](https://github.com/RustPython/RustPython)
+interpreter with the provisioned CPython: real-CPython compatibility
+(complete stdlib, working C extensions, current syntax) beats an embedded
+VM on every axis that matters, and the interpreter is resolved from u50's
+own cache — never from `PATH`.
+
+This plan supersedes the RustPython revision in full (git history retains
+it). The structure below keeps what survived: the resolver plugin system,
+the capability plugin layer, and the Phases 6-8 work for pip
+`dependencies:`, flask, and valgrind.
 
 ## Goal and non-goals
 
@@ -15,7 +21,10 @@ checks are not executable)"_ for the model that most shipped check sets use
 Python checks file) runs its `@check50.check()` functions through the same
 engine — declaration order, dependency graph, filesystem inheritance,
 timeouts, skip cascade, ansi/json rendering — that YAML "simple" checks and
-native Rust plugins already use (per `docs/U50_CHECK_PLUGIN_PLAN.md`).
+native Rust plugins already use (per `docs/U50_CHECK_PLUGIN_PLAN.md`). The
+checks execute on u50's provisioned CPython (a uv-managed interpreter +
+venv at `<cache>/u50/check50/venv`), driven by a `check50` Python package
+shipped by u50.
 
 **Goal (this revision)**: the three capabilities previously listed as
 divergences — pip `dependencies:`, `check50.flask`, and `check50.c.valgrind` —
@@ -30,31 +39,43 @@ not style-local or check-local code:
   application-wide, pluggable assets rather than style50 internals.
 - **Capability plugins** (Phases 7-8): flask and valgrind become **their own
   plugins** — self-contained modules registered in a capability registry,
-  each declaring its tool/dependency needs (uv-provisioned stack vs pinned downloaded binary) and exposing its surface to _both_ the Python
-  bridge (`check50.flask`, `check50.c.valgrind`) and the native Rust
-  check API. Adding a future capability is one module + one registration
-  line — the same rule the language and check-set registries follow.
+  each declaring its tool/dependency needs (uv-provisioned stack vs pinned
+  downloaded binary) and exposing its surface to _both_ the Python
+  `check50` package (`check50.flask`, `check50.c.valgrind`) and the native
+  Rust check API. Adding a future capability is one module + one
+  registration line — the same rule the language and check-set registries
+  follow.
 
 **Non-goals (permanent divergences):**
 
 - gettext translations.
 - Remote mode (`lib50.push`, submit.cs50.io polling).
 - `import_checks` across GitHub repos (local sibling paths only).
-- C-extension packages under the embedded interpreter (RustPython has no
-  CPython C API) — declared/filtered with clear errors, never silently wrong.
 
-## Why embedded RustPython (alternatives considered)
+Note: the earlier "no C extensions" divergence **dies with this revision** —
+the provisioned interpreter is a real CPython build (uv-managed), so
+C-extension wheels for the host platform import and run like in any
+CPython environment.
 
-| Option                        | Verdict                                                                                                                                                                                                                         |
-| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **RustPython (embedded)**     | Pure Rust, no system Python, no libpython. Aligns with u50's self-contained principle (cf. style50's in-process uv provisioning). Crates: `rustpython-vm` / `rustpython-derive` (stdlib via `rustpython-pylib`/freeze feature). |
-| Subprocess `python3`          | Violates the workspace principle that resolution never consults `PATH` (see `u50_style/AGENTS.md` tool management) and breaks the "one binary" promise. Documented as a fallback escape hatch only.                             |
-| PyO3 + CPython                | Requires a libpython at runtime — not self-contained.                                                                                                                                                                           |
-| Transpile check files to Rust | The authoring API is dynamic (decorators, closures, arbitrary Python) — not transpilation territory.                                                                                                                            |
+## Why the provisioned CPython (alternatives considered)
+
+| Option                             | Verdict                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Provisioned CPython subprocess** | Real CPython (uv-managed build), complete stdlib, C extensions work, current syntax — resolved from u50's own cache, never `PATH`. One subprocess per check mirrors check50's own `ProcessPoolExecutor` architecture, giving OS-level isolation that the existing process-group timeout/kill machinery already enforces. No new Rust dependencies; the interpreter is the same asset style50's pipeline already downloads. |
+| Embedded RustPython                | Rejected (the plan's previous revision): stdlib gaps, no C extensions, VM maturity risk, binary-size/build-time cost, GIL-in-one-process, MSRV and API-churn risk — all eliminated by using a real CPython.                                                                                                                                                                                                                |
+| Subprocess `python3` from `PATH`   | Violates the workspace principle that resolution never consults `PATH` (see `u50_style/AGENTS.md` tool management) and is not reproducible. The provisioned venv is the PATH-free equivalent.                                                                                                                                                                                                                              |
+| PyO3 + CPython embedded            | Requires a libpython at runtime — not self-contained; also embeds the GIL into u50's process (a hung interpreter blocks the runner).                                                                                                                                                                                                                                                                                       |
+| Transpile check files to Rust      | The authoring API is dynamic (decorators, closures, arbitrary Python) — not transpilation territory.                                                                                                                                                                                                                                                                                                                       |
+
+**Venv ownership**: the check venv lives at `<cache>/u50/check50/venv` —
+_not_ inside `u50/style50` — so style formatter reinstalls/upgrades can
+never break checks and each domain pins independently. The downloaded
+uv-managed CPython itself is shared (uv's interpreter cache), so there is
+no duplicate interpreter download — only a small per-domain venv.
 
 Trust model: check files come from cs50's GitHub orgs, the same trust level as
-the compiled-in native plugins. Embedding is _not_ a sandbox promise; the
-timeout/deadline machinery (below) is about hangs, not malice.
+the compiled-in native plugins. Subprocess execution is _not_ a sandbox promise;
+the timeout/deadline machinery (below) is about hangs, not malice.
 
 ## What must be emulated (from `docs/CHECK50_PORT_NOTES.md`)
 
@@ -73,8 +94,7 @@ The Python check surface that shipped `__init__.py` files actually touch:
    `stdin`/`stdout`/`reject`/`exit`/`kill` builder; `exists`, `include`,
    `log`, `data`, `hash`; the `Failure`/`Mismatch`/`Missing` exceptions;
    `EOF` sentinel; `regex.decimal`; `hidden(rationale)`.
-4. **`check50.c.compile(file, ...)`** — clang invocation (the runner already
-   spawns child processes; compile is just another spawn).
+4. **`check50.c.compile(file, ...)`** — clang invocation.
 5. **`import_checks("../less")`** — import another check module from a
    sibling directory so check sets can extend each other.
 6. **`check50.py`** helpers (`append_code`, `import_`, `compile`) — thin;
@@ -85,9 +105,9 @@ The Python check surface that shipped `__init__.py` files actually touch:
 ## Target architecture
 
 ```text
-Cargo.toml                    [workspace.dependencies] gains rustpython-vm
-                              (pinned, optional); style50's uv-* crates are
-                              already pinned workspace-wide
+Cargo.toml                    no new Rust dependencies for the interpreter;
+                              style50's uv-* crates are already pinned
+                              workspace-wide and gain a new consumer
 u50_tools/                    NEW shared crate — application-wide, not
                               style-specific (Phase 5):
 ├── uv/                       the provisioning pipeline, extracted from
@@ -117,66 +137,84 @@ u50_tools/                    NEW shared crate — application-wide, not
                               u50_check/src/api.rs), shell resolution
                               (bash_command), execute-bit handling
 u50_check/src/
-├── capabilities/              NEW capability-plugin layer (see below)
+├── python/                   the Python-check support (always compiled in —
+│                             no optional dependency)
+│   ├── bridge.rs             the process bridge: discovery pass (import the
+│                             module once, emit the check registry as JSON)
+│                             and per-check invocation (spawn the venv
+│                             python in the check's run_dir with its own
+│                             process group; feed it the dependency state;
+│                             collect the result); wired into RunKind::Python
+│   └── check50/              the `check50` Python package shipped by u50
+│                             (real Python files, installed into the check
+│                             venv during provisioning): the authoring
+│                             surface — decorator registry, run/stdin/stdout/
+│                             reject/exit/kill builder, exists/include/log/
+│                             data/hash, EOF, Failure/Mismatch/Missing,
+│                             regex.decimal, c.compile, import_checks, and
+│                             (via capabilities) flask/valgrind surfaces
+├── capabilities/              capability-plugin layer (see below)
 │   ├── mod.rs                 CapabilityPlugin trait + registry (one module
 │                             + one registration line per capability)
-│   ├── flask.rs               FlaskCapability (Uv strategy: pinned Flask
-│                             stack venv, lazily provisioned once)
+│   ├── flask.rs               FlaskCapability (uv resolver: pinned Flask
+│                             stack installed into the check venv)
 │   └── valgrind.rs            ValgrindCapability (download resolver:
 │                             pinned prebuilt binary, no system reliance,
 │                             skip-with-guidance on unsupported platforms)
-├── python.rs                  feature-gated module root (mod python when built)
-│   ├── interp.rs              interpreter lifecycle: one VM per run, warm pool
-│                             of scopes, sys.path wiring (check dir, run dir,
-│                             provisioned site-packages)
-│   ├── api.rs                 the injected `check50` package: run/stdin/stdout/
-│                             exit/kill, exists/include/log/data/hash, EOF,
-│                             Failure/Mismatch/Missing exceptions — each call
-│                             bridges to the Rust `CheckContext`/`Run` API;
-│                             submodule namespaces (check50.c/check50.flask)
-│                             delegate to registered capabilities
-│   ├── registry.rs            `@check50.check` decorator: records (name,
-│                             docstring, dependency, timeout, hidden) into
-│                             the module registry, in declaration order
-│   ├── c.rs                   check50.c.compile (spawn clang); valgrind
-│                             bridges to ValgrindCapability
-│   ├── flask.rs               check50.flask bridges to FlaskCapability
-│   └── deps.rs                pip `dependencies:` provisioning via u50_tools
-│                             (Phase 6)
 ├── plugin.rs                  new RunKind::Python { module, check } variant
-└── runner.rs                  per-thread VM scope handling; expired-flag
-                              checks inside Python API calls
-```
+└── runner.rs                  unchanged scheduling; RunKind::Python dispatches
+                              through python/bridge.rs
 
-**Compile feature**: `u50_check/Cargo.toml` gains
-`rustpython-vm = { workspace = true, optional = true }` +
-`[features] python = ["dep:rustpython-vm"]`; the workspace pins the exact
-version (like the uv crates). Default builds (and the binary's size budget)
-are unchanged unless `--features python`. The CLI surface does not change:
-`u50 check <pkg> --mode local/offline/dev` just stops bailing when
-`.cs50.yaml` names a Python checks file — and reports a clean error
-("rebuild with `--features python`") when the feature is off.
+# cache layout
+<cache>/u50/check50/venv/         the check interpreter + shipped check50
+                                  package (+ pinned capability stacks on
+                                  demand)
+<cache>/u50/check50/deps/<hash>/  one venv per distinct `dependencies:` set
+                                  (Phase 6)
+<cache>/u50/check50/valgrind/<v>/ extracted valgrind prefix (Phase 8)
+```
 
 ## Execution and isolation model
 
-- **One interpreter, one scope per check.** check50 gives each check a fresh
-  process; the embedded equivalent is a fresh module namespace (a rustpython
-  scope) per check, executing the _same pre-parsed module code_ — import once,
-  call once per check. The runner's existing per-check thread stays; the
-  expired flag is polled at every `check50.*` binding call, so a check blocked
-  in our `Run` waits still aborts on deadline.
-- **Pure-Python infinite loops cannot be interrupted** mid-bytecode today.
-  Mitigations, in order: (1) rustpython's instruction-count hook / trace
-  callback if available in the pinned version, else (2) document the
-  limitation and rely on the fact that real check sets spend their time in
-  `check50.run(...)` spawns, which the existing child-process kill already
-  bounds. Record the outcome of the Phase 0 spike here.
-- **State**: the dependency graph stays in Rust. Python checks are bridged as
-  `RunKind::Python` specs; pass/fail/skip semantics, log capture (the
-  `check50.log` binding appends to the check's existing log Arc), and the
-  skip cascade are unchanged.
-- **Stderr/stdout of the _interpreter_** never leaks into rendered output;
-  only check API calls produce log lines (check50 parity).
+check50 runs every check in a **separate process** (`ProcessPoolExecutor`);
+the port keeps that shape, which maps directly onto the engine's existing
+isolation and timeout machinery:
+
+- **Discovery pass** — one subprocess imports the checks module once and
+  emits the registry as JSON: check names in declaration order, docstrings
+  (descriptions), dependencies, `timeout=`, `hidden=`. The Rust side turns
+  that into `Vec<CheckSpec>` and feeds the existing graph/runner. All the
+  engine guarantees (declaration-order results, skip cascade,
+  filesystem inheritance, rendering) are unchanged.
+- **Per-check invocation** — the runner spawns one `venv/bin/python`
+  subprocess per check, cwd = the check's `run_dir`, own process group;
+  the subprocess imports the module and calls the named function. The
+  dependency's return value is passed via a pickled state file in the run
+  root (Phase 3; check50 pickles dependency state the same way).
+- **Timeouts and kills**: the per-check deadline enforcement now kills the
+  check's **process group** — the interpreter and every student process it
+  spawned die together (the machinery built during the review fixes; no
+  mid-bytecode interruption problem exists here, unlike an embedded VM).
+- **Failures**: a raised `check50.Failure` exits the subprocess with a
+  serialized failure on stdout (JSON envelope); the bridge maps it to
+  `Failure`/`Mismatch` causes. Any other Python exception maps to
+  `Cause::Error` (panic-path parity). A killed subprocess maps to the
+  timeout cause.
+- **The API surface lives in the shipped `check50` package** (option (A)):
+  the package implements the run/assertion chain itself — subprocess
+  spawn with the same semantics check50's `_api.py` documents (prompt
+  absorption, EOF, regex/exact/decimal matching, reject, exit-code
+  assert, SIGSEGV detection). This is check50's own architecture, so
+  upstream parity is achieved by porting documented `_api.py` behavior,
+  and the Rust `Run` machinery stays untouched for YAML/native checks.
+  Documented alternative (option (B), kept in reserve): an RPC bridge so
+  the Rust `Run` remains the single implementation of the assertion
+  chain and Python is a thin client — adopted only if golden parity
+  shows drift between the two implementations. Either way, the shared
+  cross-check fixtures are the drift guard.
+- **No GIL, no VM budget**: interpreter startup (~30-50 ms) is negligible
+  against check timeouts (default 60 s), and there is no embedded-VM
+  footprint in the binary.
 
 ## The capability-plugin layer
 
@@ -193,14 +231,16 @@ pub trait CapabilityPlugin: Sync {
     fn id(&self) -> &'static str;
     /// Availability through u50_tools: the capability's tools are resolved
     /// by their declared resolver plugins (flask -> the `uv` resolver: is
-    /// the pinned stack provisioned? valgrind -> the `download` resolver:
-    /// pinned prebuilt binary). Reported by `u50 --status`.
+    /// the pinned stack installed into the check venv? valgrind -> the
+    /// `download` resolver: pinned prebuilt binary). Reported by
+    /// `u50 --status`.
+    fn availability(&self) -> Availability;   // Available | NeedsProvision | Missing { guidance }
     /// Provision when supported by the resolver (flask: yes, once per
     /// machine; valgrind: downloads the pinned build instead).
     fn ensure(&self) -> anyhow::Result<()>;
     /// The native Rust surface (usable from native check sets, not just
     /// Python checks) — e.g. `ctx.flask().get(...)`, `ctx.c_valgrind(..)`.
-    /// The Python bridge (`check50.flask`, `check50.c.valgrind`) binds to
+    /// The Python surface (`check50.flask`, `check50.c.valgrind`) binds to
     /// the same objects, so there is exactly one implementation.
     // (per-capability concrete methods; not part of the shared trait)
 }
@@ -208,74 +248,71 @@ pub trait CapabilityPlugin: Sync {
 
 Consequences of the shape:
 
-- **One implementation, two surfaces**: the Python bindings in
-  `python/flask.rs` / `python/c.rs` are thin bridges; the logic lives in the
-  capability module. Native Rust check sets can use the same capability
+- **One implementation, two surfaces**: the Python side of each capability
+  lives in the shipped `check50` package and binds to the capability's
+  native objects; native Rust check sets can use the same capability
   without Python.
 - **Provisioning is declarative**: each capability names its resolver and
   package/binary needs; `u50 --status` reports every capability's
-  availability, `u50 --setup` bulk-provisions the provisionable ones (and
-  prints guidance for the discover-only ones) — one table, all domains.
+  availability; `u50 --install-tools` bulk-provisions the provisionable
+  ones — one table, all domains.
 - **Skip, never bail**: an unavailable capability yields check-level skips
   with guidance (check50 `Cause`-shaped), never a whole-run failure.
 - **Extensibility**: a future capability (e.g. `check50.py` extras, or a
   clang-tidy helper) is one module + one registration line, provisioned by
-  an existing strategy.
+  an existing resolver plugin.
 
 ## Phases
 
-### Phase 0 — Spike (feasibility + budget)
+### Phase 0 — Interpreter + venv spike (feasibility + budget)
 
-- Add `rustpython-vm` behind the `python` feature; boot a VM; exec a module
-  that imports a native Rust extension module and defines a decorated
-  function; call it; raise/catch a custom exception across the boundary.
-- Measure: build time delta (debug + release `opt-level="z"`), binary size
-  delta, VM boot latency, MSRV compatibility (`msrv = "1.96"` in clippy.toml).
-- Gate: both OS legs compile; boot+exec < 50 ms cold; size delta documented.
-  If rustpython is unusable at this pin, stop and record the fallback plan
-  (subprocess python3, PATH-free via explicit discovery like rustfmt's
-  toolchain resolution).
+- Point the uv pipeline at a check50 domain: provision the uv-managed
+  CPython and create `<cache>/u50/check50/venv`; round-trip
+  `venv/bin/python -c "import check50"` with the shipped package staged
+  into site-packages.
+- Measure: cold/warm venv creation time, interpreter startup latency,
+  subprocess-per-check overhead at the scale of a 10-check set, and the
+  Windows layout (`venv\Scripts\python.exe`).
+- Gate: both OS legs; no new Rust dependencies; the interpreter is
+  resolved cache-only (`PATH` untouched).
 
-### Phase 1 — The `check50` module surface
+### Phase 1 — The shipped `check50` package (core surface)
 
-- `python/api.rs`: native module + exceptions (`Failure`, `Mismatch` with the
-  repr-truncated `expected`/`actual` payload, `Missing`), `EOF`, and the
-  chainable run builder object (methods delegate to `CheckContext::run` and
-  the existing `Run` API — prompt absorption, regex/exact matching, reject,
-  exit-code assert, SIGSEGV semantics come for free).
-- `exists`, `include`, `log`, `data`, `hash` (streaming), all resolving via
-  `CheckContext::resolve` (run_dir containment, per the review fixes).
-- Unit tests drive the API from Python fixtures (`#[cfg(feature = "python")]`):
-  echo/stdin prompt, EOF, reject, mismatch payload, Failure propagation.
-- Gate: fixture parity with the equivalent YAML-check expectations already
-  in `cross_check.rs`.
+- `python/check50/`: the authoring surface as real Python — decorator +
+  registry, the chainable run builder (subprocess-based with `_api.py`'s
+  documented semantics: prompt absorption, EOF, regex/exact/decimal
+  matching, reject, exit-code assert, SIGSEGV detection), `exists`/
+  `include`/`log`/`data`/`hash` (run_dir-resolved, per the review fixes),
+  exceptions with the repr-truncated payload shapes, `EOF`.
+- Fixture tests: Rust integration tests drive the venv python against the
+  same expectations the YAML cross-check suite already pins (echo/stdin
+  prompt, EOF, reject, mismatch payload, Failure propagation).
+- Gate: fixture parity with `cross_check.rs`'s expectations.
 
 ### Phase 2 — Decorator bridge (the end-to-end pipeline)
 
-- `python/registry.rs`: the decorator records the registry; `lib.rs` routes
-  `checks: <file>.py` to: read file → exec module once → build
-  `Vec<CheckSpec>` in declaration order (docstring → description;
-  dependency fn → name; `timeout=`, `hidden=` kwargs honored) → existing
-  runner. No new rendering work.
-- New `RunKind::Python { module_id, check_name }` in `plugin.rs`; the
-  runner's per-check thread creates the check's scope and calls the
-  function; raised `check50.Failure` → `Failure`, other Python exceptions →
-  `Cause::Error` (panic-path parity).
-- Gate: a hello-world `__init__.py` (exists → compiles → prints hello, the
-  canonical cs50 example) produces the same results JSON shape as the
+- `python/bridge.rs`: the discovery pass (module import → registry JSON →
+  `Vec<CheckSpec>` in declaration order, docstring → description,
+  dependency fn → name, `timeout=`/`hidden=` honored) and the per-check
+  invocation (own process group, cwd = run_dir).
+- New `RunKind::Python { module, check }` in `plugin.rs`; raised
+  `check50.Failure` → `Failure`/`Mismatch` causes; other exceptions →
+  `Cause::Error`; killed subprocess → timeout cause.
+- Gate: a hello-world `__init__.py` (exists → compiles → prints hello,
+  the canonical cs50 example) produces the same results JSON shape as the
   YAML/native equivalents.
 
 ### Phase 3 — Parity work the legacy checks actually need
 
-- **Dependency return-value passing**: the scheduler stores each check's
-  return value keyed by name (`CheckState` extension); Python dependents
-  receive it as their first argument. Native Rust checks get the same
-  capability (an API evolution, not Python-only — real cs50 chains pass
-  state this way).
-- `check50.c.compile`: clang via the existing spawn machinery
-  (`bash_command`-style resolution; PATH-free clang discovery like
-  rustfmt's).
-- `check50.regex.decimal` → the existing `decimal_regex()`.
+- **Dependency return-value passing**: each check's subprocess pickles its
+  return value to a state file in the run root; dependents receive it as
+  their first argument (check50 parity — it pickles dependency state the
+  same way). Native Rust checks get the same capability (an API evolution,
+  not Python-only — real cs50 chains pass state this way).
+- `check50.c.compile`: clang invocation from the shipped package
+  (PATH-free clang discovery like rustfmt's).
+- `check50.regex.decimal` → the same semantics as the Rust
+  `decimal_regex()` (document the consuming-boundary divergences there).
 - `import_checks` for sibling check directories.
 - `check50.py` helpers where cheap.
 
@@ -286,12 +323,11 @@ Consequences of the shape:
   uses `c.compile`; one that exercises return-value passing), byte-shaped
   against the documented JSON spec — same pattern as `cross_check.rs`,
   including the gated live cross-check when check50 is installed.
-- Feature-gated CI job/step so the `python` build is exercised on both OS
-  legs (`cargo build -p u50_check --features python`, `cargo test -p
-u50_check --features python`).
+- CI: the python-check path exercised on both OS legs (no feature gate —
+  there is no optional dependency; the Windows venv layout is covered).
 - Docs: `u50_check/AGENTS.md` (remove the divergence note, document the
-  feature flag and its limits), root `AGENTS.md` status line, this file
-  updated with spike measurements.
+  venv, the shipped package, and its limits), root `AGENTS.md` status
+  line, this file updated with spike measurements.
 
 ### Phase 5 — `u50_tools`: shared uv pipeline, resolver plugins, plugin scaffolding
 
@@ -302,7 +338,7 @@ style-local. Two halves:
 
 | Moves to `u50_tools`                                                                                                                                             | From                                                                            | Notes                                                                                                                                                                                                                                                                   |
 | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| uv provisioning pipeline (1,135 lines: `pipeline.rs`, `venv.rs`, `wheels.rs`, `pins.rs`, `setup/mod.rs`)                                                         | `u50_style/src/setup/`                                                          | Becomes the `uv` resolver plugin, parameterized by cache subdomain + package list; style50 pins stay with style50 (they are style's package table), u50_check adds its own.                                                                                             |
+| uv provisioning pipeline (1,135 lines: `pipeline.rs`, `venv.rs`, `wheels.rs`, `pins.rs`, `setup/mod.rs`)                                                         | `u50_style/src/setup/`                                                          | Becomes the `uv` resolver plugin, parameterized by cache subdomain + package list; style50 pins stay with style50 (they are style's package table), u50_check adds its own (the check venv, Phase 0).                                                                   |
 | cache paths + resolution (`cache_dir`, `cache_bin_dir`, `venv_bin_dir`, `tool_file_name`, `is_executable_file`, `is_explicit_path`, `locate_tool`, `ToolOrigin`) | `u50_style/src/format/tool.rs`, `format/mod.rs`                                 | Cache path parameterized: `u50/<domain>` (`u50/style50` today, `u50/check50` for check-side venvs). Resolution is generalized into the resolver plugin system (below); the `Toolchain` discovery in `language/rust.rs` becomes the `toolchain` plugin's implementation. |
 | registry scaffolding (unique-id/name validation, path-safe names, duplicate detection)                                                                           | today duplicated: `u50_style` registry tests, `u50_check` `Graph::new`/registry | A tiny generic helper; domain traits stay in their crates.                                                                                                                                                                                                              |
 | shared OS plumbing (symlink-safe `copy_tree`, process-group spawn/kill, `bash_command` shell resolution, execute-bit checks)                                     | `u50_check/src/api.rs` (+ equivalents in style50's spawn path)                  | Both crates consume; the review-hardened versions are the ones that move.                                                                                                                                                                                               |
@@ -333,25 +369,26 @@ pub trait ResolverPlugin: Sync {
 }
 
 pub struct ToolSpec {
-    /// Unique tool name ("clang-format", "rustfmt", "valgrind").
+    /// Unique tool name ("clang-format", "rustfmt", "valgrind",
+    /// "check-venv", ...).
     pub name: &'static str;
     /// The resolver plugin this tool prefers.
     pub resolver: &'static str;
-    /// Optional fallback resolvers, tried in order (e.g. a tool whose
-    /// primary is `download` may fall back to `system`).
+    /// Optional fallback resolvers, tried in order.
     pub fallback: &'static [&'static str],
     /// Resolver-specific configuration, interpreted by the plugin:
-    /// uv -> pip package + version pin; toolchain -> binary name;
-    /// system -> search locations + minimum version; download ->
+    /// uv -> pip package/interpreter + version pin; toolchain -> binary
+    /// name; system -> search locations + minimum version; download ->
     /// pinned URL template + SHA-256 + platform mapping.
     pub config: ResolverConfig,
 }
 ```
 
-- **Initial resolver plugins** (the existing three behaviors, plus one new):
+- **Initial resolver plugins**:
   - `uv` — wraps the extracted provisioning pipeline (pip packages, pinned
-    versions, venv, parallel wheel fetch); serves style50's formatters and
-    check-side venvs (Phase 6).
+    versions, venv, parallel wheel fetch); serves style50's formatters,
+    the check venv + shipped `check50` package, `dependencies:` (Phase 6),
+    and flask (Phase 7).
   - `toolchain` — resolves rustfmt from the Rust toolchain; provisioning
     unsupported by design (the rustfmt precedent).
   - `system` — discover-only: bounded standard-location lookup,
@@ -360,21 +397,23 @@ pub struct ToolSpec {
     the read-only escape hatch for hosts where nothing else can serve a
     tool.
   - `download` — pinned standalone-binary downloads into the cache
-    (`<cache>/u50/<domain>/bin/<tool>/<version>/`) with pinned SHA-256
-    checksums and an explicit platform-mapping table. Implemented and
-    unit-tested in Phase 5 (against a synthetic local file server — no
-    network in tests). Its first consumer is valgrind (Phase 8); it is
-    never the default for pip-installable tools — `uv` stays preferred
-    wherever a wheel exists.
+    (`<cache>/u50/<domain>/<tool>/<version>/<platform>/`) with pinned
+    SHA-256 checksums and an explicit platform-mapping table; full-prefix
+    extraction for tools that ship one (valgrind's `bin/` + `lib/`).
+    Implemented and unit-tested in Phase 5 (against a synthetic local file
+    server — no network in tests). Its first consumer is valgrind
+    (Phase 8); it is never the default for pip-installable tools — `uv`
+    stays preferred wherever a wheel exists.
 - **Policy hooks**: each resolver declares whether `provision` is
   supported. `u50 --status` walks every registered tool → its declared
   resolver → `resolve()` → status line. **`u50 --install-tools`** (new
   root-level flag) bulk-provisions every registered tool through its
-  declared resolver — style formatters, capability stacks, declared
-  `dependencies:`, pinned binary downloads — and prints each resolver's
-  guidance for what it cannot provision; lazy per-tool provisioning on
-  first use is unchanged. `--setup` keeps its existing style-only meaning
-  and is documented as superseded by `--install-tools`.
+  declared resolver — style formatters, the check venv, capability stacks,
+  declared `dependencies:`, pinned binary downloads — and prints each
+  resolver's guidance for what it cannot provision; lazy per-tool
+  provisioning on first use is unchanged. `--setup` keeps its existing
+  style-only meaning and is documented as superseded by
+  `--install-tools`.
 - **Security**: the `download` resolver pins exact versions + SHA-256 and
   is cache-first; `uv` pins versions and reuses the shared cache offline;
   `system` only reads. Every resolver's config is validated through the
@@ -396,56 +435,54 @@ pub struct ToolSpec {
 
 ### Phase 6 — pip `dependencies:` via `u50_tools::uv`
 
-Solves the _"embedded interpreter does not install packages"_ limitation
-using the extracted pipeline:
+Solves the _"embedded interpreter does not install packages"_ limitation —
+now trivially: the check interpreter is a real CPython, so the only work is
+installing the requirements:
 
 - **Cache layout**: requirement sets provision into
   `<cache>/u50/check50/deps/<hash(requirements sorted)>` — one venv per
   distinct requirement set (cheap; the shared uv cache reuses downloaded
   wheels across sets), so concurrent check sets cannot poison each other.
   A small manifest records the resolved package versions (reproducibility;
-  the cache key changes when the declaration changes).
+  the cache key changes when the declaration changes). The declared
+  requirements install **on top of the check venv's interpreter** (the
+  deps venv is created from the same uv-managed CPython; the shipped
+  `check50` package is staged into it as well).
+- **C extensions work**: the interpreter is a real CPython build, so
+  host-platform wheels (numpy, etc.) import and run — the old pure-Python
+  policy is gone. Only genuinely-unsupported-platform wheels fail with
+  uv's normal resolution error, surfaced as a clear check-set error.
 - **Wiring**: `python/deps.rs` reads `.cs50.yaml`'s `dependencies:`
   (already parsed in `yaml.rs` as an ignored `serde_yaml::Value`; pip
-  requirement-string or list, check50 parity), provisions/verifies the venv
-  lazily on first use (bulk via `u50 --setup`, per-problem), and appends the
-  venv's `site-packages` (`<venv>/lib/python3.x/site-packages`,
-  `<venv>\Lib\site-packages` on Windows) to the embedded interpreter's
-  `sys.path` for that check set's runs.
-- **Pure-Python policy**: RustPython cannot load C extensions. Before
-  install, each selected wheel is classified (`py3-none-any` vs platform
-  wheel — the extracted `wheels.rs` already knows the tags): non-pure
-  packages are _installed but flagged_, and an import of a flagged
-  package's C parts raises a clear `check50.Failure`-shaped error ("needs
-  CPython; not supported by the embedded interpreter") instead of a cryptic
-  import error. The check author sees the exact package to drop or replace.
+  requirement-string or list, check50 parity), provisions/verifies the
+  deps venv lazily on first use (bulk via `u50 --install-tools`), and the
+  bridge points that check set's subprocesses at the deps venv's
+  interpreter.
 - **Offline/flags**: `--offline` uses only the shared uv cache (clear error
   if a wheel is not cached); `--local`/`--dev` may fetch; the advisory lock
   serializes concurrent first-use provisioning exactly as style50 does.
-- Gate: a check set declaring `dependencies: [pyyaml]` (pure) runs; one
-  declaring a C-extension package imports with the explained error; both
-  legs in CI with a warm cache; cold-cache provisioning shown on stderr
-  only.
+- Gate: a check set declaring `dependencies: [pyyaml]` runs; a
+  C-extension dependency (e.g. `numpy`) imports and runs; both legs in CI
+  with a warm cache; cold-cache provisioning shown on stderr only.
 
 ### Phase 7 — flask: a capability plugin (the `uv` resolver)
 
-`FlaskCapability` in `capabilities/flask.rs`, unblocked by Phases 5-6:
-Flask + Werkzeug + Jinja2 + click + itsdangerous + markupsafe are all pure
-Python, so the capability's need is "a pinned Python package set" — exactly
-what the `uv` resolver provisions:
+`FlaskCapability` in `capabilities/flask.rs`: Flask + Werkzeug + Jinja2 +
+click + itsdangerous + markupsafe are all pure Python, so the capability's
+need is "a pinned Python package set" — exactly what the `uv` resolver
+provisions:
 
 - **Lazy, pinned provisioning**: first `import check50.flask` (or first
-  native use) provisions a pinned Flask stack venv at
-  `<cache>/u50/check50/flask` — exact versions pinned like style50's
-  `PINNED_VERSIONS` with a version-fixture test — once per machine, reused
-  by all subsequent runs. `ensure()` is a no-op when provisioned.
-- **`python/flask.rs`** stays a thin bridge: it binds `check50.flask`'s
-  surface (`get`/`post`/data asserts with check50's exact names and payload
-  shapes — pinned by the Phase-0/3 study of `flask.py`; the local source
-  snapshot in `tmp/check50-src` was a stale 503 download and must be
-  re-fetched) onto `FlaskCapability`'s native objects, which drive the
-  student's app through Werkzeug's test client inside the embedded
-  interpreter.
+  native use) installs the pinned Flask stack into the check venv — exact
+  versions pinned like style50's `PINNED_VERSIONS` with a version-fixture
+  test — once per machine, reused by all subsequent runs. `ensure()` is a
+  no-op when provisioned.
+- **`check50.flask`** is implemented in the shipped package (Python),
+  driving the student's app through Werkzeug's test client with check50's
+  exact helper names and payload shapes (pinned by the Phase-0/3 study of
+  `flask.py`; the local source snapshot in `tmp/check50-src` was a stale
+  503 download and must be re-fetched). On a real CPython this is a
+  faithful port, not a bridge.
 - **Gate**: one golden from a flask-using cs50 check set (or a synthetic
   fixture if no canonical one exists) byte-shaped against captured check50
   output; cold-cache provisioning on stderr only; `u50 --status` shows the
@@ -481,10 +518,11 @@ reliance on any system installation:
   host kernel, so provision runs `valgrind --version` once; a failure or
   crash marks the cached copy bad and reports a clear error
   (re-provision/skip) instead of letting checks fail mysteriously.
-- **`python/c.rs`** bridges `check50.c.valgrind`'s surface (decorate a
-  check so its spawned programs run under valgrind and valgrind-clean
-  output is asserted — exact semantics pinned by re-fetching `c.py`, the
-  snapshot was stale) onto the capability's native implementation.
+- **`check50.c.valgrind`** is implemented in the shipped package
+  (decorate a check so its spawned programs run under valgrind and
+  valgrind-clean output is asserted — exact semantics pinned by
+  re-fetching `c.py`, the snapshot was stale), backed by the capability's
+  resolved pinned binary.
 - **Timeout interplay**: valgrind is 10-50× slower; valgrind-decorated
   checks get a documented multiplier (e.g. ×25, capped) applied to the
   effective deadline — the author's explicit `timeout=` always wins over
@@ -492,8 +530,8 @@ reliance on any system installation:
 - **`u50 --status` / `--install-tools`**: the root-level table gains the
   capability/tools section (`valgrind  found (cache) / missing /
 unsupported (platform)`); `--install-tools` provisions every registered
-  tool through its declared resolver (style formatters, flask, declared
-  `dependencies:` via `uv`; valgrind via `download`).
+  tool through its declared resolver (style formatters, the check venv,
+  flask, declared `dependencies:` via `uv`; valgrind via `download`).
 - **Why the pip route is impossible** (verified against the live indexes,
   not assumed): PyPI's only `valgrind` package is version **0.0.0** — a
   ctypes helper for controlling callgrind instrumentation from _inside_ a
@@ -507,39 +545,39 @@ unsupported (platform)`); `--install-tools` provisions every registered
 
 ## Risks and mitigations
 
-| Risk                                                                                     | Mitigation                                                                                                                                                                                                                              |
-| ---------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| rustpython stdlib gaps (a check imports a module the VM lacks)                           | Inventory imports across cs50/problems check sets during Phase 0; stub-with-clear-error for missing modules rather than a segfault; document coverage.                                                                                  |
-| No C extensions (numpy etc.)                                                             | Phase 6 flags non-pure wheels at install and raises a clear, named error at import; check authors drop or replace the package.                                                                                                          |
-| Supply-chain exposure from `dependencies:` fetches                                       | In-process uv pipeline only (no script execution beyond wheels), resolved versions recorded in the venv manifest, versions change only when the declaration changes, shared cache reused offline thereafter; `--offline` never fetches. |
-| Hang in pure-Python loop ignores the deadline                                            | Instruction-count/trace hook if the pinned rustpython supports it; else documented limitation (spawn-bound real checks are already bounded).                                                                                            |
-| GIL + per-check threads serialize                                                        | Real check sets are mostly spawn-wait time; document measured concurrency delta from Phase 0.                                                                                                                                           |
-| Binary size / build time blowup                                                          | Behind the `python` feature; measure in Phase 0; workspace pin exactly (like the uv crates).                                                                                                                                            |
-| rustpython API churn between versions                                                    | Exact workspace pin; Phase 0 records the tested version.                                                                                                                                                                                |
-| MSRV conflict                                                                            | Gate in Phase 0 against `msrv = "1.96.0"`.                                                                                                                                                                                              |
-| Windows differences (paths, PTY-free pipes, venv layout)                                 | The Rust `Run` layer already handles both legs; `deps.rs` uses the platform site-packages layout; Python bindings only bridge.                                                                                                          |
-| A resolver plugin misdeclares its config (stale pin, wrong checksum, wrong platform map) | Resolver configs are validated through the shared registry scaffolding; each resolver ships version-fixture tests; `download` requires pinned SHA-256 and never floats to latest.                                                       |
-| `u50_tools` extraction regresses style50                                                 | Re-exports keep the public API stable; style50's golden fixtures + tool tests are the regression net; the extraction is behavior-preserving by construction (moves + parameterization, no rewrites).                                    |
-| Capability plugins drift from upstream `flask.py`/`c.py` semantics                       | Semantics pinned by re-fetching the source (the `tmp/check50-src` snapshot is stale) and by golden fixtures against captured check50 output; the capability trait keeps each surface small enough to verify in isolation.               |
-| Capability registry bloat (every helper wants to be a capability)                        | A capability earns registration by owning a tool/dependency strategy and a dual (native + Python) surface; pure helpers stay in `u50_tools`. Documented admission rule.                                                                 |
-| Pinned valgrind binary vs host kernel mismatch                                           | Runtime self-check (`valgrind --version`) at provision marks bad cache copies with a clear error (re-provision/skip); per-platform version fixtures; affected checks skip rather than fail mysteriously.                                |
-| valgrind has no build for the host platform (Apple Silicon, Windows)                     | `unsupported (platform)` status; valgrind-decorated checks skip with guidance naming the limitation; no system fallback is declared.                                                                                                    |
+| Risk                                                                                                                          | Mitigation                                                                                                                                                                                                                              |
+| ----------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Subprocess-per-check startup cost (~30-50 ms each)                                                                            | Negligible against the 60 s default timeout; check50 itself pays the same cost (per-process checks); measured in Phase 0.                                                                                                               |
+| Semantic drift between the Python `check50` package and the Rust `Run` machinery (two implementations of the assertion chain) | Shared cross-check fixtures pin both against identical expectations; the documented fallback (option (B)) is an RPC bridge to the Rust `Run` if drift proves real.                                                                      |
+| Pickled dependency state is code-execution if tampered                                                                        | State files live in the run root created and owned by u50 for the duration of one run (trusted check phases only, same trust as check50's ProcessPoolExecutor pickling); never read from student-writable paths.                        |
+| Supply-chain exposure from `dependencies:` fetches                                                                            | In-process uv pipeline only (no script execution beyond wheels), resolved versions recorded in the venv manifest, versions change only when the declaration changes, shared cache reused offline thereafter; `--offline` never fetches. |
+| uv-managed CPython availability/platform gaps                                                                                 | The same managed builds style50 already depends on; Phase 0 records the platform coverage; `--status` reports the interpreter like any tool.                                                                                            |
+| Binary size / build time                                                                                                      | No new Rust dependencies at all — the only cost is the shipped Python package (kilobytes) and the on-demand venv download.                                                                                                              |
+| Windows differences (venv layout, `Scripts\python.exe`, paths)                                                                | Phase 0 covers the Windows venv layout; the runner's process-group spawn/kill already handles both legs.                                                                                                                                |
+| A resolver plugin misdeclares its config (stale pin, wrong checksum, wrong platform map)                                      | Resolver configs are validated through the shared registry scaffolding; each resolver ships version-fixture tests; `download` requires pinned SHA-256 and never floats to latest.                                                       |
+| `u50_tools` extraction regresses style50                                                                                      | Re-exports keep the public API stable; style50's golden fixtures + tool tests are the regression net; the extraction is behavior-preserving by construction (moves + parameterization, no rewrites).                                    |
+| Capability plugins drift from upstream `flask.py`/`c.py` semantics                                                            | Semantics pinned by re-fetching the source (the `tmp/check50-src` snapshot is stale) and by golden fixtures against captured check50 output; the capability trait keeps each surface small enough to verify in isolation.               |
+| Capability registry bloat (every helper wants to be a capability)                                                             | A capability earns registration by owning a tool/dependency strategy and a dual (native + Python) surface; pure helpers stay in `u50_tools`. Documented admission rule.                                                                 |
+| Pinned valgrind binary vs host kernel mismatch                                                                                | Runtime self-check (`valgrind --version`) at provision marks bad cache copies with a clear error (re-provision/skip); per-platform version fixtures; affected checks skip rather than fail mysteriously.                                |
+| valgrind has no build for the host platform (Apple Silicon, Windows)                                                          | `unsupported (platform)` status; valgrind-decorated checks skip with guidance naming the limitation; no system fallback is declared.                                                                                                    |
 
 ## Verification checklist
 
-- [ ] `cargo build/test -p u50_check --features python` green on both OS legs
-- [ ] Default build (no feature) unchanged: size/build time within noise
-- [ ] Phase-1 API fixtures: Python-driven `run/stdin/stdout/exit/reject`
+- [ ] `cargo build/test --workspace` green on both OS legs (no new deps,
+      no feature gate)
+- [ ] Phase 0: `<cache>/u50/check50/venv` provisions cache-only (PATH
+      untouched) on both legs; startup/subprocess overhead measured
+- [ ] Phase-1 fixtures: Python-driven `run/stdin/stdout/exit/reject`
       parity with the YAML cross-check expectations
 - [ ] hello-world `__init__.py` results JSON matches the YAML/native shape
 - [ ] Golden fixtures for 2-3 real cs50/problems check sets (captured JSON,
       gated live check50 cross-check)
-- [ ] Return-value passing covered by a chain test
-- [ ] `checks: __init__.py` without the feature errors cleanly
-      ("rebuild with --features python")
+- [ ] Return-value passing covered by a chain test (pickled state file)
+- [ ] C extensions: a `dependencies: [numpy]` check set imports and runs
 - [ ] No plugin/check-set names outside `checks/` + `registry.rs` (grep)
-      still holds; python.rs is core-generic (no per-problem knowledge)
-- [ ] CI: feature-gated python job on both legs
+      still holds; the shipped `check50` package is generic (no per-problem
+      knowledge)
+- [ ] CI: the python-check path exercised on both legs
 - [ ] Resolver plugins: adding a throwaway resolver = 1 module + 1
       registration line; a tool can switch resolvers by editing its
       declaration; `--status`/`--setup` walk tools through their declared
@@ -547,9 +585,8 @@ unsupported (platform)`); `--install-tools` provisions every registered
 - [ ] Phase 5: `u50_tools` extraction keeps style50 goldens byte-identical
       and its tool tests green through the re-exports; `u50_check` consumes
       the shared crate for resolver + provisioning
-- [ ] Phase 6: pure-python dependency set provisions lazily; C-extension
-      dependency imports with the explained error; `--offline` never
-      fetches; warm-cache runs touch no network
+- [ ] Phase 6: `dependencies:` provisions lazily into the per-set venv;
+      `--offline` never fetches; warm-cache runs touch no network
 - [ ] Phase 7: pinned Flask stack provisions once (`ensure()` idempotent);
       a flask check fixture matches captured check50 JSON; capability
       visible in `u50 --status`
@@ -558,8 +595,9 @@ unsupported (platform)`); `--install-tools` provisions every registered
       `--install-tools`; checksum + runtime self-check failure paths
       tested; timeout multiplier documented
 - [ ] `u50 --install-tools`: bulk-provisions every registered tool
-      through its declared resolver (style formatters, flask,
-      `dependencies:`, valgrind); lazy first-use provisioning unchanged;
-      `--setup` documented as style-specific and superseded
+      through its declared resolver (style formatters, the check venv,
+      flask, `dependencies:`, valgrind); lazy first-use provisioning
+      unchanged; `--setup` documented as style-specific and superseded
 - [ ] Capability registry: adding a throwaway capability = 1 module +
-      1 registration line; `--status`/`--setup` pick it up generically
+      1 registration line; `--status`/`--install-tools` pick it up
+      generically
