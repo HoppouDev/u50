@@ -63,7 +63,7 @@ struct CheckArgs {
     slug: String,
 
     /// Execution mode
-    #[arg(long, value_enum, default_value_t = Mode::Online)]
+    #[arg(long, value_enum, default_value_t = Mode::Local)]
     mode: Mode,
 
     /// Run only the named checks (plus their dependencies); repeatable

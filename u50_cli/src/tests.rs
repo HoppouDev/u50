@@ -30,7 +30,7 @@ fn check_defaults() {
     let Some(Command::Check(args)) = cli.command else {
         panic!("expected check subcommand");
     };
-    assert!(matches!(args.mode, Mode::Online));
+    assert!(matches!(args.mode, Mode::Local));
     assert_eq!(args.outputs, vec![OutputFormat::Ansi]);
     assert!(args.targets.is_empty());
 }
