@@ -1,3 +1,5 @@
+#![allow(dead_code)] // scaffolding for the capability layer
+
 //! The resolver plugin system: every tool declares *which* resolver
 //! plugin provisions it, and resolver plugins register in their own
 //! registry (adding a provisioning mechanism is one module + one

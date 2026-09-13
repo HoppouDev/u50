@@ -1,6 +1,8 @@
 //! The toolchain resolver plugin: resolves binaries from the Rust
 //! toolchain (rustfmt parity — provision-unsupported by design).
 
+#![allow(dead_code)] // scaffolding for the capability layer
+
 use std::path::PathBuf;
 
 use anyhow::Result;

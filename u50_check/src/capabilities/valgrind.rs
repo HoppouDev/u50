@@ -58,7 +58,7 @@ pub fn ensure_valgrind() -> Result<()> {
                 "valgrind has no build for this platform ({platform}); valgrind-decorated checks skip with guidance"
             )
         })?;
-    if entry.1 == "PENDING" {
+    if entry.1.starts_with("PENDING") {
         anyhow::bail!(
             "valgrind pinned URL not yet configured; install with your system package manager (apt/dnf/brew install valgrind)"
         );

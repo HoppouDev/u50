@@ -6,7 +6,6 @@ edition = "2024"
 [dependencies]
 anyhow = { workspace = true }
 dirs = { workspace = true }
-reqwest = { workspace = true, default-features = false, features = ["gzip", "rustls", "system-proxy"] }
 sha2 = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true }

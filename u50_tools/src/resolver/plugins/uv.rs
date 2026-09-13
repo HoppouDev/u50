@@ -2,6 +2,8 @@
 //! provisioning pipeline (style50 `setup` parity, shared across
 //! domains through `crate::uv`).
 
+#![allow(dead_code)] // scaffolding for the capability layer
+
 use std::path::Path;
 
 use anyhow::Result;

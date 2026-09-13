@@ -19,9 +19,7 @@ tracing = { workspace = true }
 u50_tools = { path = "../u50_tools" }
 uv-cache = { workspace = true }
 uv-client = { workspace = true }
-uv-preview = { workspace = true }
 uv-python = { workspace = true }
-uv-virtualenv = { workspace = true }
 
 [target."cfg(unix)".dependencies]
 libc = { workspace = true }

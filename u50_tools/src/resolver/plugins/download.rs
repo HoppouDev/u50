@@ -1,6 +1,8 @@
 //! The download resolver plugin: pinned standalone-binary downloads
 //! into the cache (URL + SHA-256 + platform mapping).
 
+#![allow(dead_code)] // scaffolding for the capability layer
+
 use std::path::PathBuf;
 
 use anyhow::Result;
@@ -55,7 +57,7 @@ impl ResolverPlugin for DownloadResolver {
                     spec.name
                 )
             })?;
-        let cache = cache_dir_for(spec);
+        let cache = crate::uv::cache_root_for_spec(spec).join(&spec.name);
         std::fs::create_dir_all(&cache).context("create download cache dir")?;
         let binary = cache.join(&entry.binary_path);
         if binary.is_file() {

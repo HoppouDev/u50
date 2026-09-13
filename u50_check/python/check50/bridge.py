@@ -11,7 +11,6 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
-import pickle
 import sys
 import traceback
 
@@ -93,8 +92,8 @@ def invoke(path, name, state_file):
     has_state = state_file != "-" and os.path.exists(state_file)
     if has_state:
         try:
-            with open(state_file, "rb") as handle:
-                state_info = pickle.load(handle)
+            with open(state_file) as handle:
+                state_info = json.load(handle)
         except Exception as exc:
             _error_envelope(exc)
             return
@@ -114,8 +113,8 @@ def invoke(path, name, state_file):
         _envelope(True)
         return
     try:
-        with open(STATE_FILE, "wb") as handle:
-            pickle.dump(result, handle)
+        with open(STATE_FILE, "w") as handle:
+            json.dump(result, handle)
     except Exception as exc:
         _error_envelope(exc)
         return

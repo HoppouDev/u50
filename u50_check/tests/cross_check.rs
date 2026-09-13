@@ -174,13 +174,11 @@ fn u50_check_results_match_check50_ground_truth() {
 fn live_check50_matches_u50_check_when_installed() {
     // Gated live cross-check: run real check50 and u50_check on the same
     // packages and compare their results arrays.
-    if OsCommand::new("bash")
+    let probe = OsCommand::new("bash")
         .args(["-c", "command -v check50"])
         .output()
-        .expect("probe")
-        .status
-        .success()
-    {
+        .expect("probe");
+    if probe.status.success() {
         eprintln!("skip live cross-check: check50 is not installed");
         return;
     }

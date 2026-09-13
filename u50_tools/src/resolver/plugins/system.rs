@@ -1,6 +1,8 @@
 //! The system resolver plugin: discover-only (bounded standard
 //! locations), never installs — the read-only escape hatch.
 
+#![allow(dead_code)] // scaffolding for the capability layer
+
 use anyhow::Result;
 
 use crate::resolver::{Resolved, ResolverConfig, ResolverPlugin, ToolSpec};

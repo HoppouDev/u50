@@ -5340,9 +5340,7 @@ dependencies = [
  "u50_tools",
  "uv-cache",
  "uv-client",
- "uv-preview",
  "uv-python",
- "uv-virtualenv",
 ]
 
 [[package]]
@@ -5410,7 +5408,6 @@ dependencies = [
  "anyhow",
  "dirs 7.0.0",
  "libc",
- "reqwest",
  "sha2 0.10.9",
  "tempfile",
  "tokio",
