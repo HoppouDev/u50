@@ -1,5 +1,7 @@
 """C helpers (check50: `check50.c`)."""
 
+from __future__ import annotations
+
 import os
 import subprocess
 
@@ -7,12 +9,16 @@ from .bridge_state import log
 from .errors import Failure
 
 
-def compile(*files, cc="clang", lcs50=False, **kwargs):
+def compile(*files: str, cc: str = "clang", lcs50: bool = False, **kwargs: object) -> str:
     """Compiles C source files into an executable named after the first
-    source file (check50 parity: `c.compile`)."""
+    source file (check50 parity)."""
     log("compiling...")
     target = os.path.splitext(files[0])[0]
-    result = subprocess.run([cc, "-o", target, *files], capture_output=True, text=True)
+    cmd = [cc, "-o", target, *files]
+    if lcs50:
+        _ensure_cs50_files()
+        cmd.extend(["-lcs50", "-I" + os.getcwd()])
+    result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         raise Failure(
             f"could not compile {' '.join(files)}",
@@ -21,8 +27,7 @@ def compile(*files, cc="clang", lcs50=False, **kwargs):
     return target
 
 
-def _ensure_cs50_files():
-    """Downloads cs50.h into the run dir if not present (for lcs50)."""
+def _ensure_cs50_files() -> None:
     import urllib.request
 
     if not os.path.exists("cs50.h"):

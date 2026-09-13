@@ -1,0 +1,31 @@
+# basedpyright configuration for the shipped check50 package.
+# The authoring API is intentionally flexible (arbitrary key-value
+# data, dynamic check registration) — strict-mode findings that are
+# inherent to that design are relaxed here.
+
+[reportExplicitAny]
+reportExplicitAny = "warning"
+
+[reportAny]
+reportAny = "warning"
+
+[reportUnknownMemberType]
+reportUnknownMemberType = "warning"
+
+[reportUnknownVariableType]
+reportUnknownVariableType = "warning"
+
+[reportUnknownArgumentType]
+reportUnknownArgumentType = "warning"
+
+[reportUnknownParameterType]
+reportUnknownParameterType = "warning"
+
+[reportMissingTypeStubs]
+reportMissingTypeStubs = "none"
+
+[reportUnusedCallResult]
+reportUnusedCallResult = "none"
+
+[reportUnusedParameter]
+reportUnusedParameter = "warning"

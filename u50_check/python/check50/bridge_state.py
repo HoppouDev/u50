@@ -3,49 +3,67 @@ bridge: the check registry (declaration order, descriptions,
 dependencies, timeouts) and the current check's log/payload.
 """
 
+from __future__ import annotations
+
+from typing import Any, Callable
+
 
 class Check:
     """A registered check: the decorated function plus metadata."""
 
-    def __init__(self, fn, description, dependency, timeout):
+    fn: Callable[..., object]
+    description: str
+    dependency: str | None
+    timeout: float | None
+    hidden: str | None
+
+    def __init__(
+        self,
+        fn: Callable[..., object],
+        description: str,
+        dependency: str | None,
+        timeout: float | None,
+    ) -> None:
         self.fn = fn
         self.description = description
         self.dependency = dependency
         self.timeout = timeout
-        self.hidden = None
+        self.hidden: str | None = None
 
 
 # The registry: declaration order (check50 parity: the decorator
 # appends to a module-global list).
-checks = {}
-order = []
+checks: dict[str, Check] = {}
+order: list[str] = []
 
 # The current check's student-visible log and result payload.
-log_lines = []
-payload = {}
+log_lines: list[str] = []
+payload: dict[str, Any] = {}
 
 # The checks file currently loaded (set by the bridge; import_checks
 # resolves sibling modules against it).
-loaded_path = ""
+loaded_path: str = ""
 
 
-def reset():
+def reset() -> None:
     """Clears the per-invocation state (bridge, before each check)."""
     log_lines.clear()
     payload.clear()
 
 
-def log(line=""):
+def log(line: str = "") -> None:
     """Adds a line to the check log (newlines escaped, check50 parity)."""
     log_lines.append(str(line).replace("\n", "\\n"))
 
 
-def register(fn, dependency, timeout):
+def register(
+    fn: Callable[..., object],
+    dependency: str | None,
+    timeout: float | None,
+) -> Callable[..., object]:
     """Registers a check in declaration order (the decorator's write
     side); the docstring is the user-visible description."""
     name = fn.__name__
-    if dependency is not None and not isinstance(dependency, str):
-        dependency = dependency.__name__
     check = Check(fn, (fn.__doc__ or "").strip() or name, dependency, timeout)
     check.hidden = getattr(fn, "_check50_hidden", None)
     checks[name] = check

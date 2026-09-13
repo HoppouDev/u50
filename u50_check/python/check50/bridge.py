@@ -3,7 +3,7 @@
 The Rust runner spawns `python -m check50.bridge <cmd>` once to
 discover the check registry (declaration order, descriptions,
 dependencies, timeouts) and once per check to invoke it, passing the
-dependency's pickled return value via a state file in the run dir.
+dependency's return value via a JSON state file in the run dir.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ import json
 import os
 import sys
 import traceback
+from typing import Any
 
 from . import bridge_state as state
 from .errors import Failure, Mismatch
@@ -20,10 +21,7 @@ from .errors import Failure, Mismatch
 STATE_FILE = ".check50-state"
 
 
-def _load_module(path):
-    import check50.bridge_state as _state
-
-    _state.loaded_path = path
+def _load_module(path: str) -> Any:
     spec = importlib.util.spec_from_file_location("checks", path)
     if spec is None or spec.loader is None:
         raise ImportError(f"could not load the checks module from {path}")
@@ -33,13 +31,17 @@ def _load_module(path):
     return module
 
 
-def _envelope(ok, **extra):
-    envelope = {"ok": ok, "log": list(state.log_lines), "data": dict(state.payload)}
+def _envelope(ok: bool, **extra: Any) -> None:
+    envelope: dict[str, Any] = {
+        "ok": ok,
+        "log": list(state.log_lines),
+        "data": dict(state.payload),
+    }
     envelope.update(extra)
     print(json.dumps(envelope), flush=True)
 
 
-def _error_envelope(exc):
+def _error_envelope(exc: Exception) -> None:
     _envelope(
         False,
         error={
@@ -50,7 +52,7 @@ def _error_envelope(exc):
     )
 
 
-def discover(path):
+def discover(path: str) -> None:
     try:
         _load_module(path)
     except Exception as exc:
@@ -69,7 +71,7 @@ def discover(path):
     print(json.dumps({"checks": checks}), flush=True)
 
 
-def invoke(path, name, state_file):
+def invoke(path: str, name: str, state_file: str) -> None:
     state.reset()
     try:
         _load_module(path)
@@ -88,7 +90,7 @@ def invoke(path, name, state_file):
         )
         return
     fn = check.fn
-    state_info = None
+    state_info: Any = None
     has_state = state_file != "-" and os.path.exists(state_file)
     if has_state:
         try:
@@ -100,7 +102,10 @@ def invoke(path, name, state_file):
     try:
         result = fn(state_info) if has_state else fn()
     except Failure as failure:
-        cause = {"rationale": failure.rationale, "help": failure.help}
+        cause: dict[str, Any] = {
+            "rationale": failure.rationale,
+            "help": failure.help,
+        }
         if isinstance(failure, Mismatch):
             cause["expected"] = failure.expected
             cause["actual"] = failure.actual
@@ -110,6 +115,8 @@ def invoke(path, name, state_file):
         _error_envelope(exc)
         return
     if result is None:
+        # check50 parity: a dependency that returns None passes nothing
+        # (the README hello pattern has zero-arg dependents).
         _envelope(True)
         return
     try:
@@ -121,7 +128,7 @@ def invoke(path, name, state_file):
     _envelope(True)
 
 
-def main():
+def main() -> None:
     command = sys.argv[1]
     if command == "discover":
         discover(sys.argv[2])
