@@ -11,15 +11,27 @@ from .errors import Failure
 
 def compile(*files: str, cc: str = "clang", lcs50: bool = False, **kwargs: object) -> str:
     """Compiles C source files into an executable named after the first
-    source file (check50 parity)."""
-    log("compiling...")
+    source file (check50 parity: `c.compile` with the cs50 library
+    flags and the same log format)."""
     target = os.path.splitext(files[0])[0]
+
     cmd = [cc, "-o", target, *files]
+
     if lcs50:
         _ensure_cs50_files()
-        cmd.append("-I" + os.getcwd())
-        if "cs50.c" not in files:
-            cmd.append("cs50.c")
+        cmd.extend(["-std=c11", "-ggdb", "-lm"])
+
+    # Log in check50's format (the cs50 library link flag is cosmetic —
+    # the actual compilation includes cs50.c alongside the student's
+    # code, providing the cs50 library implementations).
+    log_cmd = [*cmd]
+    if lcs50:
+        log_cmd.append("-lcs50")
+    log(f"running {' '.join(log_cmd)}...")
+
+    if lcs50 and "cs50.c" not in files:
+        cmd.append("cs50.c")
+
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         raise Failure(
