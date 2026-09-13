@@ -14,6 +14,9 @@ _One binary for CS50; check, style, and submit._
 
 </div>
 
+> [!WARNING]
+> The information in this README is currently very out of date and it is due to being re-written.
+
 µ50 unifies Harvard CS50's three command-line tools ([check50](https://github.com/cs50/check50), [style50](https://github.com/cs50/style50), and [submit50](https://github.com/cs50/submit50)) into a single Rust binary. The `style` engine is fully implemented and verified byte-identical against style50 3.0.0; `check` and `submit` are on the roadmap.
 
 ## Features
