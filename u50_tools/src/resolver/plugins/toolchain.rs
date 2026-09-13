@@ -27,11 +27,17 @@ impl ResolverPlugin for ToolchainResolver {
         for base in rust_toolchain_dirs() {
             let path = base.join("bin").join(format!("{binary}.exe"));
             if path.is_file() {
-                return Some(Resolved { path, origin: "found (toolchain)" });
+                return Some(Resolved {
+                    path,
+                    origin: "found (toolchain)",
+                });
             }
             let path = base.join("bin").join(binary);
             if path.is_file() {
-                return Some(Resolved { path, origin: "found (toolchain)" });
+                return Some(Resolved {
+                    path,
+                    origin: "found (toolchain)",
+                });
             }
         }
         None

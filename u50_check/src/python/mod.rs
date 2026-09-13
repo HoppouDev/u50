@@ -3,6 +3,7 @@
 //! `docs/U50_CHECK_PYTHON_PLAN.md`).
 
 pub mod bridge;
+pub mod deps;
 pub mod venv;
 
 use include_dir::include_dir;

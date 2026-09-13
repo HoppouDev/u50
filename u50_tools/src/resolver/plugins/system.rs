@@ -24,11 +24,17 @@ impl ResolverPlugin for SystemResolver {
         for location in locations {
             let path = location.join(binary);
             if path.is_file() {
-                return Some(Resolved { path, origin: "found (system)" });
+                return Some(Resolved {
+                    path,
+                    origin: "found (system)",
+                });
             }
             let path = location.join(format!("{binary}.exe"));
             if path.is_file() {
-                return Some(Resolved { path, origin: "found (system)" });
+                return Some(Resolved {
+                    path,
+                    origin: "found (system)",
+                });
             }
         }
         None

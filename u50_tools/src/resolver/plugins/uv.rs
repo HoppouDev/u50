@@ -33,7 +33,10 @@ impl ResolverPlugin for UvResolver {
         let bin = uv::venv_bin_dir(&cache_root.join("venv"));
         let tool = bin.join(uv::tool_file_name(package));
         if tool.is_file() {
-            Some(Resolved { path: tool, origin: "found (cache)" })
+            Some(Resolved {
+                path: tool,
+                origin: "found (cache)",
+            })
         } else {
             None
         }

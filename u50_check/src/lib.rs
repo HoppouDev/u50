@@ -6,6 +6,7 @@
 //! code, and rendered through [`render`] in check50's output formats.
 
 pub mod api;
+mod capabilities;
 mod checks;
 mod graph;
 mod plugin;

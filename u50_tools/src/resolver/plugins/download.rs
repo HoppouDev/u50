@@ -32,7 +32,10 @@ impl ResolverPlugin for DownloadResolver {
         let cache = uv::cache_root_for_spec(spec).join(&spec.name);
         let binary = cache.join(&entry.binary_path);
         if binary.is_file() {
-            Some(Resolved { path: binary, origin: "found (cache)" })
+            Some(Resolved {
+                path: binary,
+                origin: "found (cache)",
+            })
         } else {
             None
         }
