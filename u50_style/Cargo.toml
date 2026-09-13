@@ -18,6 +18,7 @@ sha2 = { workspace = true }
 similar = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+u50_tools = { path = "../u50_tools" }
 unicode-width = { workspace = true }
 uv-cache = { workspace = true }
 uv-cache-info = { workspace = true }

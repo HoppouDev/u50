@@ -5378,6 +5378,7 @@ dependencies = [
  "similar",
  "tokio",
  "tracing",
+ "u50_tools",
  "unicode-width",
  "uv-cache",
  "uv-cache-info",

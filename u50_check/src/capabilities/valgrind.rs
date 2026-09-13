@@ -10,10 +10,36 @@ use anyhow::Result;
 /// checksums and the runtime self-check catches kernel mismatches).
 pub const VALGRIND_PLATFORMS: &[(&str, &str, &str, &str)] = &[
     // (platform, url, sha256, binary_path)
-    ("linux-64", "PENDING", "PENDING", "bin/valgrind"),
-    ("linux-aarch64", "PENDING", "PENDING", "bin/valgrind"),
-    ("linux-ppc64le", "PENDING", "PENDING", "bin/valgrind"),
-    ("osx-64", "PENDING", "PENDING", "bin/valgrind"),
+    // conda-forge valgrind 3.27.1 (linux) / 3.14.0 (osx-64 — the latest
+    // available for macOS; valgrind on macOS is less maintained).
+    // The .conda format is a zip archive containing pkg-*.tar.zst; full
+    // extraction support in the download resolver is deferred — until
+    // then, the system resolver provides the binary on hosts that have
+    // it installed.
+    (
+        "linux-64",
+        "https://conda.anaconda.org/conda-forge/linux-64/valgrind-3.27.1-hea31c11_0.conda",
+        "704011bf371ed51dfa16a2e998dd147a5b4501b29cffd2869ec7b7924bd5ef94",
+        "bin/valgrind",
+    ),
+    (
+        "linux-aarch64",
+        "https://conda.anaconda.org/conda-forge/linux-aarch64/valgrind-3.27.1-hf239000_0.conda",
+        "0bbe293cb42395bbc5f2586c7de7028e3bdc64e8e108e7e7a4e38cca73c8a96b",
+        "bin/valgrind",
+    ),
+    (
+        "linux-ppc64le",
+        "https://conda.anaconda.org/conda-forge/linux-ppc64le/valgrind-3.27.1-h201c3c0_0.conda",
+        "f7803a493a89c338ad78a29937a87ecd7392747ed637553c9179f330bebec384",
+        "bin/valgrind",
+    ),
+    (
+        "osx-64",
+        "https://conda.anaconda.org/conda-forge/osx-64/valgrind-3.14.0-h6dae8d9_0.tar.bz2",
+        "PENDING_SHA256",
+        "bin/valgrind",
+    ),
 ];
 
 #[allow(dead_code)] // scaffolding for the capability layer
