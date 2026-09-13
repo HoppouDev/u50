@@ -11,7 +11,7 @@ use crate::api::{CheckContext, Failure, MatchInput, StdinInput};
 use crate::plugin::{CheckSpec, RunKind, YamlStep};
 
 /// The parsed `.cs50.yaml` config (the subset check50 uses).
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 pub struct Config {
     #[serde(default)]
     pub check50: Check50Config,
@@ -36,6 +36,10 @@ pub struct Check50Config {
 /// Returns an error when the file is missing or invalid YAML.
 pub fn load_config(check_dir: &std::path::Path) -> anyhow::Result<Config> {
     let path = check_dir.join(".cs50.yaml");
+    if !path.exists() {
+        // cs50/problems convention: no .cs50.yaml, just __init__.py
+        return Ok(Config::default());
+    }
     let raw = std::fs::read_to_string(&path)
         .with_context(|| format!("could not read {}", path.display()))?;
     serde_yaml::from_str(&raw).with_context(|| format!("invalid {}", path.display()))

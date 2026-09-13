@@ -105,13 +105,10 @@ pub fn run(req: &Request) -> anyhow::Result<bool> {
     }
 
     // Resolve the check directory: dev/local/offline all treat the slug
-    // as a local path to the check directory (the .cs50.yaml parent).
-    let check_dir = std::path::PathBuf::from(&req.slug);
-    anyhow::ensure!(
-        check_dir.is_dir(),
-        "{} is not a directory (the check directory must contain a .cs50.yaml)",
-        check_dir.display()
-    );
+    // as either a local path to the check directory (the .cs50.yaml
+    // parent) or a cs50 slug (org/repo/branch/path) that is cloned
+    // from GitHub into the u50 cache on first use.
+    let check_dir = resolve_check_dir(&req.slug)?;
 
     // Load the config and build the plugin: YAML simple checks are
     // interpreted natively; native check sets come from the registry.
@@ -187,6 +184,36 @@ fn resolve_specs(
     check_dir: &std::path::Path,
     slug: &str,
 ) -> anyhow::Result<(String, Vec<plugin::CheckSpec>, std::path::PathBuf)> {
+    // cs50/problems convention: __init__.py without a .cs50.yaml — the
+    // checks module IS the config.
+    let init_py = check_dir.join("__init__.py");
+    if yaml_specs.is_empty()
+        && !config
+            .check50
+            .checks
+            .as_ref()
+            .is_some_and(serde_yaml::Value::is_string)
+        && init_py.is_file()
+    {
+        let py_specs = python::bridge::discover(&init_py)
+            .with_context(|| format!("could not discover checks from {}", init_py.display()))?;
+        let specs = py_specs
+            .into_iter()
+            .map(|spec| plugin::CheckSpec {
+                name: spec.name.clone(),
+                description: spec.description,
+                dependency: spec.dependency,
+                timeout: spec.timeout,
+                hidden_rationale: spec.hidden,
+                run: plugin::RunKind::Python {
+                    checks_file: init_py.clone(),
+                    check: spec.name,
+                },
+            })
+            .collect();
+        return Ok((slug.to_owned(), specs, check_dir.to_path_buf()));
+    }
+
     if !(yaml_specs.is_empty()
         && config
             .check50
@@ -248,4 +275,86 @@ fn resolve_specs(
         );
     };
     Ok((plugin.id().to_owned(), plugin.checks(), plugin.check_dir()))
+}
+
+/// Resolves the check directory for a slug: an existing local path is
+/// used directly; otherwise the slug is parsed as a cs50 slug
+/// (org/repo/branch/path) and the check set is cloned from GitHub
+/// into the u50 cache on first use.
+///
+/// # Errors
+/// Returns an error when the slug is neither a local directory nor a
+/// valid cs50 slug, or when the git clone fails.
+fn resolve_check_dir(slug: &str) -> anyhow::Result<std::path::PathBuf> {
+    let local = std::path::PathBuf::from(slug);
+    if local.is_dir() {
+        return Ok(local);
+    }
+
+    // Try to parse as a cs50 slug: org/repo/branch.../path
+    let parts: Vec<&str> = slug.split('/').collect();
+    anyhow::ensure!(
+        parts.len() >= 4,
+        "`{slug}` is not a directory and not a valid cs50 slug (expected org/repo/branch/path, e.g. cs50/problems/2018/x/hello)"
+    );
+
+    let org = parts[0];
+    let repo = parts[1];
+    let branch = parts[2..parts.len() - 1].join("/");
+    let path = parts[parts.len() - 1];
+
+    let cache_root = python::venv::cache_dir()?.join("repos");
+    let clone_dir = cache_root.join(org).join(repo).join(&branch);
+    let check_dir = clone_dir.join(path);
+
+    // Cache hit: the check directory already exists.
+    if check_dir.join(".cs50.yaml").is_file() || check_dir.join("__init__.py").is_file() {
+        tracing::debug!(slug, cache = %check_dir.display(), "cs50 slug resolved from cache");
+        return Ok(check_dir);
+    }
+
+    // Clone the repo branch into the cache.
+    let url = format!("https://github.com/{org}/{repo}.git");
+    tracing::info!(slug, url = %url, branch = %branch, "cloning cs50 check set");
+    if let Some(parent) = clone_dir.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("could not create {}", parent.display()))?;
+    }
+    if clone_dir.join(".git").exists() {
+        let status = std::process::Command::new("git")
+            .args(["pull", "--ff-only"])
+            .current_dir(&clone_dir)
+            .output()
+            .context("git pull")?;
+        if !status.status.success() {
+            tracing::warn!(
+                stderr = %String::from_utf8_lossy(&status.stderr),
+                "git pull failed; using the cached copy"
+            );
+        }
+    } else {
+        let status = std::process::Command::new("git")
+            .args([
+                "clone",
+                "--depth",
+                "1",
+                "--branch",
+                &branch,
+                &url,
+                &clone_dir.display().to_string(),
+            ])
+            .output()
+            .context("git clone")?;
+        anyhow::ensure!(
+            status.status.success(),
+            "git clone failed: {}",
+            String::from_utf8_lossy(&status.stderr)
+        );
+    }
+
+    anyhow::ensure!(
+        check_dir.exists(),
+        "check path `{path}` not found in {url} (branch {branch})"
+    );
+    Ok(check_dir)
 }
