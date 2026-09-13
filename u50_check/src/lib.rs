@@ -139,6 +139,7 @@ pub fn run(req: &Request) -> anyhow::Result<bool> {
         color: std::io::stdout().is_terminal(),
     };
     let mut rendered = String::new();
+    let mut html_report: Option<String> = None;
     for output in &req.outputs {
         match output {
             Output::Json => {
@@ -150,9 +151,7 @@ pub fn run(req: &Request) -> anyhow::Result<bool> {
                 rendered.push('\n');
             }
             Output::Html => {
-                // The html renderer is deferred (see
-                // docs/U50_CHECK_PLUGIN_PLAN.md Phase 5).
-                anyhow::bail!("html output is not implemented yet");
+                html_report = Some(render::html::render_html(&input));
             }
         }
     }
@@ -164,6 +163,24 @@ pub fn run(req: &Request) -> anyhow::Result<bool> {
         std::io::stdout()
             .write_all(rendered.as_bytes())
             .context("could not write to stdout")?;
+    }
+
+    // Write the detailed HTML report to a persistent temp file and
+    // print the link (check50 parity: the file persists after exit so
+    // the user can open it later).
+    if let Some(html) = html_report {
+        let path = std::env::temp_dir().join(format!(
+            "tmp{:x}.html",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::write(&path, html.as_bytes()).context("could not write the HTML report")?;
+        println!(
+            "To see more detailed results go to file://{}",
+            path.display()
+        );
     }
 
     Ok(passed)

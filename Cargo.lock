@@ -5328,6 +5328,7 @@ dependencies = [
  "crossterm",
  "dirs 7.0.0",
  "include_dir",
+ "leptos",
  "libc",
  "regex",
  "serde",

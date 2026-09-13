@@ -31,7 +31,7 @@ fn check_defaults() {
         panic!("expected check subcommand");
     };
     assert!(matches!(args.mode, Mode::Local));
-    assert_eq!(args.outputs, vec![OutputFormat::Ansi]);
+    assert_eq!(args.outputs, vec![OutputFormat::Ansi, OutputFormat::Html]);
     assert!(args.targets.is_empty());
 }
 

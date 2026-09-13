@@ -172,8 +172,10 @@ impl<'a> Scheduler<'a> {
             );
 
         // Record the deadline for the timeout enforcement loop.
+        let dispatched_at = Instant::now();
         self.deadlines
             .insert(name.to_owned(), Instant::now() + self.graph.timeouts[name]);
+        tracing::debug!(check = name, "dispatched at {:?}", dispatched_at);
 
         let ctx = CheckContext::new(
             run_dir,

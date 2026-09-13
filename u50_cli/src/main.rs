@@ -75,7 +75,7 @@ struct CheckArgs {
         short = 'o',
         long = "output",
         value_enum,
-        default_values_t = vec![OutputFormat::Ansi]
+        default_values_t = vec![OutputFormat::Ansi, OutputFormat::Html]
     )]
     outputs: Vec<OutputFormat>,
 

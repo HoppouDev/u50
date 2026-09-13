@@ -2,6 +2,7 @@
 //! renderer per output format, mirroring check50's `to_ansi`/`to_json`).
 
 pub(crate) mod ansi;
+pub(crate) mod html;
 pub(crate) mod json;
 
 use crate::result::CheckResult;
