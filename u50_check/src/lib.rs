@@ -336,17 +336,8 @@ fn resolve_check_dir(slug: &str) -> anyhow::Result<std::path::PathBuf> {
                 .with_context(|| format!("could not create {}", parent.display()))?;
         }
         if clone_dir.join(".git").exists() {
-            let status = std::process::Command::new("git")
-                .args(["pull", "--ff-only"])
-                .current_dir(&clone_dir)
-                .output()
-                .context("git pull")?;
-            if !status.status.success() {
-                tracing::warn!(
-                    stderr = %String::from_utf8_lossy(&status.stderr),
-                    "git pull failed; using the cached copy"
-                );
-            }
+            // The repo is already cloned; check sets on this branch
+            // are available locally without re-downloading.
         } else {
             let status = std::process::Command::new("git")
                 .args([
@@ -367,10 +358,11 @@ fn resolve_check_dir(slug: &str) -> anyhow::Result<std::path::PathBuf> {
             );
         }
 
-        anyhow::ensure!(
-            check_dir.exists(),
-            "check path `{path}` not found in {url} (branch {branch})"
-        );
+        if !check_dir.exists() {
+            // The branch exists but this path doesn't: try the next
+            // split (a longer branch might be the right one).
+            continue;
+        }
         return Ok(check_dir);
     }
 
