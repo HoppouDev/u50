@@ -9,6 +9,7 @@ crossterm = { workspace = true }
 dirs = { workspace = true }
 include_dir = { workspace = true }
 leptos = { workspace = true, features = ["ssr"] }
+rand = { workspace = true }
 regex = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }

@@ -5330,6 +5330,7 @@ dependencies = [
  "include_dir",
  "leptos",
  "libc",
+ "rand 0.9.5",
  "regex",
  "serde",
  "serde_json",

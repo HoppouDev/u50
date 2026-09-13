@@ -169,13 +169,8 @@ pub fn run(req: &Request) -> anyhow::Result<bool> {
     // print the link (check50 parity: the file persists after exit so
     // the user can open it later).
     if let Some(html) = html_report {
-        let path = std::env::temp_dir().join(format!(
-            "tmp{:x}.html",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("tmp{}.html", crate::render::html::random_suffix()));
         std::fs::write(&path, html.as_bytes()).context("could not write the HTML report")?;
         println!(
             "To see more detailed results go to file://{}",
