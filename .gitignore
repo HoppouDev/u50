@@ -7,3 +7,4 @@ codeql/
 .env.*
 # generated code-statistics report
 scc-report.html
+__pycache__/
