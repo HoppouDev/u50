@@ -114,8 +114,11 @@ def invoke(path: str, name: str, state_file: str) -> None:
             "help": failure.help,
         }
         if isinstance(failure, Mismatch):
-            cause["expected"] = failure.expected
-            cause["actual"] = failure.actual
+            # Stringify: the expected/actual can be arbitrary objects
+            # (lists from splitlines, etc.), but the Rust bridge's
+            # deserialization expects strings.
+            cause["expected"] = str(failure.expected)
+            cause["actual"] = str(failure.actual)
         _envelope(False, cause=cause)
         return
     except Exception as exc:

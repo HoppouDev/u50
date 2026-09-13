@@ -17,7 +17,7 @@ import subprocess
 import sys
 import threading
 import time
-from typing import Any, Callable, TypeAlias
+from typing import Any, Callable
 
 from . import c, py, regex
 from . import bridge_state as state
@@ -29,23 +29,13 @@ __all__ = [
 ]
 
 
-
-
-def check(
-    dependency: Callable[..., object] | str | None = None,
-    *,
-    timeout: float | None = None,
-) -> Callable[..., object]:
-    """Registers a check (check50 parity)."""
-
+def check(dependency: Callable[..., object] | str | None = None, *, timeout: float | None = None) -> Callable[..., object]:
     def decorator(fn: Callable[..., object]) -> Callable[..., object]:
         dep = dependency
         if dep is not None and not isinstance(dep, str):
             dep = dep.__name__
         state.register(fn, dep, timeout)
         return fn
-
-    # Bare form: @check50.check (no parentheses).
     if callable(dependency) and getattr(dependency, "__name__", "") not in state.checks:
         fn, dep = dependency, None
         return decorator(fn)  # type: ignore[arg-type]
@@ -53,24 +43,18 @@ def check(
 
 
 def hidden(rationale: str) -> Callable[[Callable[..., object]], Callable[..., object]]:
-    """Marks a check hidden: the engine suppresses its log and replaces
-    any failure with the generic rationale."""
-
     def decorator(fn: Callable[..., object]) -> Callable[..., object]:
         setattr(fn, "_check50_hidden", rationale)
         entry = state.checks.get(fn.__name__)
         if entry is not None:
             entry.hidden = rationale
         return fn
-
     return decorator
 
 
 def import_checks(path: str) -> Any:
-    """Imports another checks module from a sibling directory."""
     import importlib.util
     import inspect
-
     frame = inspect.stack()[1]
     base = os.path.dirname(os.path.abspath(frame.filename))
     target = os.path.normpath(os.path.join(base, path))
@@ -90,17 +74,14 @@ def import_checks(path: str) -> Any:
 
 
 def log(line: str = "") -> None:
-    """Adds a line to the check log (newlines escaped, check50 parity)."""
     state.log(line)
 
 
 def data(**kwargs: Any) -> None:
-    """Adds key/value pairs to the check's result payload."""
     state.payload.update(kwargs)
 
 
 def exists(*paths: str) -> None:
-    """Asserts every path exists (relative to the run dir)."""
     for path in paths:
         log(f"checking that {path} exists...")
         if not os.path.exists(path):
@@ -108,7 +89,6 @@ def exists(*paths: str) -> None:
 
 
 def _copy(src: str, dst: str) -> None:
-    """Recursive copy (check50: `_copy`)."""
     try:
         if os.path.isdir(src):
             shutil.copytree(src, dst, dirs_exist_ok=True)
@@ -122,14 +102,12 @@ def _copy(src: str, dst: str) -> None:
 
 
 def include(*paths: str) -> None:
-    """Copies files from the check's own directory into the run dir."""
     check_dir = os.environ.get("CHECK50_CHECK_DIR", "")
     for path in paths:
         _copy(os.path.join(check_dir, path), path)
 
 
 def hash(file: str) -> str:
-    """SHA-256 of a file (streaming)."""
     exists(file)
     log(f"hashing {file}...")
     digest = hashlib.sha256()
@@ -143,7 +121,6 @@ def hash(file: str) -> str:
 
 
 def _shell() -> str:
-    """The POSIX shell running check commands."""
     if os.name == "nt":
         for candidate in (
             r"C:\Program Files\Git\bin\bash.exe",
@@ -169,8 +146,15 @@ class _Run:
     def __init__(self, command: str, env: dict[str, str] | None = None) -> None:
         log(f"running {command}...")
         process_env = dict(os.environ, **(env or {}))
+        # Force unbuffered C stdio so printf prompts are flushed
+        # immediately even when stdout is a pipe (the C stdio
+        # auto-flush before stdin reads only works when stdin and
+        # stdout share a terminal; with separate pipes, C stdio
+        # fully-buffers stdout and the prompt never appears).
+        if os.name != "nt" and shutil.which("stdbuf"):
+            command = f"stdbuf -o0 {command}"
         try:
-            process = subprocess.Popen(
+            self._process = subprocess.Popen(
                 [_shell(), "-c", command],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
@@ -179,13 +163,12 @@ class _Run:
             )
         except OSError as error:
             raise Failure(f"could not run {command}: {error}") from None
-        stdin = process.stdin
-        stdout = process.stdout
-        stderr = process.stderr
+        stdin = self._process.stdin
+        stdout = self._process.stdout
+        stderr = self._process.stderr
         if stdin is None or stdout is None or stderr is None:
-            process.kill()
+            self._process.kill()
             raise Failure(f"could not run {command}: pipes unavailable")
-        self._process = process
         self._stdin: Any = stdin
         self._buffer = ""
         self._lock = threading.Lock()
@@ -197,7 +180,7 @@ class _Run:
 
     def _read(self, pipe: Any) -> None:
         while True:
-            chunk = pipe.read(4096)
+            chunk = pipe.read1(4096)
             if not chunk:
                 break
             text = self._decoder.decode(chunk)
@@ -207,7 +190,7 @@ class _Run:
             self._buffer += self._decoder.decode(b"", True)
 
     def _drain_stderr(self, pipe: Any) -> None:
-        while pipe.read(4096):
+        while pipe.read1(4096):
             pass
 
     def _text(self) -> str:
@@ -247,23 +230,21 @@ class _Run:
             return code == -1073741819
         return code == -11
 
-    def stdin(
-        self, input_: str | Eof, prompt: bool = True, timeout: float = 3
-    ) -> _Run:
+    def stdin(self, input_: str | Eof, prompt: bool = True, timeout: float = 3) -> _Run:
         if input_ is EOF:
             log("sending EOF...")
         else:
             log(f"sending input {input_}...")
         if prompt:
             deadline = _now() + timeout
-            start = self._len()
-            while self._len() <= start:
+            while self._len() == 0:
                 if self._try_exit():
                     break
                 if _now() >= deadline:
                     raise Failure("expected prompt for input, found none")
                 _sleep(0.05)
             self._quiesce()
+            self._cursor = self._len()
         stdin = self._stdin
         if stdin is None or stdin.closed:
             raise Failure("stdin is closed")
@@ -277,7 +258,7 @@ class _Run:
                 raise Failure("could not send input to the program") from None
         return self
 
-    def _make_matcher(self, pattern: str, exact: bool):
+    def _make_matcher(self, pattern: str, exact: bool) -> Any:
         if exact:
             def matcher(text: str) -> int | None:
                 start = text.find(pattern)
@@ -286,22 +267,13 @@ class _Run:
             try:
                 compiled = _re.compile(pattern)
             except _re.error:
-                raise Failure(
-                    "could not verify output (pattern is not a valid regex)"
-                ) from None
-
+                raise Failure("could not verify output (pattern is not a valid regex)") from None
             def matcher(text: str) -> int | None:
                 match = compiled.search(text)
                 return None if match is None else match.end()
         return matcher
 
-    def stdout(
-        self,
-        output: str | int | float | Eof | None = None,
-        str_output: str | None = None,
-        regex: bool = True,
-        timeout: float = 3,
-    ) -> Any:
+    def stdout(self, output: str | int | float | Eof | None = None, str_output: str | None = None, regex: bool = True, timeout: float = 3) -> Any:
         if output is None:
             return self._stdout_text(timeout)
         eof = output is EOF
@@ -309,10 +281,8 @@ class _Run:
         pattern = ""
         if eof:
             log("checking for EOF...")
-
             def matcher(text: str) -> int | None:
                 return None
-
         else:
             if isinstance(output, (int, float)) and not isinstance(output, bool):
                 pattern = decimal(output) if regex else str(output)
@@ -339,13 +309,30 @@ class _Run:
                     return self
                 raise Mismatch("EOF" if eof else pattern, unconsumed)
             if _now() >= deadline:
-                raise Failure(
-                    f"timed out while waiting for output (waited {timeout:.1f}s)"
-                )
+                raise Failure(f"timed out while waiting for output (waited {timeout:.1f}s)")
             _sleep()
 
     def _stdout_text(self, timeout: float) -> str:
-        self._wait_exit(timeout)
+        # Close stdin (EOF) and wait for the output to stabilize. Then
+        # kill the process (the output is what matters for checks that
+        # capture it with stdout() — no args).
+        if self._stdin and not self._stdin.closed:
+            self._stdin.close()
+        deadline = _now() + timeout
+        last = -1
+        stable = 0
+        while stable < 12 and _now() < deadline:
+            length = self._len()
+            if length == last:
+                stable += 1
+            else:
+                stable = 0
+                last = length
+            _sleep(0.025)
+        with contextlib.suppress(OSError):
+            self._process.kill()
+        with contextlib.suppress(OSError):
+            self._process.wait()
         return self._text()[self._cursor:].replace("\r\n", "\n").lstrip("\n")
 
     def _wait_exit(self, timeout: float) -> int:
@@ -369,6 +356,8 @@ class _Run:
         return self
 
     def exit(self, code: int | None = None, timeout: float = 5) -> int:
+        if self._stdin and not self._stdin.closed:
+            self._stdin.close()
         actual = self._wait_exit(timeout)
         if code is None:
             return actual
@@ -378,9 +367,6 @@ class _Run:
         return actual
 
     def kill(self) -> _Run:
-        if os.name != "nt":
-            with contextlib.suppress(OSError):
-                os.killpg(os.getpgrp(), 9)
         with contextlib.suppress(OSError):
             self._process.kill()
         self._exited = True
@@ -388,10 +374,8 @@ class _Run:
 
 
 def run(command: str, env: dict[str, str] | None = None) -> _Run:
-    """Spawns `command` via `bash -c` in the run dir."""
     return _Run(command, env)
 
 
 def decimal(number: float) -> str:
-    """The exact-number regex (check50: `regex.decimal`)."""
     return regex.decimal(number)
