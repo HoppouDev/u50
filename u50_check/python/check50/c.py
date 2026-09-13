@@ -21,7 +21,6 @@ def compile(*files, cc="clang", lcs50=False, **kwargs):
     return target
 
 
-
 def _ensure_cs50_files():
     """Downloads cs50.h into the run dir if not present (for lcs50)."""
     import urllib.request
