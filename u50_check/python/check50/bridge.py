@@ -22,6 +22,13 @@ STATE_FILE = ".check50-state"
 
 
 def _load_module(path: str) -> Any:
+    # Add the checks directory and its parent to sys.path so sibling
+    # modules (cs50/problems: `from less import *`) are importable.
+    checks_dir = os.path.dirname(os.path.abspath(path))
+    parent_dir = os.path.dirname(checks_dir)
+    for p in (checks_dir, parent_dir):
+        if p and p not in sys.path:
+            sys.path.insert(0, p)
     spec = importlib.util.spec_from_file_location("checks", path)
     if spec is None or spec.loader is None:
         raise ImportError(f"could not load the checks module from {path}")

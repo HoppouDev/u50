@@ -66,6 +66,11 @@ def register(
     name = fn.__name__
     check = Check(fn, (fn.__doc__ or "").strip() or name, dependency, timeout)
     check.hidden = getattr(fn, "_check50_hidden", None)
+    # cs50/problems parity: later definitions override earlier ones
+    # (a check set that imports another via import_checks may redefine
+    # checks with the same name — the last registration wins).
+    is_new = name not in checks
     checks[name] = check
-    order.append(name)
+    if is_new:
+        order.append(name)
     return fn

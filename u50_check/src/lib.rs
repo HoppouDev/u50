@@ -300,61 +300,79 @@ fn resolve_check_dir(slug: &str) -> anyhow::Result<std::path::PathBuf> {
 
     let org = parts[0];
     let repo = parts[1];
-    let branch = parts[2..parts.len() - 1].join("/");
-    let path = parts[parts.len() - 1];
+    let url = format!("https://github.com/{org}/{repo}.git");
 
+    // cs50 slugs are ambiguous: "2026/x/mario/more" could mean branch
+    // "2026/x" + path "mario/more", or branch "2026/x/mario" + path
+    // "more" (and so on). Try splits from the shortest branch first,
+    // checking which branch exists on the remote.
+    let remaining = &parts[2..];
     let cache_root = python::venv::cache_dir()?.join("repos");
-    let clone_dir = cache_root.join(org).join(repo).join(&branch);
-    let check_dir = clone_dir.join(path);
+    for split in 1..remaining.len() {
+        let branch = remaining[..split].join("/");
+        let path = remaining[split..].join("/");
+        let clone_dir = cache_root.join(org).join(repo).join(&branch);
+        let check_dir = clone_dir.join(&path);
 
-    // Cache hit: the check directory already exists.
-    if check_dir.join(".cs50.yaml").is_file() || check_dir.join("__init__.py").is_file() {
-        tracing::debug!(slug, cache = %check_dir.display(), "cs50 slug resolved from cache");
+        // Cache hit: the check directory already exists.
+        if check_dir.join(".cs50.yaml").is_file() || check_dir.join("__init__.py").is_file() {
+            tracing::debug!(slug, cache = %check_dir.display(), "cs50 slug resolved from cache");
+            return Ok(check_dir);
+        }
+
+        // Check if the branch exists on the remote.
+        let branch_check = std::process::Command::new("git")
+            .args(["ls-remote", "--exit-code", "--heads", &url, &branch])
+            .output()
+            .context("git ls-remote")?;
+        if !branch_check.status.success() {
+            continue; // branch doesn't exist; try the next split
+        }
+
+        // Branch exists: clone it (or pull if already cloned).
+        tracing::info!(slug, url = %url, branch = %branch, "cloning cs50 check set");
+        if let Some(parent) = clone_dir.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("could not create {}", parent.display()))?;
+        }
+        if clone_dir.join(".git").exists() {
+            let status = std::process::Command::new("git")
+                .args(["pull", "--ff-only"])
+                .current_dir(&clone_dir)
+                .output()
+                .context("git pull")?;
+            if !status.status.success() {
+                tracing::warn!(
+                    stderr = %String::from_utf8_lossy(&status.stderr),
+                    "git pull failed; using the cached copy"
+                );
+            }
+        } else {
+            let status = std::process::Command::new("git")
+                .args([
+                    "clone",
+                    "--depth",
+                    "1",
+                    "--branch",
+                    &branch,
+                    &url,
+                    &clone_dir.display().to_string(),
+                ])
+                .output()
+                .context("git clone")?;
+            anyhow::ensure!(
+                status.status.success(),
+                "git clone failed: {}",
+                String::from_utf8_lossy(&status.stderr)
+            );
+        }
+
+        anyhow::ensure!(
+            check_dir.exists(),
+            "check path `{path}` not found in {url} (branch {branch})"
+        );
         return Ok(check_dir);
     }
 
-    // Clone the repo branch into the cache.
-    let url = format!("https://github.com/{org}/{repo}.git");
-    tracing::info!(slug, url = %url, branch = %branch, "cloning cs50 check set");
-    if let Some(parent) = clone_dir.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("could not create {}", parent.display()))?;
-    }
-    if clone_dir.join(".git").exists() {
-        let status = std::process::Command::new("git")
-            .args(["pull", "--ff-only"])
-            .current_dir(&clone_dir)
-            .output()
-            .context("git pull")?;
-        if !status.status.success() {
-            tracing::warn!(
-                stderr = %String::from_utf8_lossy(&status.stderr),
-                "git pull failed; using the cached copy"
-            );
-        }
-    } else {
-        let status = std::process::Command::new("git")
-            .args([
-                "clone",
-                "--depth",
-                "1",
-                "--branch",
-                &branch,
-                &url,
-                &clone_dir.display().to_string(),
-            ])
-            .output()
-            .context("git clone")?;
-        anyhow::ensure!(
-            status.status.success(),
-            "git clone failed: {}",
-            String::from_utf8_lossy(&status.stderr)
-        );
-    }
-
-    anyhow::ensure!(
-        check_dir.exists(),
-        "check path `{path}` not found in {url} (branch {branch})"
-    );
-    Ok(check_dir)
+    anyhow::bail!("no branch of {org}/{repo} matches the slug `{slug}`");
 }
