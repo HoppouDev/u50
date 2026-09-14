@@ -1,126 +1,54 @@
 <div align="center">
 
-<img src="assets/logo.png" alt="µ50 logo" width="128">
+<img src="assets/logo.png" alt="u50 logo" width="128">
 
-# µ50
+# u50
 
-_One binary for CS50; check, style, and submit._
+<i>The BusyBox of CS50</i>
 
 [![CI](https://github.com/HoppouDev/u50/actions/workflows/rust.yml/badge.svg)](https://github.com/HoppouDev/u50/actions/workflows/rust.yml)
 [![Harness Score](https://raw.githubusercontent.com/HoppouDev/u50/badges/harness-badge.svg)](https://github.com/HoppouDev/u50/actions/workflows/rust.yml)
 [![License: GPLv3](https://img.shields.io/badge/license-GPLv3-blue.svg)](LICENSE.md)
 
-[Features](#features) • [Quick start](#quick-start) • [Usage](#usage) • [Exit codes](#exit-codes) • [Development](#development) • [Roadmap](#roadmap)
+[Quick start](#quick-start) • [Parity](#parity) • [Development](#development)
 
 </div>
 
-> [!WARNING]
-> The information in this README is currently very out of date and it is due to being re-written.
-
-µ50 unifies Harvard CS50's three command-line tools ([check50](https://github.com/cs50/check50), [style50](https://github.com/cs50/style50), and [submit50](https://github.com/cs50/submit50)) into a single Rust binary. The `style` engine is fully implemented and verified byte-identical against style50 3.0.0; `check` and `submit` are on the roadmap.
-
-## Features
-
-- **Self-provisioning** — missing formatter backends are downloaded and cached on first use. No system `python3`, `pip`, or `uv` required.
-- **8 languages** — C, C++, Java, Python, JavaScript, HTML, CSS, SQL: the full style50 3.0.0 language set.
-- **Cache-only resolution** — tools are resolved strictly from µ50's own cache; nothing on your `PATH` can shadow or hijack them.
-- **In-place fix** — `--fix` rewrites files with style50 formatting; `--dry-run` previews what would change.
-- **Five output modes** — character (default), split, unified, JSON for tooling, and score for grading (style50-compatible aggregate, e.g. `0.85`).
-- **Reproducible** — backend versions are pinned, and CI verifies output byte-identical to the original tool.
+u50 unifies Harvard CS50's three command-line tools ([check50](https://github.com/cs50/check50), [style50](https://github.com/cs50/style50), and [submit50](https://github.com/cs50/submit50)) into a single Rust binary.
 
 ## Quick start
 
-> [!NOTE]
-> There is nothing to install besides Rust. The first `u50 style` run provisions
-> exactly the backends it needs into µ50's cache — `~/.cache/u50/style50` on
-> Unix, `%LOCALAPPDATA%\u50\style50` on Windows — a managed venv built
-> in-process via [uv's library crates](https://github.com/astral-sh/uv).
+The only dependency for building is Rust because other dependencies are fetched on-demand.
 
 ```sh
 git clone https://github.com/HoppouDev/u50 && cd u50
-cargo build
+cargo build --release
 ```
 
-## Usage
+## Parity
 
-```sh
-# Check style (auto-provisions any missing backend on first use)
-u50 style src/
-u50 style -o unified hello.c
-u50 style -o json src/ > report.json
+Most significant features are present, but some are currently unimplemented.
 
-# Fix in place (preview first)
-u50 style --fix --dry-run src/
-u50 style --fix src/
+| Feature                   | Linux | Windows |
+| ------------------------- | ----- | ------- |
+| Build & test suite        | ✅    | ✅      |
+| `u50 check` (core engine) | ✅    | ✅      |
+| Valgrind-decorated checks | ✅    | ❌      |
+| `u50 style`               | ✅    | ✅      |
+| `u50 submit`              | ❌    | ❌      |
 
-# Pre-download all six backends up front (CI, offline use)
-u50 --setup
+✅ supported and covered by CI · ⚠️ works with caveats · ❌ unsupported.
 
-# Show what's installed, per language
-u50 --status
-```
-
-Example output (`-o unified`):
-
-```diff
-- int main(){printf("hello\n");return 0;}
-+ int main(void)
-+ {
-+     printf("hello\n");
-+     return 0;
-+ }
-```
-
-## Exit codes
-
-| Code | Meaning                                                                                                                       |
-| ---- | ----------------------------------------------------------------------------------------------------------------------------- |
-| 0    | Clean (no violations, fix succeeded)                                                                                          |
-| 1    | Violations found / dry run reported would-fix                                                                                 |
-| 2    | Usage error                                                                                                                   |
-| 3    | Per-file or infrastructure error (unreadable file, unsupported extension, missing or failing formatter, provisioning failure) |
+> [!WARNING]
+> macOS is currently unsupported and untested since I do not currently use it. I am planning to add support in the future since some students use it, but until then, Windows and Linux will be the only officially supported platforms.
 
 ## Development
+
+Tests are run for both Linux and Windows on push.
 
 ```sh
 cargo build
 cargo test
-U50_STYLE_GOLDEN=1 cargo test -p u50_style --test golden   # golden fixtures vs. style50 3.0.0
-
-cargo clippy --workspace --all-targets -- -Dwarnings       # zero warnings (pedantic)
+cargo clippy --workspace --all-targets -- -Dwarnings
 cargo fmt --all -- --check
 ```
-
-CI (GitHub Actions, workflow name `Rust`) runs on every push/PR to `main`: build, tests, format check, and clippy on both `ubuntu-latest` and `windows-latest`; the golden suite and the harness-score ratchet (dedicated job) run on ubuntu runners only (Windows byte-drift in the djhtml/sql backends).
-
-## Roadmap
-
-### `u50 style` — [`u50_style`](u50_style/)
-
-- [x] Style checking for all 8 style50 3.0.0 languages (C, C++, Java, Python, JavaScript, HTML, CSS, SQL), verified byte-identical against the original
-- [x] Self-provisioning backends via uv library crates (managed CPython, venv, pinned wheels)
-- [x] Cache-only tool resolution (system `PATH` never consulted)
-- [x] In-place fix (`--fix`) with dry-run preview
-- [x] Output modes: `character`, `split`, `unified`, `json`, `score`
-- [ ] `--ignore` — exclude directories (e.g. `node_modules`) from directory walks
-- [ ] `--clang-format-style` — custom clang-format style override
-- [ ] `html` output mode (style50 v2 feature)
-- [x] Comment-count hints ("But consider adding more comments!")
-- [x] Windows support (uv console-script `.exe` shims, `%LOCALAPPDATA%` cache)
-
-### `u50 check` — [`u50_check`](u50_check/)
-
-- [ ] check50 reimplementation: online, local, offline, and dev modes
-- [ ] check results rendering (ANSI / HTML / JSON)
-
-### `u50 submit` — [`u50_submit`](u50_submit/)
-
-- [ ] submit50 reimplementation: GitHub submission via git (`git2` with SSH)
-- [ ] `--yes` / `--dry-run` / `--logout` submit flags
-
-The binary entry point lives in [`u50_cli`](u50_cli/).
-
-## Documentation
-
-- [`AGENTS.md`](AGENTS.md) — repository conventions for humans and agents (start here)
-- Per-crate docs: [`u50_cli/AGENTS.md`](u50_cli/AGENTS.md) · [`u50_style/AGENTS.md`](u50_style/AGENTS.md) · [`u50_check/AGENTS.md`](u50_check/AGENTS.md) · [`u50_submit/AGENTS.md`](u50_submit/AGENTS.md)
