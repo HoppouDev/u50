@@ -1,7 +1,7 @@
 use clap::Parser;
 use crossterm::style::Stylize;
 
-use crate::cli::Commands;
+use crate::cli::{Commands, PluginsCommands};
 
 mod cli;
 
@@ -29,8 +29,8 @@ async fn main() -> anyhow::Result<()> {
             write,
             ignore,
         } => todo!(),
-        Commands::Plugins { list } => {
-            if (*list) {
+        Commands::Plugins { command } => match command {
+            PluginsCommands::List => {
                 print_plugin_section(
                     "Formatter",
                     u50_tools::plugin::formatter::all()
@@ -60,7 +60,7 @@ async fn main() -> anyhow::Result<()> {
                         .as_slice(),
                 );
             }
-        }
+        },
     }
 
     Ok(())

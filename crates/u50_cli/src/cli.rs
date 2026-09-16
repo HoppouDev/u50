@@ -81,10 +81,15 @@ pub enum Commands {
 
     /// Information about plugins
     Plugins {
-        /// List all available plugins
-        #[arg(short, long)]
-        list: bool,
+        #[command(subcommand)]
+        command: PluginsCommands,
     },
+}
+
+#[derive(Subcommand)]
+pub enum PluginsCommands {
+    /// List all available plugins
+    List,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
