@@ -54,6 +54,10 @@ impl ResolverPlugin for UvResolver {
         "uv"
     }
 
+    fn display_name(&self) -> &'static str {
+        "uv"
+    }
+
     fn supports(&self, spec: &ToolSpec) -> bool {
         matches!(spec.config, ResolverConfig::Uv { .. })
     }

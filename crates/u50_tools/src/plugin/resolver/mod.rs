@@ -64,6 +64,9 @@ pub trait ResolverPlugin: Sync {
     /// Stable id
     fn id(&self) -> &'static str;
 
+    /// Human-readable name
+    fn display_name(&self) -> &'static str;
+
     /// Check if a resolver can serve a given tool
     fn supports(&self, spec: &ToolSpec) -> bool;
 
@@ -151,6 +154,10 @@ mod tests {
     impl ResolverPlugin for FixtureResolver {
         fn id(&self) -> &'static str {
             self.0
+        }
+
+        fn display_name(&self) -> &'static str {
+            "Test Fixture Resolver"
         }
 
         fn supports(&self, spec: &ToolSpec) -> bool {
