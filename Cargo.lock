@@ -3033,6 +3033,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "inventory",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -3078,6 +3079,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "dirs",
+ "inventory",
  "libc",
  "sha2 0.11.0",
  "tempfile",
