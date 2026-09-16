@@ -3040,6 +3040,7 @@ dependencies = [
  "u50_check",
  "u50_style",
  "u50_submit",
+ "u50_tools",
 ]
 
 [[package]]

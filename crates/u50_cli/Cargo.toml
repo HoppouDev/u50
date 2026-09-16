@@ -17,3 +17,4 @@ tracing-subscriber = { workspace = true }
 u50_check = { path = "../u50_check" }
 u50_style = { path = "../u50_style" }
 u50_submit = { path = "../u50_submit" }
+u50_tools = { path = "../u50_tools" }
