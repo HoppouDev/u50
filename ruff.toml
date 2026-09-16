@@ -1,0 +1,1 @@
+extend-exclude = ["u50_style/tests/fixtures", "target"]

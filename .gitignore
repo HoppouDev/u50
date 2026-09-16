@@ -1,0 +1,6 @@
+/target
+tmp/
+/.ruff-cache/
+.env
+.env.*
+__pycache__/

@@ -1,0 +1,24 @@
+[package]
+name = "u50_check"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = { workspace = true }
+crossterm = { workspace = true }
+dirs = { workspace = true }
+include_dir = { workspace = true }
+leptos = { workspace = true, features = ["ssr"] }
+rand = { workspace = true }
+regex = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+serde_yaml = "0.9"
+sha2 = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+u50_tools = { path = "../u50_tools" }
+
+[target."cfg(unix)".dependencies]
+libc = { workspace = true }
