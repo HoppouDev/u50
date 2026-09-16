@@ -21,7 +21,7 @@ const STYLES: Styles = Styles::styled()
 )]
 pub struct Cli {
     #[command(subcommand)]
-    command: Commands,
+    pub command: Commands,
 
     /// Minimum level of log messages to print
     #[arg(long, value_enum, global = true, default_value_t = LogLevel::Info, value_name = "LEVEL")]
