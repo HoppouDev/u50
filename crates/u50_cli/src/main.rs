@@ -76,5 +76,4 @@ fn print_plugin_section(title: &str, names: &[&str]) {
             println!(" {} {}", "•".dark_grey(), name.white());
         }
     }
-    println!();
 }
