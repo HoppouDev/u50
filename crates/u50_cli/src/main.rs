@@ -38,6 +38,7 @@ async fn main() -> anyhow::Result<()> {
                         .collect::<Vec<_>>()
                         .as_slice(),
                 );
+                println!();
                 print_plugin_section(
                     "Language",
                     u50_tools::plugin::language::all()
@@ -45,6 +46,7 @@ async fn main() -> anyhow::Result<()> {
                         .collect::<Vec<_>>()
                         .as_slice(),
                 );
+                println!();
                 print_plugin_section(
                     "Resolver",
                     u50_tools::plugin::resolver::all()
@@ -52,6 +54,7 @@ async fn main() -> anyhow::Result<()> {
                         .collect::<Vec<_>>()
                         .as_slice(),
                 );
+                println!();
                 print_plugin_section(
                     "Test",
                     u50_tools::plugin::test::all()
