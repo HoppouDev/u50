@@ -29,7 +29,7 @@ pub struct Cli {
 }
 
 #[derive(Subcommand)]
-enum Commands {
+pub enum Commands {
     /// Submit a problem
     Submit {
         /// Prescribed identifier of work to submit
