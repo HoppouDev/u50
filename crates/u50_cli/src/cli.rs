@@ -3,8 +3,8 @@ use clap::builder::styling::{AnsiColor, Effects};
 
 /// Color scheme for help and error output
 const STYLES: Styles = Styles::styled()
-    .header(AnsiColor::Yellow.on_default().effects(Effects::BOLD))
-    .usage(AnsiColor::Yellow.on_default().effects(Effects::BOLD))
+    .header(AnsiColor::BrightBlue.on_default().effects(Effects::BOLD))
+    .usage(AnsiColor::BrightBlue.on_default().effects(Effects::BOLD))
     .literal(AnsiColor::Green.on_default().effects(Effects::BOLD))
     .placeholder(AnsiColor::Cyan.on_default());
 
