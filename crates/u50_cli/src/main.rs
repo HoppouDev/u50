@@ -1,6 +1,6 @@
 use clap::Parser;
 use crossterm::style::Stylize;
-use tracing::debug;
+use tracing::info;
 
 use crate::cli::{Commands, PluginsCommands};
 
@@ -18,7 +18,7 @@ async fn main() -> anyhow::Result<()> {
     #[allow(unused)]
     match &cli.command {
         Commands::Submit { slug, agree } => {
-            debug!("Submitting as slug \"{}\"", slug);
+            info!("Submitting as slug \"{}\"", slug);
         }
 
         Commands::Check {
@@ -27,7 +27,7 @@ async fn main() -> anyhow::Result<()> {
             target,
             output_file,
         } => {
-            debug!("Checking correctness against slug \"{}\"", slug);
+            info!("Checking correctness against slug \"{}\"", slug);
         }
 
         Commands::Style {
@@ -36,14 +36,12 @@ async fn main() -> anyhow::Result<()> {
             write,
             ignore,
         } => {
-            let files = file
-                .iter()
-                .map(|f| format!("\"{}\"", f.display().to_string()))
-                .collect::<Vec<String>>()
-                .join(", ");
-            debug!(
+            info!(
                 "Checking style of path(s) [{}] against CS50's style guide",
-                files
+                file.iter()
+                    .map(|f| format!("\"{}\"", f.display()))
+                    .collect::<Vec<String>>()
+                    .join(", ")
             );
         }
 
