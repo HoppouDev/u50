@@ -6,18 +6,32 @@ use anyhow::{Context, Result};
 
 use super::{Resolved, ResolverConfig, ResolverPlugin, ToolSpec};
 
+/// Stable id of this resolver, reused wherever a `ToolSpec` needs to name it
+pub const ID: &str = "uv";
+
 /// Resolves and provisions python tools through `uv tool install`
 pub struct UvResolver;
 
 impl UvResolver {
-    /// Root cache directory for one tool, scoped by domain and resolver id
-    fn cache_root(spec: &ToolSpec) -> PathBuf {
-        dirs::cache_dir()
+    /// Base cache directory, honoring `U50_CACHE_DIR` so tests/CI can
+    /// redirect provisioning away from the real user cache
+    fn cache_base() -> PathBuf {
+        env::var_os("U50_CACHE_DIR")
+            .map(PathBuf::from)
+            .or_else(dirs::cache_dir)
             .unwrap_or_else(env::temp_dir)
+    }
+
+    /// Root cache directory for one tool, scoped by domain and resolver id
+    ///
+    /// `domain`/`name` are sanitized to safe path segments so a caller-supplied
+    /// `ToolSpec` can never escape the cache root via separators or `..`
+    pub(crate) fn cache_root(spec: &ToolSpec) -> PathBuf {
+        Self::cache_base()
             .join("u50")
-            .join(&spec.domain)
+            .join(sanitize_segment(&spec.domain))
             .join("uv")
-            .join(&spec.name)
+            .join(sanitize_segment(&spec.name))
     }
 
     /// Environment (venv) directory `uv tool install` manages for this tool
@@ -32,13 +46,23 @@ impl UvResolver {
 
     /// Path to `package`'s installed executable inside `bin_dir`
     fn binary_path(spec: &ToolSpec, package: &str) -> PathBuf {
-        let file_name = if cfg!(target_os = "windows") {
-            format!("{package}.exe")
-        } else {
-            package.to_owned()
-        };
+        let file_name = format!("{package}{}", env::consts::EXE_SUFFIX);
         Self::bin_dir(spec).join(file_name)
     }
+}
+
+/// Replaces anything outside `[A-Za-z0-9_-]` with `_` so a path segment built
+/// from user-controlled input can't contain separators or traverse (`..`)
+fn sanitize_segment(raw: &str) -> String {
+    raw.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 /// Builds the `package` or `package==version` requirement uv expects
@@ -51,7 +75,7 @@ fn package_requirement(package: &str, version: Option<&str>) -> String {
 
 impl ResolverPlugin for UvResolver {
     fn id(&self) -> &'static str {
-        "uv"
+        ID
     }
 
     fn display_name(&self) -> &'static str {
@@ -134,6 +158,7 @@ mod tests {
     #[test]
     fn id_is_uv() {
         assert_eq!(UvResolver.id(), "uv");
+        assert_eq!(UvResolver.id(), ID);
     }
 
     #[test]
@@ -178,6 +203,24 @@ mod tests {
     }
 
     #[test]
+    fn sanitize_segment_neutralizes_separators_and_traversal() {
+        assert_eq!(sanitize_segment("style50"), "style50");
+        assert_eq!(sanitize_segment("../../etc/passwd"), "______etc_passwd");
+        assert_eq!(sanitize_segment("a/b\\c"), "a_b_c");
+    }
+
+    #[test]
+    fn cache_root_stays_under_the_cache_base_even_for_hostile_domain_or_name() {
+        let spec = ToolSpec {
+            name: "../../evil".to_owned(),
+            domain: "../../evil-domain".to_owned(),
+            ..uv_spec()
+        };
+        let root = UvResolver::cache_root(&spec);
+        assert!(!root.to_string_lossy().contains(".."));
+    }
+
+    #[test]
     fn provision_then_resolve_locates_the_installed_binary() {
         let spec = ToolSpec {
             domain: "test-uv-resolver-integration".to_owned(),
@@ -185,7 +228,10 @@ mod tests {
         };
 
         // Requires network access and a working `uv` on PATH; skip quietly otherwise
-        if Command::new("uv").arg("--version").output().is_err() {
+        if which::which("uv").is_err() {
+            eprintln!(
+                "skipping provision_then_resolve_locates_the_installed_binary: uv not on PATH"
+            );
             return;
         }
 
@@ -194,6 +240,9 @@ mod tests {
 
         if UvResolver.provision(&spec).is_err() {
             // No network in this environment; nothing further to assert
+            eprintln!(
+                "skipping provision_then_resolve_locates_the_installed_binary: provisioning failed (likely no network)"
+            );
             let _ = std::fs::remove_dir_all(&cache_root);
             return;
         }

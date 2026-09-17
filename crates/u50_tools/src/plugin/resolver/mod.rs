@@ -16,8 +16,8 @@ pub struct PlatformBinary {
     pub platform: String,
     /// The pinned download URL
     pub url: String,
-    /// The pinned SHA-256 of the download
-    pub sha256: String,
+    /// The pinned SHA-256 hash of the download
+    pub hash: String,
     /// Path to the binary inside the extracted archive
     pub binary_path: String,
 }
@@ -58,6 +58,22 @@ pub struct ToolSpec {
 
     /// Resolver configuration
     pub config: ResolverConfig,
+}
+
+impl ToolSpec {
+    /// Builds a spec that resolves `package` through the `uv` resolver
+    #[must_use]
+    pub fn for_uv_package(name: &str, domain: &str, package: &str, version: Option<&str>) -> Self {
+        Self {
+            name: name.to_owned(),
+            domain: domain.to_owned(),
+            resolvers: vec![uv::ID.to_owned()],
+            config: ResolverConfig::Uv {
+                package: package.to_owned(),
+                version: version.map(str::to_owned),
+            },
+        }
+    }
 }
 
 pub trait ResolverPlugin: Sync {
@@ -148,6 +164,17 @@ pub fn host_platform() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn for_uv_package_builds_a_uv_spec_with_the_declared_package_and_version() {
+        let spec = ToolSpec::for_uv_package("black", "style50", "black", Some("24.1.0"));
+        assert_eq!(spec.name, "black");
+        assert_eq!(spec.domain, "style50");
+        assert_eq!(spec.resolvers, vec![uv::ID.to_owned()]);
+        assert!(
+            matches!(spec.config, ResolverConfig::Uv { ref package, ref version } if package == "black" && version.as_deref() == Some("24.1.0"))
+        );
+    }
 
     struct FixtureResolver(&'static str, bool);
 

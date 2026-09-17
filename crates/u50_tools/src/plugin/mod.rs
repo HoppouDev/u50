@@ -54,10 +54,10 @@ pub fn all() -> Vec<PluginInfo> {
         id: plugin.id,
         display_name: plugin.display_name,
     });
-    let resolvers = test::all().map(|plugin| PluginInfo {
+    let resolvers = resolver::all().map(|plugin| PluginInfo {
         kind: PluginKind::Resolver,
-        id: plugin.id,
-        display_name: plugin.display_name,
+        id: plugin.id(),
+        display_name: plugin.display_name(),
     });
     languages
         .chain(formatters)
@@ -76,6 +76,13 @@ mod tests {
         assert!(plugins.iter().any(|p| p.kind == PluginKind::Language));
         assert!(plugins.iter().any(|p| p.kind == PluginKind::Formatter));
         assert!(plugins.iter().any(|p| p.kind == PluginKind::Test));
-        assert!(plugins.iter().any(|p| p.kind == PluginKind::Resolver));
+        // Pin to a known resolver id, not just the kind, so a regression that
+        // aliases Resolver entries onto another registry's plugins (as once
+        // happened by copy-pasting test::all()) fails this test.
+        assert!(
+            plugins
+                .iter()
+                .any(|p| p.kind == PluginKind::Resolver && p.id == "uv")
+        );
     }
 }
