@@ -3065,6 +3065,7 @@ dependencies = [
  "tracing",
  "u50_tools",
  "unicode-width",
+ "walkdir",
 ]
 
 [[package]]
