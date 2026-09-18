@@ -9,8 +9,11 @@ use crossterm::style::Stylize;
 use tracing::debug;
 use u50_tools::plugin::*;
 
-use crate::diff::{colorize_diff, diff_file_unified};
 use crate::util::resolve_formatter;
+use crate::{
+	diff::{colorize_diff, diff_file_unified, truncate_to_width},
+	util::get_terminal_width,
+};
 
 const CLANG_FORMAT_STYLE: &str = "-style={ AllowShortFunctionsOnASingleLine: Empty, BraceWrapping: { AfterCaseLabel: true, AfterControlStatement: true, AfterFunction: true, AfterStruct: true, BeforeElse: true, BeforeWhile: true }, BreakBeforeBraces: Custom, ColumnLimit: 100, IndentCaseLabels: true, IndentWidth: 4, SpaceAfterCStyleCast: true, TabWidth: 4 }";
 
@@ -65,9 +68,31 @@ pub(crate) fn style_one_file(path: &Path, write: bool) -> anyhow::Result<()> {
 		if diff.is_empty() {
 			println!("{} {}", "unchanged".dark_grey(), path.display());
 		} else {
-			println!(" {} ", path.to_string_lossy().on_blue());
+			let width = get_terminal_width().max(10);
+			let indent = 5;
+			let border = |junction: char| -> String {
+				format!(
+					"{}{junction}{}",
+					"─".repeat(indent),
+					"─".repeat(width.saturating_sub(indent + 1))
+				)
+			};
+
+			let path_budget = width.saturating_sub(indent + "│  ".len()).max(1);
+			let path_display = truncate_to_width(&path.to_string_lossy(), path_budget);
+
+			println!("{}", border('┬').dark_grey());
+			println!(
+				"{}{} {} ",
+				" ".repeat(indent),
+				"│".dark_grey(),
+				path_display.white().bold()
+			);
+			println!("{}", border('┼').dark_grey());
 
 			print!("{}", colorize_diff(&diff));
+
+			println!("{}", border('┴').dark_grey());
 		}
 	}
 

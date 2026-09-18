@@ -4,7 +4,7 @@ use anyhow::Context;
 
 use crossterm::style::Stylize;
 
-use crate::format::format_file;
+use crate::{format::format_file, util::get_terminal_width};
 
 /// Pads `line_number` to 4 digits with leading spaces; if it's wider than
 /// 4 digits, the leftmost (most significant) digits are dropped instead of
@@ -19,24 +19,78 @@ fn format_line_number(line_number: usize) -> String {
 	format!("{digits:>4}")
 }
 
-/// Colors a style50-style line diff
-pub(crate) fn colorize_diff(diff: &str) -> String {
-	diff.lines()
-		.enumerate()
-		.map(|(line_number, line)| {
-			let line_number = format_line_number(line_number + 1);
+const GUTTER_WIDTH: usize = 9;
 
-			let colored = if let Some(rest) = line.strip_prefix("- ") {
-				format!("{line_number} - {rest}").red().bold().to_string()
-			} else if let Some(rest) = line.strip_prefix("+ ") {
-				format!("{line_number} + {rest}").green().bold().to_string()
-			} else {
-				format!("{line_number} ~ {}", line)
+/// Terminal columns available for content after the gutter
+fn content_width() -> usize {
+	get_terminal_width().saturating_sub(GUTTER_WIDTH).max(10)
+}
+
+/// Truncates `text` to at most `max_width` display columns appending an
+/// ellipsis when it's cut short
+pub(crate) fn truncate_to_width(text: &str, max_width: usize) -> String {
+	use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
+	if text.width() <= max_width {
+		return text.to_owned();
+	}
+	if max_width == 0 {
+		return String::new();
+	}
+
+	let budget = max_width.saturating_sub(1);
+	let mut width = 0;
+	let mut truncated = String::new();
+	for ch in text.chars() {
+		let ch_width = ch.width().unwrap_or(0);
+		if width + ch_width > budget {
+			break;
+		}
+		width += ch_width;
+		truncated.push(ch);
+	}
+	truncated.push('…');
+	truncated
+}
+
+/// Colors a style50-style line diff. The line-number gutter (`nnnn │`)
+/// always stays neutral/dark grey, matching the box border; only the
+/// marker + content that follows it takes on red/green/grey
+pub(crate) fn colorize_diff(diff: &str) -> String {
+	let mut old_line = 0usize;
+	let mut new_line = 0usize;
+	let max_width = content_width();
+
+	diff.lines()
+		.map(|line| {
+			let rendered = if let Some(rest) = line.strip_prefix("- ") {
+				old_line += 1;
+				let gutter = format!("{} │", format_line_number(old_line))
 					.dark_grey()
-					.bold()
-					.to_string()
+					.to_string();
+				let rest = truncate_to_width(rest, max_width);
+				let body = format!(" - {rest}").red().bold().to_string();
+				format!("{gutter}{body}")
+			} else if let Some(rest) = line.strip_prefix("+ ") {
+				new_line += 1;
+				let gutter = format!("{} │", format_line_number(new_line))
+					.dark_grey()
+					.to_string();
+				let rest = truncate_to_width(rest, max_width);
+				let body = format!(" + {rest}").green().bold().to_string();
+				format!("{gutter}{body}")
+			} else {
+				old_line += 1;
+				new_line += 1;
+				let gutter = format!("{} │", format_line_number(new_line))
+					.dark_grey()
+					.to_string();
+				let content = line.strip_prefix("  ").unwrap_or(line);
+				let content = truncate_to_width(content, max_width);
+				let body = format!(" ~ {content}").dark_grey().bold().to_string();
+				format!("{gutter}{body}")
 			};
-			colored + "\n"
+			rendered + "\n"
 		})
 		.collect()
 }

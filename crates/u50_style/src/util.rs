@@ -51,3 +51,10 @@ pub(crate) fn resolve_formatter(
 
 	Ok((formatter, resolved))
 }
+
+/// Get terminal width or if not a tty, assume a width of 80.
+pub fn get_terminal_width() -> usize {
+	crossterm::terminal::size()
+		.map(|(columns, _rows)| columns as usize)
+		.unwrap_or(80)
+}
