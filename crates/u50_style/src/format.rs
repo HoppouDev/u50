@@ -66,7 +66,7 @@ pub(crate) fn style_one_file(path: &Path, write: bool) -> anyhow::Result<()> {
 	} else {
 		let diff = diff_file_unified(path)?;
 		if diff.is_empty() {
-			println!("{} {}", "unchanged".dark_grey(), path.display());
+			debug!("Unchanged: {:?}", path.display());
 		} else {
 			let width = get_terminal_width().max(10);
 			let indent = 5;
