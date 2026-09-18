@@ -1,9 +1,9 @@
 use clap::Parser;
 use crossterm::style::Stylize;
 use tracing::info;
+use u50_tools::plugin::logging::ArrowFormatter;
 
 use crate::cli::{Commands, PluginsCommands};
-
 mod cli;
 
 #[tokio::main]
@@ -13,6 +13,7 @@ async fn main() -> anyhow::Result<()> {
 	tracing_subscriber::fmt()
 		.with_max_level(tracing::Level::from(cli.log))
 		.with_writer(std::io::stderr)
+		.event_format(ArrowFormatter)
 		.init();
 
 	#[allow(unused)]

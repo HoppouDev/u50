@@ -1,5 +1,6 @@
 pub mod formatter;
 pub mod language;
+pub mod logging;
 pub mod resolver;
 pub mod test;
 
