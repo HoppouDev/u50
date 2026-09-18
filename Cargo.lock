@@ -3066,6 +3066,7 @@ dependencies = [
  "u50_tools",
  "unicode-width",
  "walkdir",
+ "which",
 ]
 
 [[package]]
