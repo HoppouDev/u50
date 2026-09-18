@@ -22,7 +22,7 @@ pub fn format_file(path: &Path) -> anyhow::Result<String> {
 	info!("Applying formatting to file {:?}", path.to_string_lossy());
 
 	let plugin = language::detect(path)
-		.ok_or_else(|| anyhow::anyhow!("no language plugin detected for `{}`", path.display()))?;
+		.ok_or_else(|| anyhow::anyhow!("No language plugin detected for {:?}", path.display()))?;
 
 	let (formatter, resolved) = resolve_formatter(plugin.formatter)?;
 
@@ -32,7 +32,7 @@ pub fn format_file(path: &Path) -> anyhow::Result<String> {
 		.output()
 		.with_context(|| {
 			format!(
-				"running `{}` on `{}`",
+				"running {:?} on {:?}",
 				resolved.path.display(),
 				path.display()
 			)
@@ -40,7 +40,7 @@ pub fn format_file(path: &Path) -> anyhow::Result<String> {
 
 	if !output.status.success() {
 		anyhow::bail!(
-			"{} exited with an error formatting `{}`: {}",
+			"{} exited with an error formatting {:?}: {}",
 			formatter.display_name,
 			path.display(),
 			String::from_utf8_lossy(&output.stderr).trim()
@@ -49,7 +49,7 @@ pub fn format_file(path: &Path) -> anyhow::Result<String> {
 
 	String::from_utf8(output.stdout).with_context(|| {
 		format!(
-			"`{}`'s output for `{}` was not valid UTF-8",
+			"{:?}'s output for {:?} was not valid UTF-8",
 			formatter.display_name,
 			path.display()
 		)
@@ -61,7 +61,7 @@ pub(crate) fn style_one_file(path: &Path, write: bool) -> anyhow::Result<()> {
 	if write {
 		let formatted = format_file(path)?;
 		std::fs::write(path, &formatted)
-			.with_context(|| format!("writing formatted output back to `{}`", path.display()))?;
+			.with_context(|| format!("writing formatted output back to {:?}", path.display()))?;
 		println!("{} {}", "formatted".green(), path.display());
 	} else {
 		let diff = diff_file_unified(path)?;
@@ -102,12 +102,12 @@ pub(crate) fn style_one_file(path: &Path, write: bool) -> anyhow::Result<()> {
 /// Formats `source` in memory using `language_id`'s registered formatter
 pub fn format_string(source: &str, language_id: &str) -> anyhow::Result<String> {
 	let plugin = language::by_id(language_id)
-		.ok_or_else(|| anyhow::anyhow!("no language plugin registered for `{language_id}`"))?;
+		.ok_or_else(|| anyhow::anyhow!("No language plugin registered for {language_id:?}"))?;
 
 	let extension = plugin
 		.extensions
 		.first()
-		.ok_or_else(|| anyhow::anyhow!("language `{language_id}` declares no file extensions"))?;
+		.ok_or_else(|| anyhow::anyhow!("Language {language_id:?} declares no file extensions"))?;
 
 	let (formatter, resolved) = resolve_formatter(plugin.formatter)?;
 
@@ -118,18 +118,18 @@ pub fn format_string(source: &str, language_id: &str) -> anyhow::Result<String> 
 		.stdout(Stdio::piped())
 		.stderr(Stdio::piped())
 		.spawn()
-		.with_context(|| format!("spawning `{}`", resolved.path.display()))?;
+		.with_context(|| format!("spawning {:?}", resolved.path.display()))?;
 
 	child
 		.stdin
 		.take()
 		.expect("stdin was requested as piped")
 		.write_all(source.as_bytes())
-		.with_context(|| format!("writing source to `{}`'s stdin", resolved.path.display()))?;
+		.with_context(|| format!("writing source to {:?}'s stdin", resolved.path.display()))?;
 
 	let output = child
 		.wait_with_output()
-		.with_context(|| format!("waiting for `{}` to finish", resolved.path.display()))?;
+		.with_context(|| format!("waiting for {:?} to finish", resolved.path.display()))?;
 
 	if !output.status.success() {
 		anyhow::bail!(
@@ -140,7 +140,7 @@ pub fn format_string(source: &str, language_id: &str) -> anyhow::Result<String> 
 	}
 
 	String::from_utf8(output.stdout)
-		.with_context(|| format!("`{}`'s output was not valid UTF-8", formatter.display_name))
+		.with_context(|| format!("{:?}'s output was not valid UTF-8", formatter.display_name))
 }
 
 #[cfg(test)]
