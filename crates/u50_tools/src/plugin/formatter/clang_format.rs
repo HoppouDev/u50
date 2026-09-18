@@ -39,13 +39,15 @@ mod tests {
 
 	#[test]
 	fn provisions_and_resolves_through_the_uv_resolver() {
-		// Requires network access and a working `uv` on PATH and skips quietly if not
+		// Requires network access and a working `uv` on PATH and skips quietly
+		// if not
 		if which::which("uv").is_err() {
 			eprintln!("skipping provisions_and_resolves_through_the_uv_resolver: uv not on PATH");
 			return;
 		}
 
-		// Unique per process time to prevent race conditions on concurrent test runs
+		// Unique per process time to prevent race conditions on concurrent test
+		// runs
 		let domain = format!(
 			"test-clang-format-integration-{}-{}",
 			std::process::id(),

@@ -227,7 +227,8 @@ mod tests {
 			..uv_spec()
 		};
 
-		// Requires network access and a working `uv` on PATH; skip quietly otherwise
+		// Requires network access and a working `uv` on PATH; skip quietly
+		// otherwise
 		if which::which("uv").is_err() {
 			eprintln!(
 				"skipping provision_then_resolve_locates_the_installed_binary: uv not on PATH"
