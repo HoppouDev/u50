@@ -16,6 +16,7 @@ fn format_line_number(line_number: usize) -> String {
 	} else {
 		&digits
 	};
+
 	format!("{digits:>4}")
 }
 
@@ -53,9 +54,7 @@ pub(crate) fn truncate_to_width(text: &str, max_width: usize) -> String {
 	truncated
 }
 
-/// Colors a style50-style line diff. The line-number gutter (`nnnn │`)
-/// always stays neutral/dark grey, matching the box border; only the
-/// marker + content that follows it takes on red/green/grey
+/// Colors a style50-style line diff
 pub(crate) fn colorize_diff(diff: &str) -> String {
 	let mut old_line = 0usize;
 	let mut new_line = 0usize;
@@ -65,29 +64,35 @@ pub(crate) fn colorize_diff(diff: &str) -> String {
 		.map(|line| {
 			let rendered = if let Some(rest) = line.strip_prefix("- ") {
 				old_line += 1;
+
 				let gutter = format!("{} │", format_line_number(old_line))
 					.dark_grey()
 					.to_string();
 				let rest = truncate_to_width(rest, max_width);
 				let body = format!(" - {rest}").red().bold().to_string();
+
 				format!("{gutter}{body}")
 			} else if let Some(rest) = line.strip_prefix("+ ") {
 				new_line += 1;
+
 				let gutter = format!("{} │", format_line_number(new_line))
 					.dark_grey()
 					.to_string();
 				let rest = truncate_to_width(rest, max_width);
 				let body = format!(" + {rest}").green().bold().to_string();
+
 				format!("{gutter}{body}")
 			} else {
 				old_line += 1;
 				new_line += 1;
+
 				let gutter = format!("{} │", format_line_number(new_line))
 					.dark_grey()
 					.to_string();
 				let content = line.strip_prefix("  ").unwrap_or(line);
 				let content = truncate_to_width(content, max_width);
 				let body = format!(" ~ {content}").dark_grey().bold().to_string();
+
 				format!("{gutter}{body}")
 			};
 			rendered + "\n"
