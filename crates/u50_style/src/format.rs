@@ -6,7 +6,7 @@ use std::{
 
 use anyhow::Context;
 use crossterm::style::Stylize;
-use tracing::debug;
+use tracing::info;
 use u50_tools::plugin::*;
 
 use crate::util::resolve_formatter;
@@ -19,7 +19,7 @@ const CLANG_FORMAT_STYLE: &str = "-style={ AllowShortFunctionsOnASingleLine: Emp
 
 /// Formats `path` with its detected language's formatter
 pub fn format_file(path: &Path) -> anyhow::Result<String> {
-	debug!("Applying formatting to file {:?}", path.to_string_lossy());
+	info!("Applying formatting to file {:?}", path.to_string_lossy());
 
 	let plugin = language::detect(path)
 		.ok_or_else(|| anyhow::anyhow!("no language plugin detected for `{}`", path.display()))?;
@@ -66,7 +66,7 @@ pub(crate) fn style_one_file(path: &Path, write: bool) -> anyhow::Result<()> {
 	} else {
 		let diff = diff_file_unified(path)?;
 		if diff.is_empty() {
-			debug!("Unchanged: {:?}", path.display());
+			info!("Unchanged: {:?}", path.display());
 		} else {
 			let width = get_terminal_width().max(10);
 			let indent = 5;
