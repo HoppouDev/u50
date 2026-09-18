@@ -3082,6 +3082,7 @@ name = "u50_tools"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "crossterm",
  "dirs",
  "inventory",
  "libc",

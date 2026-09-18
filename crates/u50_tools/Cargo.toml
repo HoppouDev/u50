@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 anyhow = { workspace = true }
+crossterm = { workspace = true }
 dirs = { workspace = true }
 inventory = { workspace = true }
 sha2 = { workspace = true }
