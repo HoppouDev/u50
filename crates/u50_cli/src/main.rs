@@ -1,14 +1,14 @@
 use clap::Parser;
 use crossterm::style::Stylize;
-use tracing::info;
+use tracing::{error, info};
 use u50_tools::plugin::logging::ArrowFormatter;
 
-use crate::cli::{Commands, PluginsCommands};
+use crate::cli::{Cli, Commands, PluginsCommands};
 mod cli;
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
-	let cli = cli::Cli::parse();
+async fn main() {
+	let cli = Cli::parse();
 
 	tracing_subscriber::fmt()
 		.with_max_level(tracing::Level::from(cli.log))
@@ -16,6 +16,14 @@ async fn main() -> anyhow::Result<()> {
 		.event_format(ArrowFormatter)
 		.init();
 
+	if let Err(err) = run(&cli).await {
+		error!("{err:#}");
+		std::process::exit(1);
+	}
+}
+
+/// Runs the selected subcommand
+async fn run(cli: &Cli) -> anyhow::Result<()> {
 	#[allow(unused)]
 	match &cli.command {
 		Commands::Submit { slug, agree } => {
